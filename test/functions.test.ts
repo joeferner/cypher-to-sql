@@ -128,7 +128,7 @@ for (const backend of testBackends()) {
       expect(() => compile("substring('a', 'b')")).toThrow(SemanticError);
       expect(() => compile('toUpper(DISTINCT "a")')).toThrow(SemanticError);
       expect(() => compile('nosuch(1)')).toThrow(UnsupportedFeatureError);
-      expect(() => compile('count(1)')).toThrow(/Aggregate/);
+      expect(() => compile('stDev(1)')).toThrow(/stDev\(\) is not supported/);
       try {
         compile('nosuch(1)');
       } catch (error) {

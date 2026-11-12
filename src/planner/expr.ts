@@ -1,6 +1,7 @@
 import type * as ast from '../ast.js';
 import type { ScalarType } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError, type SourcePosition } from '../errors.js';
+import { compileAggregate, isAggregateCall } from './aggregates.js';
 import { compileFunction } from './functions.js';
 import { constantValue, type SqlBuilder } from './sql-builder.js';
 
@@ -49,7 +50,9 @@ export interface Shared extends Expr {
 export type VariableBinding =
   | { kind: 'node'; alias: string }
   | { kind: 'relationship'; alias: string }
-  | { kind: 'value'; sql: string };
+  | { kind: 'value'; sql: string }
+  /** A column of a derived table whose type is known (the outer query of an aggregation). */
+  | { kind: 'column'; expr: Expr };
 
 type Comparison = ast.ComparisonOperator;
 
@@ -64,13 +67,39 @@ const NUMBER_TYPES = `('integer', 'float')`;
  */
 export class ExprCompiler {
   private aliases = 0;
+  /** Compiled expressions by their AST, so that equal expressions get equal SQL. */
+  private readonly compiled = new Map<string, Expr>();
+  /**
+   * Where aggregate functions may appear: not at all (`none`, for example in
+   * WHERE), in the expressions being compiled (`allowed`, RETURN and its ORDER
+   * BY), or not because we are inside one already (`inside`).
+   */
+  public aggregation: 'none' | 'allowed' | 'inside' = 'none';
 
   public constructor(
     public readonly b: SqlBuilder,
     private readonly lookup: (variable: ast.Variable) => VariableBinding,
   ) {}
 
+  /**
+   * Compiles an expression. Equal expressions compile to the same SQL text (with
+   * the same bind markers), which GROUP BY relies on, except when they call
+   * rand(), whose calls must stay independent.
+   */
   public compile(expr: ast.Expression): Expr {
+    const key = expressionKey(expr);
+    const cached = key === undefined ? undefined : this.compiled.get(key);
+    if (cached) {
+      return cached;
+    }
+    const result = this.compileNew(expr);
+    if (key !== undefined) {
+      this.compiled.set(key, result);
+    }
+    return result;
+  }
+
+  private compileNew(expr: ast.Expression): Expr {
     const b = this.b;
     switch (expr.type) {
       case 'Literal':
@@ -102,6 +131,9 @@ export class ExprCompiler {
         if (binding.kind === 'value') {
           return json(binding.sql, /^[\w."]+$/.test(binding.sql));
         }
+        if (binding.kind === 'column') {
+          return binding.expr;
+        }
         return { sql: binding.alias, type: binding.kind, atomic: true };
       }
       case 'PropertyAccess':
@@ -117,7 +149,9 @@ export class ExprCompiler {
       case 'Binary':
         return this.binary(expr);
       case 'FunctionCall':
-        return compileFunction(this, expr);
+        return isAggregateCall(expr) ? compileAggregate(this, expr) : compileFunction(this, expr);
+      case 'CountStar':
+        return compileAggregate(this, expr);
       case 'UnsupportedExpression':
         throw new UnsupportedFeatureError(`${expr.description} are not supported yet`, {
           position: expr.position,
@@ -737,6 +771,21 @@ function typeClass(type: ExprType): TypeClass {
     return type;
   }
   throw new Error(`Internal error: no type class for ${type}`);
+}
+
+/** A key that is equal for equal expressions (positions ignored); none for rand(). */
+function expressionKey(expr: ast.Expression): string | undefined {
+  let random = false;
+  const key = JSON.stringify(expr, (k, value: unknown) => {
+    if (k === 'position') {
+      return undefined;
+    }
+    if (k === 'name' && typeof value === 'string' && value.toLowerCase() === 'rand') {
+      random = true;
+    }
+    return typeof value === 'bigint' ? `${value}n` : value;
+  });
+  return random ? undefined : key;
 }
 
 function json(sql: string, atomic: boolean): Expr {

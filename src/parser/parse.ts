@@ -520,11 +520,12 @@ class AstBuilder {
         args: call.oC_Expression().map((arg) => this.expression(arg)),
       };
     }
+    if (ctx.COUNT()) {
+      return { type: 'CountStar', position: pos(ctx) };
+    }
     let description: string;
     if (ctx.oC_CaseExpression()) {
       description = 'CASE expressions';
-    } else if (ctx.COUNT()) {
-      description = 'count(*)';
     } else if (ctx.oC_ListComprehension()) {
       description = 'list comprehensions';
     } else if (ctx.oC_PatternComprehension()) {

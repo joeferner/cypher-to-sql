@@ -22,6 +22,9 @@ export interface Dialect {
   /** Placeholder for the bind value at `index` (1-based). */
   placeholder(index: number): string;
 
+  /** Placeholders name their value (`$1`), so one value can be used several times. */
+  readonly numberedPlaceholders: boolean;
+
   /** SQL for a bind value that holds JSON text and is written into a JSON column. */
   jsonInput(placeholder: string): string;
 
@@ -96,6 +99,20 @@ export interface Dialect {
 
   /** `base ^ exponent` as a float. */
   power(base: string, exponent: string): string;
+
+  // ---- aggregates ------------------------------------------------------------------
+
+  /**
+   * Aggregate: a JSON list of the JSON values of the group's rows where `filter`
+   * holds, in `orderBy` order (not together with `distinct`). `[]` for no rows.
+   */
+  jsonAggregate(
+    value: string,
+    options: { distinct: boolean; orderBy: string[]; filter: string },
+  ): string;
+
+  /** Aggregate: the smallest or largest boolean (false < true). */
+  booleanAggregate(kind: 'min' | 'max', value: string): string;
 
   // ---- functions (arguments are non-null values of the stated type) --------------
 

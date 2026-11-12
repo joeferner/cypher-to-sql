@@ -38,27 +38,9 @@ function fn(min: number, max: number, impl: FunctionImpl): FunctionDef {
   return { min, max, impl };
 }
 
-const AGGREGATES = new Set([
-  'count',
-  'sum',
-  'avg',
-  'min',
-  'max',
-  'collect',
-  'stdev',
-  'stdevp',
-  'percentilecont',
-  'percentiledisc',
-]);
-
+/** Compiles a call of a function that is not an aggregate (see aggregates.ts). */
 export function compileFunction(c: ExprCompiler, node: ast.FunctionCall): Expr {
   const name = node.name.toLowerCase();
-  if (AGGREGATES.has(name)) {
-    throw new UnsupportedFeatureError(
-      `Aggregate functions such as ${node.name}() are not supported yet`,
-      { position: node.position },
-    );
-  }
   const def = FUNCTIONS[name];
   if (!def) {
     throw new UnsupportedFeatureError(`Function ${node.name}() is not supported`, {

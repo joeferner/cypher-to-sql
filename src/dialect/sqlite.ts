@@ -11,6 +11,7 @@ export function sqlite(): Dialect {
     name: 'sqlite',
     quoteIdent: (name) => `"${name}"`,
     placeholder: () => '?',
+    numberedPlaceholders: false,
     jsonInput: (placeholder) => placeholder,
     jsonText: (expr) => expr,
     jsonMember: (objectExpr, keyPlaceholder, key): string => {
@@ -56,6 +57,11 @@ export function sqlite(): Dialect {
       `WHEN length(${suffix}) = 0 THEN 1 ELSE substr(${string}, -length(${suffix})) = ${suffix} END)`,
     contains: (string, part) => `(instr(${string}, ${part}) > 0)`,
     power: (base, exponent) => `pow(${base}, ${exponent})`,
+    // ORDER BY inside an aggregate needs SQLite 3.44 or newer.
+    jsonAggregate: (value, { distinct, orderBy, filter }) =>
+      `json_group_array(${distinct ? 'DISTINCT ' : ''}json(${value})` +
+      `${orderBy.length > 0 ? ` ORDER BY ${orderBy.join(', ')}` : ''}) FILTER (WHERE ${filter})`,
+    booleanAggregate: (kind, value) => `${kind}(${value})`,
     jsonKeys: (map) =>
       `(SELECT json_group_array(key) FROM (SELECT key FROM json_each(${map}) ORDER BY key))`,
     // `$[#-1]` is the last element.
@@ -195,6 +201,7 @@ function toJson(value: string, type: ScalarType): string {
  * add `.0` to integral values so they stay floats. Infinity has no JSON form.
  */
 function floatToJson(value: string): string {
+  // A subquery computes the value once (it is used many times).
   const digits = (n: number): string => `printf('%.${n}g', f)`;
   const shortest =
     `CASE WHEN CAST(${digits(15)} AS REAL) = f THEN ${digits(15)} ` +

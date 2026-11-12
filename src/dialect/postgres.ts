@@ -8,6 +8,20 @@ const SQL_TYPES: Record<ScalarType, string> = {
 };
 
 /**
+ * jsonb of a float. to_jsonb(2.0::float8) is the integer 2, so go through
+ * numeric and give integral values one decimal place; float8 text is the
+ * shortest exact form. NaN and infinity have no JSON form. A subquery computes
+ * the value once.
+ */
+function floatToJsonb(value: string): string {
+  return (
+    `(SELECT CASE WHEN f IN ('NaN'::float8, 'Infinity'::float8, '-Infinity'::float8) THEN NULL ` +
+    `WHEN f::text::numeric = trunc(f::text::numeric) THEN to_jsonb(round(f::text::numeric, 1)) ` +
+    `ELSE to_jsonb(f::text::numeric) END FROM (SELECT (${value})::double precision AS f) AS ft)`
+  );
+}
+
+/**
  * PostgreSQL dialect. JSON columns are `jsonb`. Works on managed PostgreSQL
  * (RDS, Aurora, and others) because it needs no extensions.
  */
@@ -16,6 +30,7 @@ export function postgres(): Dialect {
     name: 'postgres',
     quoteIdent: (name) => `"${name}"`,
     placeholder: (index) => `$${index}`,
+    numberedPlaceholders: true,
     jsonInput: (placeholder) => `(${placeholder}::jsonb)`,
     // jsonb keeps the scale of numbers, so `1.0` comes back as `1.0` and integers
     // and floats stay distinct.
@@ -56,15 +71,7 @@ export function postgres(): Dialect {
           return `(CASE WHEN jsonb_typeof(${json}) = 'number' THEN ${json} END)::${SQL_TYPES[type]}`;
       }
     },
-    toJson: (value, type) =>
-      type === 'float'
-        ? // to_jsonb(2.0::float8) is the integer 2, so go through numeric and
-          // give integral values one decimal place. float8 text is the shortest
-          // exact form. NaN and infinity have no JSON form.
-          `(SELECT CASE WHEN f IN ('NaN'::float8, 'Infinity'::float8, '-Infinity'::float8) THEN NULL ` +
-          `WHEN f::text::numeric = trunc(f::text::numeric) THEN to_jsonb(round(f::text::numeric, 1)) ` +
-          `ELSE to_jsonb(f::text::numeric) END FROM (SELECT (${value})::double precision AS f) AS ft)`
-        : `to_jsonb(${value})`,
+    toJson: (value, type) => (type === 'float' ? floatToJsonb(value) : `to_jsonb(${value})`),
     jsonArray: (items) => `jsonb_build_array(${items.join(', ')})`,
     jsonObject: (entries) =>
       `jsonb_build_object(${entries.map((e) => `${e.keyPlaceholder}::text, ${e.value}`).join(', ')})`,
@@ -82,6 +89,11 @@ export function postgres(): Dialect {
     contains: (string, part) => `(strpos(${string}, ${part}) > 0)`,
     power: (base, exponent) =>
       `power((${base})::double precision, (${exponent})::double precision)`,
+    jsonAggregate: (value, { distinct, orderBy, filter }) =>
+      `COALESCE(jsonb_agg(${distinct ? 'DISTINCT ' : ''}${value}` +
+      `${orderBy.length > 0 ? ` ORDER BY ${orderBy.join(', ')}` : ''}) FILTER (WHERE ${filter}), '[]'::jsonb)`,
+    // min() and max() are not defined for booleans.
+    booleanAggregate: (kind, value) => `${kind === 'min' ? 'bool_and' : 'bool_or'}(${value})`,
     // Set-returning JSON functions fail on the wrong type, so their inputs are
     // guarded (see fromJson).
     jsonKeys: (map) =>

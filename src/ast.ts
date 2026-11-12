@@ -110,7 +110,13 @@ export type Expression =
   | IsNullExpression
   | HasLabelsExpression
   | FunctionCall
+  | CountStar
   | UnsupportedExpression;
+
+/** `count(*)` */
+export interface CountStar extends Node {
+  type: 'CountStar';
+}
 
 /** `name(args)`, `ns.name(args)`, `name(DISTINCT args)`. */
 export interface FunctionCall extends Node {

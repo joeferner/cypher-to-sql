@@ -34,9 +34,22 @@ export class SqlBuilder {
     return this.mapping.schema ? `${this.ident(this.mapping.schema)}.${table}` : table;
   }
 
+  /**
+   * Replaces the markers with placeholders. With numbered placeholders, a marker
+   * that occurs more than once gets one placeholder, so equal expressions have
+   * equal SQL text (PostgreSQL requires that between SELECT and GROUP BY).
+   */
   public finish(sql: string, extra: Omit<PlanStep, 'sql' | 'values'> = {}): PlanStep {
     const values: BindValue[] = [];
+    const numbers = new Map<string, number>();
     const text = sql.replace(MARKER, (_m, index: string): string => {
+      if (this.dialect.numberedPlaceholders) {
+        const known = numbers.get(index);
+        if (known !== undefined) {
+          return this.dialect.placeholder(known);
+        }
+        numbers.set(index, values.length + 1);
+      }
       values.push(this.binds[Number(index)]!);
       return this.dialect.placeholder(values.length);
     });

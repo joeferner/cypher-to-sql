@@ -279,13 +279,17 @@ describe('parse: function calls', () => {
     expect(expr('my.ns.f(DISTINCT a)')).toMatchObject({ name: 'my.ns.f', distinct: true });
     expect(expr('rand()')).toMatchObject({ name: 'rand', args: [] });
   });
+
+  it('parses count(*) on its own', () => {
+    expect(expr('count(*)')).toMatchObject({ type: 'CountStar', position: { column: 7 } });
+    expect(expr('count(DISTINCT a)')).toMatchObject({ type: 'FunctionCall', distinct: true });
+  });
 });
 
 describe('parse: unsupported expressions', () => {
   it.each([
     ['a[0]', 'list indexing and slicing'],
     ['CASE WHEN a THEN 1 END', 'CASE expressions'],
-    ['count(*)', 'count(*)'],
     ['[x IN a | x]', 'list comprehensions'],
     ['[(a)-->(b) | b]', 'pattern comprehensions'],
     ['all(x IN a WHERE x)', 'list quantifiers (all, any, none, single)'],
