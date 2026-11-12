@@ -8,7 +8,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, it } from 'vitest';
-import { backends } from './backends.js';
+import { testBackends } from '../support/backends.js';
 import { loadScenarios } from './features.js';
 import { runScenario } from './runner.js';
 
@@ -21,7 +21,7 @@ const allowList = JSON.parse(
 const scenarios = loadScenarios();
 const knownIds = new Set(scenarios.map((s) => s.id));
 
-for (const backend of backends) {
+for (const backend of testBackends()) {
   const allowed = new Set(Object.values(allowList[backend.name] ?? {}).flat());
   const passing: string[] = [];
 
@@ -47,7 +47,8 @@ for (const backend of backends) {
       });
     }
 
-    afterAll(() => {
+    afterAll(async () => {
+      await backend.dispose?.();
       if (runAll) {
         const dir = join(import.meta.dirname, '../../tmp');
         mkdirSync(dir, { recursive: true });

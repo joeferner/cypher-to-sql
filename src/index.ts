@@ -10,6 +10,7 @@ export type { CompiledPlan, PlanStep, BindValue } from './plan.js';
 export type { IdStrategy } from './planner/write.js';
 export type { Dialect } from './dialect/dialect.js';
 export { sqlite } from './dialect/sqlite.js';
+export { postgres } from './dialect/postgres.js';
 export {
   CypherNode,
   CypherRelationship,

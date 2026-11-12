@@ -2,7 +2,19 @@
   "name": "cypher-to-sql",
   "image": "mcr.microsoft.com/devcontainers/typescript-node:22",
   "features": {
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    // Docker CLI that talks to the host's Docker daemon (for PostgreSQL test
+    // containers). Bind mounts resolve on the host, which works because the
+    // workspace is mounted at the same path as on the host (see below).
+    // moby: false installs Docker CE's CLI; the base image is Debian trixie,
+    // where the default Moby packages aren't available.
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": { "moby": false }
+  },
+  // Containers started with `npm run db:up` publish their ports on the host, not
+  // in this container, so tests reach PostgreSQL through the host gateway.
+  "runArgs": ["--add-host=host.docker.internal:host-gateway"],
+  "containerEnv": {
+    "TEST_POSTGRES_URL": "postgres://cypher:cypher@host.docker.internal:55432/cypher"
   },
   // Mount the workspace at the same path as on the host. Claude Code keys its
   // session history (~/.claude/projects/<path>) by the absolute project path,

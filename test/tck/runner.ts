@@ -7,25 +7,12 @@ import {
   SemanticError,
   UnsupportedFeatureError,
   type CypherValue,
-  type Dialect,
   type Graph,
-  type SqlExecutor,
 } from '../../src/index.js';
 import { parseCypherJson, stringifyCypherJson } from '../../src/json.js';
+import type { TestBackend, TestDatabase } from '../support/backends.js';
 import type { TckScenario } from './features.js';
 import { canonical, fromCypher, parseTckValue, toCypher } from './values.js';
-
-/** A database the TCK can run scenarios on. Each scenario gets a fresh one. */
-export interface TckBackend {
-  name: string;
-  open(): Promise<TckDatabase>;
-}
-
-export interface TckDatabase {
-  dialect: Dialect;
-  executor: SqlExecutor;
-  close(): Promise<void>;
-}
 
 export type Outcome = { status: 'passed' } | { status: 'skipped'; reason: string };
 
@@ -49,7 +36,7 @@ class Skip extends Error {}
  * a query with write clauses must be rejected there (which tests the gate) and
  * then runs on the write graph. Unsupported features skip the scenario.
  */
-export async function runScenario(scenario: TckScenario, backend: TckBackend): Promise<Outcome> {
+export async function runScenario(scenario: TckScenario, backend: TestBackend): Promise<Outcome> {
   const db = await backend.open();
   try {
     await runSteps(scenario, db);
@@ -64,7 +51,7 @@ export async function runScenario(scenario: TckScenario, backend: TckBackend): P
   }
 }
 
-async function runSteps(scenario: TckScenario, db: TckDatabase): Promise<void> {
+async function runSteps(scenario: TckScenario, db: TestDatabase): Promise<void> {
   const options = { dialect: db.dialect, executor: db.executor };
   const writeGraph = createGraph({ ...options, readOnly: false });
   const readGraph = createGraph({ ...options, readOnly: true });
@@ -88,9 +75,9 @@ async function runSteps(scenario: TckScenario, db: TckDatabase): Promise<void> {
     } else if (text === 'parameters are:') {
       params = parameters(step);
     } else if (text === 'executing query:' || text === 'executing control query:') {
-      before = await snapshot(db.executor);
+      before = await snapshot(db);
       result = await executeQuery(readGraph, writeGraph, docString(step), params);
-      after = await snapshot(db.executor);
+      after = await snapshot(db);
     } else if (
       (m =
         /^the result should be(, in any order|, in order)?( \(ignoring element order for lists\))?:$/.exec(
@@ -255,7 +242,8 @@ function checkError(result: QueryResult, type: string, phase: string, detail: st
 
 // ---- side effects --------------------------------------------------------------
 
-async function snapshot(executor: SqlExecutor): Promise<GraphState> {
+async function snapshot({ executor, dialect }: TestDatabase): Promise<GraphState> {
+  const json = (column: string): string => `${dialect.jsonText(column)} AS ${column}`;
   return executor.transaction('read', async (tx) => {
     const state: GraphState = {
       nodes: new Set(),
@@ -269,7 +257,10 @@ async function snapshot(executor: SqlExecutor): Promise<GraphState> {
         state.properties.add(`${entity}.${key}=${stringifyCypherJson(value)}`);
       }
     };
-    for (const row of await tx.query('SELECT id, labels, properties FROM nodes', [])) {
+    for (const row of await tx.query(
+      `SELECT id, ${json('labels')}, ${json('properties')} FROM nodes`,
+      [],
+    )) {
       const id = `n${String(row['id'])}`;
       state.nodes.add(id);
       for (const label of parseCypherJson(String(row['labels'])) as string[]) {
@@ -277,7 +268,7 @@ async function snapshot(executor: SqlExecutor): Promise<GraphState> {
       }
       addProperties(id, row['properties']);
     }
-    for (const row of await tx.query('SELECT id, properties FROM edges', [])) {
+    for (const row of await tx.query(`SELECT id, ${json('properties')} FROM edges`, [])) {
       const id = `r${String(row['id'])}`;
       state.relationships.add(id);
       addProperties(id, row['properties']);

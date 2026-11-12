@@ -17,11 +17,23 @@ interface ReviverContext {
   source?: string;
 }
 
-/** Parses JSON text, returning integer literals as `bigint` and other numbers as `number`. */
+const MIN_INT64 = -(2n ** 63n);
+const MAX_INT64 = 2n ** 63n - 1n;
+
+/**
+ * Parses JSON text, returning integer literals as `bigint` and other numbers as
+ * `number`. An integer literal outside the 64-bit range is a float: PostgreSQL
+ * `jsonb` prints large floats such as `1e308` as plain digits, and Cypher
+ * integers are always 64-bit.
+ */
 export function parseCypherJson(text: string): CypherValue {
   return JSON.parse(text, function (_key, value: unknown, context?: ReviverContext): unknown {
     if (typeof value === 'number' && context?.source !== undefined) {
-      return /^-?\d+$/.test(context.source) ? BigInt(context.source) : value;
+      if (!/^-?\d+$/.test(context.source)) {
+        return value;
+      }
+      const int = BigInt(context.source);
+      return int < MIN_INT64 || int > MAX_INT64 ? value : int;
     }
     return value;
   }) as CypherValue;

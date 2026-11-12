@@ -1,0 +1,20 @@
+# PostgreSQL for tests. `npm run db:up` starts it, `npm run db:down` removes it.
+# Data lives in tmpfs and durability is off: this database is disposable.
+services:
+  postgres:
+    image: postgres:${POSTGRES_VERSION:-18}-alpine
+    environment:
+      POSTGRES_USER: cypher
+      POSTGRES_PASSWORD: cypher
+      POSTGRES_DB: cypher
+    ports:
+      - '${POSTGRES_PORT:-55432}:5432'
+    tmpfs:
+      - /var/lib/postgresql
+    command: >-
+      postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U cypher -d cypher']
+      interval: 1s
+      timeout: 3s
+      retries: 30
