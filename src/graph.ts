@@ -7,7 +7,7 @@ import { defaultMapping, validateMapping, type GraphMapping } from './mapping.js
 import { parse } from './parser/parse.js';
 import { createPlan, executePlan, type CompiledPlan } from './plan.js';
 import { assertQueryReadOnly, assertSupported, hasWriteClause } from './planner/gate.js';
-import { planRead } from './planner/read.js';
+import { planRead, ReadScope, RowSource } from './planner/read.js';
 import { SqlBuilder } from './planner/sql-builder.js';
 import { WritePlanner, type IdStrategy } from './planner/write.js';
 import type { CypherValue } from './values.js';
@@ -92,14 +92,21 @@ function planQuery(
       // Unreachable while the gate works; kept so that a gate bug cannot reach SQL.
       throw new ReadOnlyViolationError('Write clauses are not allowed on a read-only graph');
     }
+    // The grammar puts reading clauses before updating clauses.
+    const reading = clauses.filter(isReadingClause);
     const creates = clauses.filter((c): c is ast.CreateClause => c.type === 'Create');
-    if (creates.length !== clauses.length) {
+    if (reading.length + creates.length !== clauses.length) {
       throw new UnsupportedFeatureError(
-        'Only queries made of CREATE clauses can write for now (no MATCH, RETURN, or other clauses with CREATE)',
-        { position: clauses.find((c) => c.type !== 'Create')?.position },
+        'Only MATCH and UNWIND followed by CREATE can write for now (no RETURN or other clauses with CREATE)',
+        { position: clauses.find((c) => !isReadingClause(c) && c.type !== 'Create')?.position },
       );
     }
-    return checkSteps(createPlan(writer.planCreate(creates, limits), []), limits);
+    if (reading.length === 0) {
+      return checkSteps(createPlan(writer.planCreate(creates, limits), []), limits);
+    }
+    const source = new RowSource(ReadScope.of(new SqlBuilder(dialect, mapping), reading));
+    const inserts = writer.planCreate(creates, limits, source);
+    return checkSteps(createPlan([source.finish(), ...inserts], []), limits);
   }
 
   const ret = clauses.at(-1);
@@ -108,9 +115,9 @@ function planQuery(
       position: query.position,
     });
   }
-  const matches = clauses.slice(0, -1);
-  for (const clause of matches) {
-    if (clause.type !== 'Match') {
+  const reading = clauses.slice(0, -1);
+  for (const clause of reading) {
+    if (!isReadingClause(clause)) {
       throw new UnsupportedFeatureError(`${clause.type} is not supported before RETURN yet`, {
         position: clause.position,
       });
@@ -118,10 +125,14 @@ function planQuery(
   }
   const { step, columns } = planRead(
     new SqlBuilder(dialect, mapping),
-    matches as ast.MatchClause[],
+    reading as ast.ReadingClause[],
     ret,
   );
   return checkSteps(createPlan([step], columns), limits);
+}
+
+function isReadingClause(clause: ast.Clause): clause is ast.ReadingClause {
+  return clause.type === 'Match' || clause.type === 'Unwind';
 }
 
 /**

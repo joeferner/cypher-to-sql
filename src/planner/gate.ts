@@ -44,6 +44,8 @@ function clauseExpressions(clause: ast.Clause): ast.Expression[] {
   switch (clause.type) {
     case 'Match':
       return [...patternExpressions(clause.pattern), ...(clause.where ? [clause.where] : [])];
+    case 'Unwind':
+      return [clause.expression];
     case 'Create':
       return patternExpressions(clause.pattern);
     case 'Return':

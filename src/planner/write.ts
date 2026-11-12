@@ -1,9 +1,10 @@
 import type * as ast from '../ast.js';
 import { LimitExceededError, SemanticError, UnsupportedFeatureError } from '../errors.js';
 import type { Limits } from '../limits.js';
-import type { BindValue, PlanStep } from '../plan.js';
+import type { BindValue, PlanStep, ValueSource } from '../plan.js';
 import type { Dialect } from '../dialect/dialect.js';
 import type { GraphMapping } from '../mapping.js';
+import type { RowSource } from './read.js';
 import { constantValue, SqlBuilder } from './sql-builder.js';
 
 /** A column of an INSERT: name, value, and whether the column holds JSON. */
@@ -25,14 +26,63 @@ export class WritePlanner {
   ) {}
 
   /**
-   * Plans a query made only of CREATE clauses as one INSERT per entity, in pattern
-   * order. With database ids each INSERT returns the new id, which later
-   * relationship INSERTs bind.
+   * Plans CREATE clauses as one INSERT per entity, in pattern order. With database
+   * ids each INSERT returns the new id, which later relationship INSERTs bind.
+   *
+   * With a `source` (the reading clauses before CREATE), the INSERTs run once for
+   * each source row: matched nodes and values come from that row.
    */
-  public planCreate(clauses: ast.CreateClause[], limits: Limits): PlanStep[] {
+  public planCreate(clauses: ast.CreateClause[], limits: Limits, source?: RowSource): PlanStep[] {
     const steps: PlanStep[] = [];
-    const variables = new Map<string, { entity: number; kind: 'node' | 'relationship' }>();
+    /** Variables bound by CREATE, and matched nodes used by it, with the bind value of their id. */
+    const variables = new Map<string, { kind: 'node' | 'relationship'; id: BindValue }>();
     let entities = 0;
+    const perRow = source !== undefined;
+
+    /** A variable from the reading clauses, used in a CREATE pattern. */
+    const sourceVariable = (
+      name: string,
+      position: ast.NodePattern['position'],
+    ): { kind: 'node'; id: BindValue } | undefined => {
+      if (!source?.scope.has(name)) {
+        return undefined;
+      }
+      const binding = source.scope.lookup({ name, position });
+      if (binding.kind !== 'node') {
+        throw new SemanticError(`Variable \`${name}\` is not a node`, { position });
+      }
+      const b = source.scope.b;
+      const column = source.column(`${binding.alias}.${b.ident(b.mapping.nodes.id)}`);
+      const bound = { kind: 'node' as const, id: { kind: 'rowId' as const, column } };
+      variables.set(name, bound);
+      return bound;
+    };
+
+    const valueOf = (expr: ast.Expression): ValueSource => {
+      const constant = constantValue(expr);
+      if (constant) {
+        return constant;
+      }
+      const root = rootVariable(expr);
+      if (root && variables.has(root.name) && !source?.scope.has(root.name)) {
+        throw new UnsupportedFeatureError(
+          `Entities created in the same query cannot be used in property values yet`,
+          { position: expr.position },
+        );
+      }
+      if (!source) {
+        if (root) {
+          throw new SemanticError(`Variable \`${root.name}\` not defined`, {
+            position: root.position,
+          });
+        }
+        throw new UnsupportedFeatureError(
+          'Property values in CREATE must be literals, parameters, or variables for now',
+          { position: expr.position },
+        );
+      }
+      return source.valueColumn(expr);
+    };
 
     const newEntity = (): number => {
       entities++;
@@ -44,9 +94,10 @@ export class WritePlanner {
       return entities - 1;
     };
 
-    const createNode = (node: ast.NodePattern): number => {
+    const createNode = (node: ast.NodePattern): BindValue => {
       if (node.variable !== undefined) {
-        const existing = variables.get(node.variable);
+        const existing =
+          variables.get(node.variable) ?? sourceVariable(node.variable, node.position);
         if (existing) {
           if (existing.kind !== 'node') {
             throw new SemanticError(`Variable \`${node.variable}\` is already a relationship`, {
@@ -59,12 +110,13 @@ export class WritePlanner {
               { position: node.position },
             );
           }
-          return existing.entity;
+          return existing.id;
         }
       }
       const entity = newEntity();
+      const id: BindValue = { kind: 'entityId', entity };
       if (node.variable !== undefined) {
-        variables.set(node.variable, { entity, kind: 'node' });
+        variables.set(node.variable, { kind: 'node', id });
       }
       const labels = [...new Set(node.labels)];
       steps.push(
@@ -74,10 +126,10 @@ export class WritePlanner {
             { kind: 'json', value: { kind: 'constant', value: labels } },
             true,
           ],
-          [this.mapping.nodes.properties, this.properties(node.properties), true],
+          [this.mapping.nodes.properties, this.properties(node.properties, valueOf), true],
         ]),
       );
-      return entity;
+      return id;
     };
 
     for (const clause of clauses) {
@@ -87,6 +139,17 @@ export class WritePlanner {
             position: part.position,
           });
         }
+        const first = part.elements[0] as ast.NodePattern;
+        if (
+          part.elements.length === 1 &&
+          first.variable !== undefined &&
+          (variables.has(first.variable) || source?.scope.has(first.variable))
+        ) {
+          // A lone node pattern would create nothing: `MATCH (a) CREATE (a)`.
+          throw new SemanticError(`Variable \`${first.variable}\` already declared`, {
+            position: first.position,
+          });
+        }
         let previous = createNode(part.elements[0] as ast.NodePattern);
         for (let i = 1; i < part.elements.length; i += 2) {
           const rel = part.elements[i] as ast.RelationshipPattern;
@@ -94,28 +157,28 @@ export class WritePlanner {
           this.checkRelationship(rel);
           const entity = newEntity();
           if (rel.variable !== undefined) {
-            if (variables.has(rel.variable)) {
+            if (variables.has(rel.variable) || source?.scope.has(rel.variable)) {
               throw new SemanticError(`Variable \`${rel.variable}\` is already bound`, {
                 position: rel.position,
               });
             }
-            variables.set(rel.variable, { entity, kind: 'relationship' });
+            variables.set(rel.variable, { kind: 'relationship', id: { kind: 'entityId', entity } });
           }
           const [start, end] = rel.direction === 'left' ? [next, previous] : [previous, next];
           const edges = this.mapping.edges;
           steps.push(
             this.insert('relationship', entity, [
-              [edges.startId, { kind: 'entityId', entity: start }, false],
-              [edges.endId, { kind: 'entityId', entity: end }, false],
+              [edges.startId, start, false],
+              [edges.endId, end, false],
               [edges.type, { kind: 'sql', value: rel.types[0]! }, false],
-              [edges.properties, this.properties(rel.properties), true],
+              [edges.properties, this.properties(rel.properties, valueOf), true],
             ]),
           );
           previous = next;
         }
       }
     }
-    return steps;
+    return perRow ? steps.map((step) => ({ ...step, perRow: true })) : steps;
   }
 
   private checkRelationship(rel: ast.RelationshipPattern): void {
@@ -136,7 +199,10 @@ export class WritePlanner {
     }
   }
 
-  private properties(expr: ast.Expression | undefined): BindValue {
+  private properties(
+    expr: ast.Expression | undefined,
+    valueOf: (expr: ast.Expression) => ValueSource,
+  ): BindValue {
     if (!expr) {
       return { kind: 'properties', entries: [] };
     }
@@ -154,14 +220,7 @@ export class WritePlanner {
         if (value.type === 'Map') {
           throw new SemanticError('Property values cannot be maps', { position: value.position });
         }
-        const constant = constantValue(value);
-        if (!constant) {
-          throw new UnsupportedFeatureError(
-            'Property values in CREATE must be literals or parameters for now',
-            { position: value.position },
-          );
-        }
-        return { key, value: constant };
+        return { key, value: valueOf(value) };
       }),
     };
   }
@@ -192,4 +251,12 @@ export class WritePlanner {
       generatedId: generated ? { entity, kind } : undefined,
     });
   }
+}
+
+/** The variable an expression reads from (`x` in `x`, `x.a`, `x.a.b`), if any. */
+function rootVariable(expr: ast.Expression): ast.Variable | undefined {
+  if (expr.type === 'Variable') {
+    return expr;
+  }
+  return expr.type === 'PropertyAccess' ? rootVariable(expr.subject) : undefined;
 }

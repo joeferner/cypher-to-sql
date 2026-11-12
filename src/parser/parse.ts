@@ -121,8 +121,16 @@ class AstBuilder {
     if (match) {
       return this.matchClause(match);
     }
-    const name = ctx.oC_Unwind() ? 'UNWIND' : 'CALL';
-    return { type: 'UnsupportedClause', position: pos(ctx), name, write: false };
+    const unwind = ctx.oC_Unwind();
+    if (unwind) {
+      return {
+        type: 'Unwind',
+        position: pos(unwind),
+        expression: this.expression(unwind.oC_Expression()),
+        variable: this.symbolicName(unwind.oC_Variable().oC_SymbolicName()),
+      };
+    }
+    return { type: 'UnsupportedClause', position: pos(ctx), name: 'CALL', write: false };
   }
 
   private updatingClause(ctx: OC_UpdatingClauseContext): ast.Clause {

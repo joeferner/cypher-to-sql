@@ -27,5 +27,17 @@ export function sqlite(): Dialect {
     },
     hasLabel: (labelsExpr, labelPlaceholder) =>
       `EXISTS (SELECT 1 FROM json_each(${labelsExpr}) WHERE json_each.value = ${labelPlaceholder})`,
+    unwind: (listExpr, alias) => ({
+      from: `json_each(${listExpr}) AS ${alias}`,
+      // json_each of a scalar gives one row with a NULL key. Keep it, except for null.
+      where: `NOT (${alias}.key IS NULL AND ${alias}.type = 'null')`,
+      // `value` is SQL-typed for scalars; turn it back into JSON text. json_quote
+      // keeps reals as reals (1.0), so integers and floats stay distinct.
+      value:
+        `(CASE ${alias}.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' ` +
+        `WHEN 'false' THEN 'false' WHEN 'array' THEN ${alias}.value ` +
+        `WHEN 'object' THEN ${alias}.value ELSE json_quote(${alias}.value) END)`,
+      order: `${alias}.key`,
+    }),
   };
 }

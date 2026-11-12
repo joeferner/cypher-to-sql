@@ -18,15 +18,18 @@ export type BindValue =
   /** A property map for a new entity, bound as JSON text with null members removed. */
   | { kind: 'properties'; entries: { key: string; value: ValueSource }[] }
   | { kind: 'propertiesParameter'; name: string; position: SourcePosition }
-  /** The id of an entity created earlier in the same plan. */
+  /** The id of an entity created earlier in the same plan (in the same source row). */
   | { kind: 'entityId'; entity: number }
+  /** A column of the current source row, bound as is (for example the id of a matched node). */
+  | { kind: 'rowId'; column: string }
   /** The SQL `LIMIT` of a step: `min(user limit, maxRowsPerStep + 1)`. */
   | { kind: 'rowLimit'; userLimit: ValueSource | undefined };
 
-/** A Cypher value known at compile time, or a query parameter. */
+/** A Cypher value known at compile time, a query parameter, or a JSON column of the current source row. */
 export type ValueSource =
   | { kind: 'constant'; value: CypherValue }
-  | { kind: 'parameter'; name: string; position: SourcePosition };
+  | { kind: 'parameter'; name: string; position: SourcePosition }
+  | { kind: 'row'; column: string };
 
 export interface PlanStep {
   sql: string;
@@ -35,6 +38,12 @@ export interface PlanStep {
   creates?: { entity: number; kind: 'node' | 'relationship' } | undefined;
   /** When set, the step supplies a generated id for entity `entity` in this bind slot. */
   generatedId?: { entity: number; kind: 'node' | 'relationship' } | undefined;
+  /**
+   * Per-row steps run once for each row of the step before the first of them (the
+   * source step), with `row` values bound from that row. Entity numbers restart for
+   * each row. Steps after them do not exist yet.
+   */
+  perRow?: boolean | undefined;
 }
 
 /** How to build one result column from the SQL columns of the final step. */
@@ -71,7 +80,7 @@ export function createPlan(steps: PlanStep[], columns: ColumnSpec[]): CompiledPl
       steps
         .map(
           (s, i) =>
-            `-- step ${i + 1}\n${s.sql}\n-- values: ${s.values.map(describeBind).join(', ')}`,
+            `-- step ${i + 1}${s.perRow ? ' (for each source row)' : ''}\n${s.sql}\n-- values: ${s.values.map(describeBind).join(', ')}`,
         )
         .join('\n'),
   };
@@ -85,26 +94,50 @@ export async function executePlan(
   const deadline = Date.now() + limits.timeoutMs;
   const entityIds = new Map<number, unknown>();
 
+  const firstPerRow = plan.steps.findIndex((s) => s.perRow);
+  const once = firstPerRow < 0 ? plan.steps : plan.steps.slice(0, firstPerRow);
+  const perRow = firstPerRow < 0 ? [] : plan.steps.slice(firstPerRow);
+
   const rows = await executor.transaction(plan.readOnly ? 'read' : 'write', async (tx) => {
-    let last: Row[] = [];
-    for (const step of plan.steps) {
+    const run = async (step: PlanStep, row: Row | undefined): Promise<Row[]> => {
       if (Date.now() > deadline) {
         throw new LimitExceededError(`Query exceeded the time limit of ${limits.timeoutMs} ms`);
       }
       if (step.generatedId && options.idGenerator) {
         entityIds.set(step.generatedId.entity, options.idGenerator(step.generatedId.kind));
       }
-      const values = step.values.map((v) => resolveBind(v, options, entityIds));
-      last = await tx.query(step.sql, values);
-      if (last.length > limits.maxRowsPerStep) {
+      const values = step.values.map((v) => resolveBind(v, options, entityIds, row));
+      const result = await tx.query(step.sql, values);
+      if (result.length > limits.maxRowsPerStep) {
         throw new LimitExceededError(
           `A SQL step returned more than ${limits.maxRowsPerStep} rows (maxRowsPerStep)`,
           { hint: 'Add LIMIT to the query or make the pattern more selective.' },
         );
       }
       if (step.creates && !step.generatedId) {
-        entityIds.set(step.creates.entity, last[0]?.['id']);
+        entityIds.set(step.creates.entity, result[0]?.['id']);
       }
+      return result;
+    };
+
+    let last: Row[] = [];
+    for (const step of once) {
+      last = await run(step, undefined);
+    }
+    if (perRow.length > 0) {
+      const perRowEntities = perRow.filter((s) => s.creates).length;
+      if (last.length * perRowEntities > limits.maxCreatedEntities) {
+        throw new LimitExceededError(
+          `The query creates more than ${limits.maxCreatedEntities} entities (maxCreatedEntities)`,
+        );
+      }
+      for (const row of last) {
+        entityIds.clear();
+        for (const step of perRow) {
+          await run(step, row);
+        }
+      }
+      last = [];
     }
     return last;
   });
@@ -125,17 +158,19 @@ function resolveBind(
   bind: BindValue,
   options: ExecuteOptions,
   entityIds: Map<number, unknown>,
+  row: Row | undefined,
 ): unknown {
   switch (bind.kind) {
     case 'sql':
       return bind.value;
     case 'json':
-      return stringifyCypherJson(resolveValue(bind.value, options.params));
+      return stringifyCypherJson(resolveValue(bind.value, options.params, row));
     case 'properties': {
       const map: CypherMap = {};
       for (const { key, value } of bind.entries) {
-        const resolved = resolveValue(value, options.params);
+        const resolved = resolveValue(value, options.params, row);
         if (resolved !== null) {
+          checkPropertyValue(key, resolved);
           map[key] = resolved;
         }
       }
@@ -145,6 +180,7 @@ function resolveBind(
       const value = resolveValue(
         { kind: 'parameter', name: bind.name, position: bind.position },
         options.params,
+        row,
       );
       if (!isCypherMap(value)) {
         throw new SemanticError(`Parameter $${bind.name} must be a map of properties`, {
@@ -154,6 +190,7 @@ function resolveBind(
       const map: CypherMap = {};
       for (const [key, v] of Object.entries(value)) {
         if (v !== null) {
+          checkPropertyValue(key, v);
           map[key] = v;
         }
       }
@@ -165,12 +202,14 @@ function resolveBind(
       }
       return entityIds.get(bind.entity);
     }
+    case 'rowId':
+      return requireRow(row)[bind.column];
     case 'rowLimit': {
       const cap = BigInt(options.limits.maxRowsPerStep) + 1n;
       if (!bind.userLimit) {
         return cap;
       }
-      const value = resolveValue(bind.userLimit, options.params);
+      const value = resolveValue(bind.userLimit, options.params, row);
       const limit = typeof value === 'number' && Number.isInteger(value) ? BigInt(value) : value;
       if (typeof limit !== 'bigint' || limit < 0n) {
         throw new SemanticError('LIMIT must be a non-negative integer', {
@@ -182,14 +221,41 @@ function resolveBind(
   }
 }
 
-function resolveValue(source: ValueSource, params: Record<string, CypherValue>): CypherValue {
+function resolveValue(
+  source: ValueSource,
+  params: Record<string, CypherValue>,
+  row: Row | undefined,
+): CypherValue {
   if (source.kind === 'constant') {
     return source.value;
+  }
+  if (source.kind === 'row') {
+    return parseJsonColumn(requireRow(row)[source.column]);
   }
   if (!Object.hasOwn(params, source.name)) {
     throw new SemanticError(`Missing parameter $${source.name}`, { position: source.position });
   }
   return params[source.name] ?? null;
+}
+
+function requireRow(row: Row | undefined): Row {
+  if (!row) {
+    throw new Error('Internal error: a row value is bound outside a per-row step');
+  }
+  return row;
+}
+
+/** Property values are scalars or lists of scalars (Cypher has no map-valued properties). */
+function checkPropertyValue(key: string, value: CypherValue): void {
+  const items = Array.isArray(value) ? value : [value];
+  for (const item of items) {
+    if (item !== null && typeof item === 'object') {
+      throw new SemanticError(
+        `Property ${JSON.stringify(key)} cannot be set to a ${Array.isArray(item) ? 'nested list' : 'map, node, or relationship'}`,
+        { hint: 'Property values must be strings, numbers, booleans, or lists of those.' },
+      );
+    }
+  }
 }
 
 function assembleRecord(row: Row, columns: readonly ColumnSpec[]): Record<string, CypherValue> {
@@ -242,6 +308,8 @@ function describeBind(bind: BindValue): string {
       return `$${bind.name}`;
     case 'entityId':
       return `id(entity ${bind.entity})`;
+    case 'rowId':
+      return `row.${bind.column}`;
     case 'rowLimit':
       return bind.userLimit
         ? `limit(${describeSource(bind.userLimit)})`
@@ -250,5 +318,12 @@ function describeBind(bind: BindValue): string {
 }
 
 function describeSource(source: ValueSource): string {
-  return source.kind === 'parameter' ? `$${source.name}` : stringifyCypherJson(source.value);
+  switch (source.kind) {
+    case 'parameter':
+      return `$${source.name}`;
+    case 'row':
+      return `row.${source.column}`;
+    case 'constant':
+      return stringifyCypherJson(source.value);
+  }
 }

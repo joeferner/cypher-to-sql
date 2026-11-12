@@ -14,7 +14,16 @@ export interface Query extends Node {
   clauses: Clause[];
 }
 
-export type Clause = MatchClause | CreateClause | ReturnClause | UnsupportedClause;
+export type Clause = MatchClause | UnwindClause | CreateClause | ReturnClause | UnsupportedClause;
+
+/** Clauses that read rows (they come before any updating clause in a query part). */
+export type ReadingClause = MatchClause | UnwindClause;
+
+export interface UnwindClause extends Node {
+  type: 'Unwind';
+  expression: Expression;
+  variable: string;
+}
 
 export interface MatchClause extends Node {
   type: 'Match';

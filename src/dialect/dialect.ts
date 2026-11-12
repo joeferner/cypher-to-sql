@@ -31,4 +31,23 @@ export interface Dialect {
 
   /** Condition: the JSON array of strings `labelsExpr` contains the bound label. */
   hasLabel(labelsExpr: string, labelPlaceholder: string): string;
+
+  /**
+   * `UNWIND listExpr AS ...` as a FROM item named `alias`, cross-joined after the
+   * earlier FROM items (it may refer to them). `listExpr` is a JSON value. A list
+   * gives one row per element, in list order; a JSON `null` (or SQL NULL) gives no
+   * rows; any other value gives one row holding that value.
+   */
+  unwind(
+    listExpr: string,
+    alias: string,
+  ): {
+    from: string;
+    /** Condition the row must meet, if the dialect needs one. */
+    where: string | undefined;
+    /** JSON value of the element. */
+    value: string;
+    /** Expression that orders the rows in list order. */
+    order: string;
+  };
 }
