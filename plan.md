@@ -239,7 +239,7 @@ Release 1.0 is tiers 0\u20132 plus `OPTIONAL MATCH`, `WITH`, and `UNWIND` from t
 ## Project setup
 
 - TypeScript, ESM, Node LTS, strict mode. The core library has no runtime dependencies other than the ANTLR runtime. Database drivers (`pg`, `better-sqlite3`) are dev dependencies only.
-- Packages: `core` (parser, analysis, planning, assembler), `dialect-postgres`, `dialect-sqlite`, and `tck-harness` (dev only, includes the test executors).
+- One package. Dialects are exported from it (`sqlite()`, `postgres()`). The TCK harness and test executors live under `test/` and are not published.
 - CI: lint, type check, unit tests, the TCK allow-list on both dialects, and integration tests.
 - License the project so that it can include and run the Apache 2.0 TCK and grammar.
 
