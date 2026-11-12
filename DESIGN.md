@@ -100,23 +100,24 @@ The defaults are starting values, not measured ones (#16).
 
 ## Translation rules
 
-| Cypher                                                      | SQL                                                                                                                             |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Node pattern `(a:Label {k: v})`                             | Scan of the node table with label and property filters                                                                          |
-| Fixed relationship `-[r:T]->`                               | Join to the edge table on start and end ids                                                                                     |
-| Undirected `-[r]-`                                          | Join on either direction (`OR` or `UNION ALL`), without double counting                                                         |
-| Several relationship variables in one `MATCH`               | `r1.id <> r2.id` for each pair (relationship uniqueness)                                                                        |
-| `WHERE`                                                     | SQL expressions with Cypher null semantics and safe casts                                                                       |
-| `RETURN`, `DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT`           | Direct equivalents                                                                                                              |
-| Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`) | SQL aggregates; non-aggregated return items form the `GROUP BY`. `collect` is a JSON array aggregate with nulls removed.        |
-| Variable length `[*1..n]`                                   | Recursive CTE with visited-id arrays and a required upper bound, or iterative steps                                             |
-| `shortestPath` / `allShortestPaths`                         | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                     |
-| `nodes(p)`, `relationships(p)`, `length(p)`                 | Path id arrays, hydrated by the assembler                                                                                       |
-| `OPTIONAL MATCH`                                            | PostgreSQL: `LEFT JOIN LATERAL`. SQLite: `LEFT JOIN` with correlated conditions, or a separate step.                            |
-| `WITH`                                                      | CTE or subquery per stage, or a separate step for large stages                                                                  |
-| `UNWIND`                                                    | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position. |
-| Pattern predicates, `EXISTS { }`                            | `EXISTS (SELECT ...)`                                                                                                           |
-| `CREATE` (write mode)                                       | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`                                               |
+| Cypher                                                      | SQL                                                                                                                               |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Node pattern `(a:Label {k: v})`                             | Scan of the node table with label and property filters                                                                            |
+| Fixed relationship `-[r:T]->`                               | Join to the edge table on start and end ids                                                                                       |
+| Undirected `-[r]-`                                          | Join on either direction with `OR`. As in Cypher, a relationship matches once per orientation that fits (a self-loop once)        |
+| Several relationship patterns in one `MATCH`                | `r1.id <> r2.id` for each pair (relationship uniqueness), including anonymous ones and ones bound by an earlier clause            |
+| Inline property map `{k: v}` in `MATCH`                     | `Dialect.jsonEquals` per entry: numbers compare by value, a missing property or a null never matches. A parameter map is an error |
+| `WHERE`                                                     | SQL expressions with Cypher null semantics and safe casts                                                                         |
+| `RETURN`, `DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT`           | Direct equivalents                                                                                                                |
+| Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`) | SQL aggregates; non-aggregated return items form the `GROUP BY`. `collect` is a JSON array aggregate with nulls removed.          |
+| Variable length `[*1..n]`                                   | Recursive CTE with visited-id arrays and a required upper bound, or iterative steps                                               |
+| `shortestPath` / `allShortestPaths`                         | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                       |
+| `nodes(p)`, `relationships(p)`, `length(p)`                 | Path id arrays, hydrated by the assembler                                                                                         |
+| `OPTIONAL MATCH`                                            | PostgreSQL: `LEFT JOIN LATERAL`. SQLite: `LEFT JOIN` with correlated conditions, or a separate step.                              |
+| `WITH`                                                      | CTE or subquery per stage, or a separate step for large stages                                                                    |
+| `UNWIND`                                                    | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position.   |
+| Pattern predicates, `EXISTS { }`                            | `EXISTS (SELECT ...)`                                                                                                             |
+| `CREATE` (write mode)                                       | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`                                                 |
 
 ## Dialect differences
 
@@ -138,6 +139,7 @@ The defaults are starting values, not measured ones (#16).
 - **Mixed-type comparisons** return null in Cypher; SQL raises an error or converts.
 - **Sort order.** Cypher defines a global order across types. Pin null ordering explicitly.
 - **Strings.** Comparison is case sensitive. Use a binary collation explicitly.
+- **List equality on SQLite.** `jsonEquals` compares lists as minified JSON text, so `[1] = [1.0]` is false on SQLite but true on PostgreSQL (and in Cypher). Fix this with list comparison in #7.
 - **Unbounded paths.** `[*]` without an upper bound is capped by `maxPathDepth`.
 - **Row order.** `MATCH` order is undefined, but `UNWIND` order is defined, so plans with `UNWIND` order by every FROM item in clause order (nested-loop order).
 

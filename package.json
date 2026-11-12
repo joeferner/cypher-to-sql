@@ -30,6 +30,7 @@
     "prepare": "npm run build",
     "test": "vitest run",
     "test:tck:all": "npm run generate:parser && TCK_ALL=1 vitest run test/tck",
+    "tck:allow-list": "node --experimental-strip-types --no-warnings test/tck/update-allow-list.ts",
     "test:watch": "vitest",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down -v",

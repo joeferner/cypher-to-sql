@@ -27,6 +27,16 @@ export function sqlite(): Dialect {
     },
     hasLabel: (labelsExpr, labelPlaceholder) =>
       `EXISTS (SELECT 1 FROM json_each(${labelsExpr}) WHERE json_each.value = ${labelPlaceholder})`,
+    // Scalars compare as SQL values (`->> '$'`), which compares integers and reals
+    // by value and text with the BINARY collation; the type check keeps `true`
+    // from equaling `1`. Lists compare as minified JSON text, so `[1]` and `[1.0]`
+    // differ here (they are equal in Cypher).
+    jsonEquals: (left, right) =>
+      `(CASE WHEN json_type(${left}) IN ('integer', 'real') ` +
+      `THEN json_type(${right}) IN ('integer', 'real') AND (${left} ->> '$') = (${right} ->> '$') ` +
+      `WHEN json_type(${left}) IN ('array', 'object') ` +
+      `THEN json_type(${right}) = json_type(${left}) AND json(${left}) = json(${right}) ` +
+      `ELSE json_type(${left}) = json_type(${right}) AND (${left} ->> '$') = (${right} ->> '$') END)`,
     unwind: (listExpr, alias) => ({
       from: `json_each(${listExpr}) AS ${alias}`,
       // json_each of a scalar gives one row with a NULL key. Keep it, except for null.

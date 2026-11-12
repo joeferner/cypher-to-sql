@@ -7,6 +7,8 @@ import { constantValue, type SqlBuilder } from './sql-builder.js';
 export type Binding =
   /** A node: an alias of the node table. */
   | { kind: 'node'; alias: string }
+  /** A relationship: an alias of the edge table. */
+  | { kind: 'relationship'; alias: string }
   /** Any other value: a SQL expression of the dialect's JSON type. */
   | { kind: 'value'; sql: string };
 
@@ -66,48 +68,155 @@ export class ReadScope {
         position: match.where.position,
       });
     }
+    /** Edge aliases of this clause's relationships, for relationship uniqueness. */
+    const relationships: string[] = [];
+    /** Relationship variables bound by this clause. */
+    const boundHere = new Set<string>();
     for (const part of match.pattern) {
       if (part.variable !== undefined) {
         throw new UnsupportedFeatureError('Named paths are not supported yet', {
           position: part.position,
         });
       }
-      if (part.elements.length > 1) {
-        throw new UnsupportedFeatureError('Relationship patterns in MATCH are not supported yet', {
-          position: part.elements[1]!.position,
+      let left = this.matchNode(part.elements[0] as ast.NodePattern);
+      for (let i = 1; i < part.elements.length; i += 2) {
+        const right = this.matchNode(part.elements[i + 1] as ast.NodePattern);
+        const rel = part.elements[i] as ast.RelationshipPattern;
+        relationships.push(this.matchRelationship(rel, left, right, boundHere));
+        left = right;
+      }
+    }
+    // Within one MATCH, two relationship patterns never bind the same relationship.
+    const id = b.ident(b.mapping.edges.id);
+    for (let i = 0; i < relationships.length; i++) {
+      for (let j = i + 1; j < relationships.length; j++) {
+        this.where.push(`${relationships[i]}.${id} <> ${relationships[j]}.${id}`);
+      }
+    }
+  }
+
+  /** Binds or reuses the node of a node pattern, adds its filters, and returns its alias. */
+  private matchNode(node: ast.NodePattern): string {
+    const b = this.b;
+    let alias: string;
+    const existing = node.variable !== undefined ? this.bindings.get(node.variable) : undefined;
+    if (existing) {
+      if (existing.kind !== 'node') {
+        throw new SemanticError(`Variable \`${node.variable}\` is not a node`, {
+          position: node.position,
         });
       }
-      const node = part.elements[0] as ast.NodePattern;
-      if (node.properties) {
-        throw new UnsupportedFeatureError('Property maps in MATCH patterns are not supported yet', {
-          position: node.properties.position,
+      alias = existing.alias;
+    } else {
+      alias = `n${this.from.length}`;
+      this.from.push(`${b.table('nodes')} AS ${alias}`);
+      this.order.push(`${alias}.${b.ident(b.mapping.nodes.id)}`);
+      if (node.variable !== undefined) {
+        this.bindings.set(node.variable, { kind: 'node', alias });
+      }
+    }
+    for (const label of node.labels) {
+      this.where.push(
+        b.dialect.hasLabel(
+          `${alias}.${b.ident(b.mapping.nodes.labels)}`,
+          b.bind({ kind: 'sql', value: label }),
+        ),
+      );
+    }
+    this.matchProperties(`${alias}.${b.ident(b.mapping.nodes.properties)}`, node.properties);
+    return alias;
+  }
+
+  /**
+   * Binds or reuses the relationship of a relationship pattern between the nodes
+   * `left` and `right` (aliases, in pattern order), and returns its alias.
+   */
+  private matchRelationship(
+    rel: ast.RelationshipPattern,
+    left: string,
+    right: string,
+    boundHere: Set<string>,
+  ): string {
+    const b = this.b;
+    const edges = b.mapping.edges;
+    if (rel.range) {
+      throw new UnsupportedFeatureError('Variable-length relationships are not supported yet', {
+        position: rel.position,
+      });
+    }
+    let alias: string;
+    const existing = rel.variable !== undefined ? this.bindings.get(rel.variable) : undefined;
+    if (existing) {
+      if (existing.kind !== 'relationship') {
+        throw new SemanticError(`Variable \`${rel.variable}\` is not a relationship`, {
+          position: rel.position,
         });
       }
-      let alias: string;
-      const existing = node.variable !== undefined ? this.bindings.get(node.variable) : undefined;
-      if (existing) {
-        if (existing.kind !== 'node') {
-          throw new SemanticError(`Variable \`${node.variable}\` is not a node`, {
-            position: node.position,
-          });
-        }
-        alias = existing.alias;
-      } else {
-        alias = `n${this.from.length}`;
-        this.from.push(`${b.table('nodes')} AS ${alias}`);
-        this.order.push(`${alias}.${b.ident(b.mapping.nodes.id)}`);
-        if (node.variable !== undefined) {
-          this.bindings.set(node.variable, { kind: 'node', alias });
-        }
-      }
-      for (const label of node.labels) {
-        this.where.push(
-          b.dialect.hasLabel(
-            `${alias}.${b.ident(b.mapping.nodes.labels)}`,
-            b.bind({ kind: 'sql', value: label }),
-          ),
+      if (boundHere.has(rel.variable!)) {
+        throw new SemanticError(
+          `Relationship variable \`${rel.variable}\` is used for more than one relationship in the same MATCH`,
+          { position: rel.position },
         );
       }
+      // A relationship bound by an earlier clause: constrain it again.
+      alias = existing.alias;
+    } else {
+      alias = `e${this.from.length}`;
+      this.from.push(`${b.table('edges')} AS ${alias}`);
+      this.order.push(`${alias}.${b.ident(edges.id)}`);
+      if (rel.variable !== undefined) {
+        this.bindings.set(rel.variable, { kind: 'relationship', alias });
+        boundHere.add(rel.variable);
+      }
+    }
+
+    const start = `${alias}.${b.ident(edges.startId)}`;
+    const end = `${alias}.${b.ident(edges.endId)}`;
+    const nodeId = b.ident(b.mapping.nodes.id);
+    const outgoing = `${start} = ${left}.${nodeId} AND ${end} = ${right}.${nodeId}`;
+    const incoming = `${start} = ${right}.${nodeId} AND ${end} = ${left}.${nodeId}`;
+    if (rel.direction === 'right') {
+      this.where.push(outgoing);
+    } else if (rel.direction === 'left') {
+      this.where.push(incoming);
+    } else {
+      // Either direction. Each orientation that fits is its own row, as in Cypher:
+      // `(a)-[r]-(b)` matches a relationship twice, with a and b swapped, and a
+      // self-loop once.
+      this.where.push(`((${outgoing}) OR (${incoming}))`);
+    }
+
+    const types = [...new Set(rel.types)];
+    if (types.length > 0) {
+      const binds = types.map((type) => b.bind({ kind: 'sql', value: type }));
+      const type = `${alias}.${b.ident(edges.type)}`;
+      this.where.push(
+        binds.length === 1 ? `${type} = ${binds[0]}` : `${type} IN (${binds.join(', ')})`,
+      );
+    }
+    this.matchProperties(`${alias}.${b.ident(edges.properties)}`, rel.properties);
+    return alias;
+  }
+
+  /** Adds an equality filter for each entry of an inline property map `{k: v}`. */
+  private matchProperties(propertiesColumn: string, properties: ast.Expression | undefined): void {
+    if (!properties) {
+      return;
+    }
+    const b = this.b;
+    if (properties.type !== 'Map') {
+      throw new SemanticError('A parameter cannot be used as a property map in MATCH', {
+        position: properties.position,
+        hint: 'Write the properties out, for example (n {name: $name}).',
+      });
+    }
+    for (const { key, value } of properties.entries) {
+      const member = b.dialect.jsonMember(
+        propertiesColumn,
+        b.bind({ kind: 'sql', value: key }),
+        key,
+      );
+      this.where.push(b.dialect.jsonEquals(member, this.value(value)));
     }
   }
 
@@ -138,9 +247,10 @@ export class ReadScope {
     }
     if (expr.type === 'Variable') {
       const binding = this.lookup(expr);
-      if (binding.kind === 'node') {
+      if (binding.kind !== 'value') {
+        const what = binding.kind === 'node' ? 'Node' : 'Relationship';
         throw new UnsupportedFeatureError(
-          `Node \`${expr.name}\` cannot be used as a value here yet`,
+          `${what} \`${expr.name}\` cannot be used as a value here yet`,
           { position: expr.position },
         );
       }
@@ -150,10 +260,13 @@ export class ReadScope {
       let object: string;
       if (expr.subject.type === 'Variable') {
         const binding = this.lookup(expr.subject);
-        object =
-          binding.kind === 'node'
-            ? `${binding.alias}.${b.ident(b.mapping.nodes.properties)}`
-            : binding.sql;
+        if (binding.kind === 'node') {
+          object = `${binding.alias}.${b.ident(b.mapping.nodes.properties)}`;
+        } else if (binding.kind === 'relationship') {
+          object = `${binding.alias}.${b.ident(b.mapping.edges.properties)}`;
+        } else {
+          object = binding.sql;
+        }
       } else {
         object = this.value(expr.subject);
       }
@@ -272,6 +385,27 @@ export function planRead(
         kind: 'node',
         id: `${c}_id`,
         labels: `${c}_labels`,
+        properties: `${c}_props`,
+      });
+      continue;
+    }
+    if (binding?.kind === 'relationship') {
+      const edges = b.mapping.edges;
+      const col = (name: string): string => `${binding.alias}.${b.ident(name)}`;
+      select.push(
+        `${col(edges.id)} AS ${c}_id`,
+        `${col(edges.type)} AS ${c}_type`,
+        `${col(edges.startId)} AS ${c}_start`,
+        `${col(edges.endId)} AS ${c}_end`,
+        `${b.dialect.jsonText(col(edges.properties))} AS ${c}_props`,
+      );
+      columns.push({
+        name: item.name,
+        kind: 'relationship',
+        id: `${c}_id`,
+        type: `${c}_type`,
+        startId: `${c}_start`,
+        endId: `${c}_end`,
         properties: `${c}_props`,
       });
       continue;

@@ -18,6 +18,9 @@ export function postgres(): Dialect {
     // `@>` can use a GIN index on the labels column.
     hasLabel: (labelsExpr, labelPlaceholder) =>
       `(${labelsExpr} @> jsonb_build_array(${labelPlaceholder}::text))`,
+    // jsonb equality compares numbers by value, including inside lists. JSON null
+    // equals itself in jsonb, so exclude it.
+    jsonEquals: (left, right) => `(${left} = ${right} AND jsonb_typeof(${right}) <> 'null')`,
     unwind: (listExpr, alias) => ({
       // jsonb_array_elements raises an error for a non-array, so a scalar is a
       // separate branch. SQL NULL and JSON null give no rows.

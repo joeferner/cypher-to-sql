@@ -33,6 +33,13 @@ export interface Dialect {
   hasLabel(labelsExpr: string, labelPlaceholder: string): string;
 
   /**
+   * Condition that is true exactly when two JSON values are equal in Cypher:
+   * integers and floats compare by value (`1 = 1.0`), other types only with the
+   * same type. It is never true when either side is SQL NULL or JSON null.
+   */
+  jsonEquals(left: string, right: string): string;
+
+  /**
    * `UNWIND listExpr AS ...` as a FROM item named `alias`, cross-joined after the
    * earlier FROM items (it may refer to them). `listExpr` is a JSON value. A list
    * gives one row per element, in list order; a JSON `null` (or SQL NULL) gives no

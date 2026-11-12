@@ -4,7 +4,13 @@ import type { Limits } from './limits.js';
 import { LimitExceededError, SemanticError } from './errors.js';
 import { parseCypherJson, stringifyCypherJson } from './json.js';
 import { checkDeclaredType, type PropertyTypes } from './property-types.js';
-import { CypherNode, isCypherMap, type CypherMap, type CypherValue } from './values.js';
+import {
+  CypherNode,
+  CypherRelationship,
+  isCypherMap,
+  type CypherMap,
+  type CypherValue,
+} from './values.js';
 
 /**
  * A value bound to a SQL placeholder. Most are known when the query is compiled;
@@ -62,6 +68,15 @@ export interface PlanStep {
 /** How to build one result column from the SQL columns of the final step. */
 export type ColumnSpec =
   | { name: string; kind: 'node'; id: string; labels: string; properties: string }
+  | {
+      name: string;
+      kind: 'relationship';
+      id: string;
+      type: string;
+      startId: string;
+      endId: string;
+      properties: string;
+    }
   | { name: string; kind: 'json'; column: string };
 
 export interface CompiledPlan {
@@ -294,6 +309,18 @@ function assembleRecord(row: Row, columns: readonly ColumnSpec[]): Record<string
           : new CypherNode(
               idToString(id),
               parseJsonColumn(row[column.labels]) as string[],
+              parseJsonColumn(row[column.properties]) as CypherMap,
+            );
+    } else if (column.kind === 'relationship') {
+      const id = row[column.id];
+      record[column.name] =
+        id === null || id === undefined
+          ? null
+          : new CypherRelationship(
+              idToString(id),
+              String(row[column.type]),
+              idToString(row[column.startId]),
+              idToString(row[column.endId]),
               parseJsonColumn(row[column.properties]) as CypherMap,
             );
     } else {

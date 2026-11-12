@@ -98,6 +98,27 @@ INSERT INTO "nodes" ("id", "labels", "properties") VALUES ($1, ($2::jsonb), ($3:
 -- values: id(entity 0), ["N"], {v: row.r0}"
 `;
 
+exports[`postgres > read: MATCH (a)<-[:T|U]-(b)-[r]-(c) RETURN r.w 1`] = `
+"MATCH (a)<-[:T|U]-(b)-[r]-(c) RETURN r.w
+-- step 1
+SELECT ((e4."properties" -> $1::text))::text AS c0 FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 CROSS JOIN "edges" AS e2 CROSS JOIN "nodes" AS n3 CROSS JOIN "edges" AS e4 WHERE e2."start_id" = n1."id" AND e2."end_id" = n0."id" AND e2."type" IN ($2, $3) AND ((e4."start_id" = n1."id" AND e4."end_id" = n3."id") OR (e4."start_id" = n3."id" AND e4."end_id" = n1."id")) AND e2."id" <> e4."id" LIMIT $4
+-- values: "w", "T", "U", limit(maxRowsPerStep + 1)"
+`;
+
+exports[`postgres > read: MATCH (a)-[r]->(b) MATCH (b)-[r2]->(c), (c)-[r]->(a) RETURN r2 1`] = `
+"MATCH (a)-[r]->(b) MATCH (b)-[r2]->(c), (c)-[r]->(a) RETURN r2
+-- step 1
+SELECT e4."id" AS c0_id, e4."type" AS c0_type, e4."start_id" AS c0_start, e4."end_id" AS c0_end, (e4."properties")::text AS c0_props FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 CROSS JOIN "edges" AS e2 CROSS JOIN "nodes" AS n3 CROSS JOIN "edges" AS e4 WHERE e2."start_id" = n0."id" AND e2."end_id" = n1."id" AND e4."start_id" = n1."id" AND e4."end_id" = n3."id" AND e2."start_id" = n3."id" AND e2."end_id" = n0."id" AND e4."id" <> e2."id" LIMIT $1
+-- values: limit(maxRowsPerStep + 1)"
+`;
+
+exports[`postgres > read: MATCH (a:A {k: 1})-[r:T {w: $w}]->(b) RETURN a, r, b 1`] = `
+"MATCH (a:A {k: 1})-[r:T {w: $w}]->(b) RETURN a, r, b
+-- step 1
+SELECT n0."id" AS c0_id, (n0."labels")::text AS c0_labels, (n0."properties")::text AS c0_props, e2."id" AS c1_id, e2."type" AS c1_type, e2."start_id" AS c1_start, e2."end_id" AS c1_end, (e2."properties")::text AS c1_props, n1."id" AS c2_id, (n1."labels")::text AS c2_labels, (n1."properties")::text AS c2_props FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 CROSS JOIN "edges" AS e2 WHERE (n0."labels" @> jsonb_build_array($1::text)) AND ((n0."properties" -> $2::text) = ($3::jsonb) AND jsonb_typeof(($4::jsonb)) <> 'null') AND e2."start_id" = n0."id" AND e2."end_id" = n1."id" AND e2."type" = $5 AND ((e2."properties" -> $6::text) = ($7::jsonb) AND jsonb_typeof(($8::jsonb)) <> 'null') LIMIT $9
+-- values: "A", "k", 1, 1, "T", "w", $w, $w, limit(maxRowsPerStep + 1)"
+`;
+
 exports[`postgres > read: MATCH (a:A), (b) RETURN * 1`] = `
 "MATCH (a:A), (b) RETURN *
 -- step 1
@@ -243,6 +264,27 @@ SELECT ((CASE u0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'fals
 -- step 2 (for each source row)
 INSERT INTO "nodes" ("id", "labels", "properties") VALUES (?, ?, ?)
 -- values: id(entity 0), ["N"], {v: row.r0}"
+`;
+
+exports[`sqlite > read: MATCH (a)<-[:T|U]-(b)-[r]-(c) RETURN r.w 1`] = `
+"MATCH (a)<-[:T|U]-(b)-[r]-(c) RETURN r.w
+-- step 1
+SELECT (e4."properties" -> ('$."' || ? || '"')) AS c0 FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 CROSS JOIN "edges" AS e2 CROSS JOIN "nodes" AS n3 CROSS JOIN "edges" AS e4 WHERE e2."start_id" = n1."id" AND e2."end_id" = n0."id" AND e2."type" IN (?, ?) AND ((e4."start_id" = n1."id" AND e4."end_id" = n3."id") OR (e4."start_id" = n3."id" AND e4."end_id" = n1."id")) AND e2."id" <> e4."id" LIMIT ?
+-- values: "w", "T", "U", limit(maxRowsPerStep + 1)"
+`;
+
+exports[`sqlite > read: MATCH (a)-[r]->(b) MATCH (b)-[r2]->(c), (c)-[r]->(a) RETURN r2 1`] = `
+"MATCH (a)-[r]->(b) MATCH (b)-[r2]->(c), (c)-[r]->(a) RETURN r2
+-- step 1
+SELECT e4."id" AS c0_id, e4."type" AS c0_type, e4."start_id" AS c0_start, e4."end_id" AS c0_end, e4."properties" AS c0_props FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 CROSS JOIN "edges" AS e2 CROSS JOIN "nodes" AS n3 CROSS JOIN "edges" AS e4 WHERE e2."start_id" = n0."id" AND e2."end_id" = n1."id" AND e4."start_id" = n1."id" AND e4."end_id" = n3."id" AND e2."start_id" = n3."id" AND e2."end_id" = n0."id" AND e4."id" <> e2."id" LIMIT ?
+-- values: limit(maxRowsPerStep + 1)"
+`;
+
+exports[`sqlite > read: MATCH (a:A {k: 1})-[r:T {w: $w}]->(b) RETURN a, r, b 1`] = `
+"MATCH (a:A {k: 1})-[r:T {w: $w}]->(b) RETURN a, r, b
+-- step 1
+SELECT n0."id" AS c0_id, n0."labels" AS c0_labels, n0."properties" AS c0_props, e2."id" AS c1_id, e2."type" AS c1_type, e2."start_id" AS c1_start, e2."end_id" AS c1_end, e2."properties" AS c1_props, n1."id" AS c2_id, n1."labels" AS c2_labels, n1."properties" AS c2_props FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 CROSS JOIN "edges" AS e2 WHERE EXISTS (SELECT 1 FROM json_each(n0."labels") WHERE json_each.value = ?) AND (CASE WHEN json_type((n0."properties" -> ('$."' || ? || '"'))) IN ('integer', 'real') THEN json_type(?) IN ('integer', 'real') AND ((n0."properties" -> ('$."' || ? || '"')) ->> '$') = (? ->> '$') WHEN json_type((n0."properties" -> ('$."' || ? || '"'))) IN ('array', 'object') THEN json_type(?) = json_type((n0."properties" -> ('$."' || ? || '"'))) AND json((n0."properties" -> ('$."' || ? || '"'))) = json(?) ELSE json_type((n0."properties" -> ('$."' || ? || '"'))) = json_type(?) AND ((n0."properties" -> ('$."' || ? || '"')) ->> '$') = (? ->> '$') END) AND e2."start_id" = n0."id" AND e2."end_id" = n1."id" AND e2."type" = ? AND (CASE WHEN json_type((e2."properties" -> ('$."' || ? || '"'))) IN ('integer', 'real') THEN json_type(?) IN ('integer', 'real') AND ((e2."properties" -> ('$."' || ? || '"')) ->> '$') = (? ->> '$') WHEN json_type((e2."properties" -> ('$."' || ? || '"'))) IN ('array', 'object') THEN json_type(?) = json_type((e2."properties" -> ('$."' || ? || '"'))) AND json((e2."properties" -> ('$."' || ? || '"'))) = json(?) ELSE json_type((e2."properties" -> ('$."' || ? || '"'))) = json_type(?) AND ((e2."properties" -> ('$."' || ? || '"')) ->> '$') = (? ->> '$') END) LIMIT ?
+-- values: "A", "k", 1, "k", 1, "k", 1, "k", "k", 1, "k", 1, "k", 1, "T", "w", $w, "w", $w, "w", $w, "w", "w", $w, "w", $w, "w", $w, limit(maxRowsPerStep + 1)"
 `;
 
 exports[`sqlite > read: MATCH (a:A), (b) RETURN * 1`] = `

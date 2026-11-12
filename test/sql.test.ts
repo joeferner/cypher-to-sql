@@ -16,6 +16,9 @@ const readQueries = [
   'UNWIND [1, 2] AS x RETURN x',
   'UNWIND $lists AS l UNWIND l AS x MATCH (n:N) RETURN n.k, x LIMIT $max',
   'UNWIND [{a: {b: 1}}] AS m RETURN m.a.b',
+  'MATCH (a:A {k: 1})-[r:T {w: $w}]->(b) RETURN a, r, b',
+  'MATCH (a)<-[:T|U]-(b)-[r]-(c) RETURN r.w',
+  'MATCH (a)-[r]->(b) MATCH (b)-[r2]->(c), (c)-[r]->(a) RETURN r2',
 ];
 
 const writeQueries = [
