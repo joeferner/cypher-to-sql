@@ -1,0 +1,19 @@
+node_modules/
+tmp/
+dist/
+
+# Generated docs (API reference + VitePress build output)
+docs/api/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
+# Ad-hoc generated output from examples (default filenames / generated client)
+examples/**/swagger.json
+examples/**/contract.json
+examples/**/api.gen.ts
+examples/**/api.validated.gen.ts
+# ...but keep the committed snapshots used by verify.sh
+!examples/**/__snapshots__/swagger.json
+!examples/**/__snapshots__/contract.json
+!examples/**/__snapshots__/api.gen.ts
+!examples/**/__snapshots__/api.validated.gen.ts

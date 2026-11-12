@@ -1,0 +1,50 @@
+{
+  "name": "cypher-to-sql",
+  "version": "0.1.0",
+  "description": "Executes Cypher on a SQL database",
+  "license": "MIT",
+  "author": "Joe Ferner <joe@fernsroth.com>",
+  "homepage": "https://joeferner.github.io/cypher-to-sql/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joeferner/cypher-to-sql.git"
+  },
+  "bugs": {
+    "url": "https://github.com/joeferner/cypher-to-sql/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "pre-commit": "npm run format && npm run lint && npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.6",
+    "eslint": "^10.14.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-unused-imports": "^4.4.1",
+    "prettier": "^3.10.1",
+    "typescript": "6.x",
+    "typescript-eslint": "^8.72.2",
+    "vitest": "^5.1.0"
+  }
+}
