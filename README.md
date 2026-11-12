@@ -6,7 +6,7 @@ Run [openCypher](https://opencypher.org/) queries against a property graph store
 - **Read-only by default.** A read-only graph can only emit `SELECT`, and every literal becomes a bind parameter.
 - **Bring your own driver.** The library has no runtime dependency on a database driver.
 
-> **Status:** early development. Only a small subset of Cypher works today, and only on SQLite (PostgreSQL support is planned). Any unsupported construct fails with an `UnsupportedFeatureError`. See [plan.md](plan.md) for the roadmap and [GitHub issues](https://github.com/joeferner/cypher-to-sql/issues) for progress.
+> **Status:** early development. Only a small subset of Cypher works today, and only on SQLite (PostgreSQL support is planned). Any unsupported construct fails with an `UnsupportedFeatureError`. See [DESIGN.md](DESIGN.md) for how it works and [GitHub issues](https://github.com/joeferner/cypher-to-sql/issues) for the roadmap and progress.
 
 ## Usage
 

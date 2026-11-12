@@ -1,0 +1,149 @@
+# Design
+
+How cypher-to-sql works and the rules it keeps. For the roadmap and progress, see the [GitHub issues and milestones](https://github.com/joeferner/cypher-to-sql/milestones).
+
+## Scope
+
+Version 1 runs read-only openCypher on PostgreSQL (including managed PostgreSQL such as RDS and Aurora, where graph extensions are not available) and SQLite. `CREATE` is available behind an explicit write mode, mainly so that the TCK can build its test graphs with the library itself. Coverage grows feature by feature, and every unsupported construct fails with a clear `UnsupportedFeatureError`.
+
+**Non-goals:** procedures (`CALL`), APOC, vendor-specific functions, and `LOAD CSV`. Managing application schemas: the library reads a mapping and never creates application tables. Database drivers, connections, and pooling: the caller runs the SQL with their own driver, and the library has no runtime dependency on any driver.
+
+Generated queries (for example, from an LLM) are a main use case. Error messages therefore say what is unsupported and, where possible, give a `hint` with a rewrite, so that an automated retry loop can fix the query.
+
+## Architecture
+
+```
+Cypher text
+  → Parser (official openCypher ANTLR4 grammar, antlr4ng runtime)
+  → AST (typed, positions kept; unsupported constructs stay as explicit nodes)
+  → Mode and feature gate (read mode rejects writes; unsupported constructs are rejected)
+  → Planner (read planner; write planner only on write graphs)
+  → Dialect (PostgreSQL, SQLite)
+  → Executor (one transaction) → Result assembler → Cypher values
+```
+
+- Never parse Cypher with regular expressions. The grammar is pinned in `grammar/Cypher.g4` and regenerated on purpose.
+- The planner never writes database-specific SQL. All dialect-specific syntax goes through the `Dialect` interface. Supporting two dialects from the start keeps that boundary honest.
+- One package. The TCK harness and the test executors live under `test/` and are not published.
+
+## Security model
+
+- Every literal and parameter becomes a bind value. Identifiers come only from the mapping, and `validateMapping` requires each one to be a plain SQL identifier. Query text never becomes SQL text.
+- `readOnly` (the default is true) is enforced twice. The gate rejects write clauses in the AST, and a graph made with `readOnly: true` has no write planner at all, so even a bug in the gate cannot produce an `INSERT`.
+- The executor's transaction mode comes from the plan, not from the flag. A query without write clauses runs in a `'read'` transaction even on a write graph.
+
+### Guidance for callers
+
+- Keep `readOnly: true` for any graph that runs user-supplied or generated queries. Give its executor a database role (PostgreSQL) or a read-only connection (SQLite, or `PRAGMA query_only`) that can only read the mapped tables.
+- For writes, make a separate graph with `readOnly: false` and a separate executor that can write. Never pass that graph untrusted queries.
+- Set a statement timeout in the executor (for example, PostgreSQL `statement_timeout`), and keep the library's limits at or below the defaults.
+- Treat the library's read-only gate as one layer of defense, not the only one.
+
+## Execution model
+
+A query compiles to a plan of one or more SQL steps (`graph.compile(cypher).explain()` shows them). One statement is the default. The planner uses more than one step when that is faster or simpler:
+
+- **Shortest path:** breadth-first search with one step per depth, which stops as soon as it reaches the target. A recursive CTE cannot stop early in the same way.
+- **Entity hydration:** first find matching ids, then fetch full nodes and relationships in one batched step.
+- **Large `WITH` stages:** materialize an intermediate result once instead of repeating it.
+- **Writes after reading clauses:** a source `SELECT` runs first, then the `CREATE` inserts run once per source row (`perRow` steps). The source is fully read before any insert, so new entities are never matched by the same query.
+
+Rules:
+
+- All steps of a query run in **one transaction**, so every step sees the same data. PostgreSQL uses `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY` for reads. SQLite uses one read transaction on a read-only connection (or with `PRAGMA query_only`).
+- Intermediate results pass to the next step as **bound arrays**, never temp tables, because PostgreSQL does not allow `CREATE TEMP TABLE` in a read-only transaction. PostgreSQL uses `= ANY($1)`; SQLite uses `IN (SELECT value FROM json_each(?))`.
+- **Results are assembled in TypeScript.** Each step selects whatever column shape is easiest (ids, JSON text). The assembler builds the Cypher values. JSON values always cross the driver boundary as JSON text, so the int/float distinction survives on every driver.
+
+## Storage layout (generic)
+
+| Table | Columns                                                               |
+| ----- | --------------------------------------------------------------------- |
+| Nodes | id, labels (JSON array), properties (JSON object)                     |
+| Edges | id, start node id, end node id, type (text), properties (JSON object) |
+
+- JSON is `jsonb` on PostgreSQL and JSON text on SQLite (JSON1 functions).
+- The mapping configures table and column names and an optional schema, so one mapping can serve many isolated graphs.
+- Integers are stored without a decimal point (`1`) and floats always with one (`1.0`), so they read back as `bigint` and `number`.
+- Recommended indexes: edge start id, edge end id, edge type, plus expression or GIN indexes for frequently filtered properties.
+- Planned: optional declared property types (`string`, `integer`, `float`, `boolean`, `date`, `datetime`) for casts out of JSON (#5), and later a typed layout with one table per label (#26).
+
+## Ids (write mode)
+
+- `{ kind: 'database' }` (the default): the database generates ids. Each `INSERT` uses `RETURNING id` so that later parts of the pattern can refer to the new entity. PostgreSQL does not guarantee row order for a multi-row `RETURNING`, so this mode inserts one entity per statement. Speed is not a goal for `CREATE`.
+- `{ kind: 'generator', generate }`: the library calls the caller's function before inserting, so it knows every id up front.
+- Ids supplied as properties in a query are ordinary properties. They never replace the internal id.
+
+## Limits
+
+Set for each graph; a query can lower them but never raise them. Exceeding a limit raises `LimitExceededError`. Results are never silently truncated.
+
+| Limit                | Default | Behavior                                                                                           |
+| -------------------- | ------- | -------------------------------------------------------------------------------------------------- |
+| `maxPathDepth`       | 10      | Upper bound for `[*]` and `[*n..]`. An explicit upper bound above it is rejected.                  |
+| `maxRowsPerStep`     | 100,000 | Each step runs with `LIMIT maxRowsPerStep + 1`; getting the extra row means the limit is exceeded. |
+| `maxResultRows`      | 10,000  | Final records. The hint suggests adding `LIMIT`.                                                   |
+| `maxFrontierSize`    | 100,000 | Ids carried from one breadth-first search step to the next.                                        |
+| `maxSteps`           | 32      | SQL steps in one read plan, including breadth-first search depths.                                 |
+| `timeoutMs`          | 30,000  | Total wall-clock time, checked between steps. Timeouts for single statements belong to the caller. |
+| `maxCreatedEntities` | 100,000 | Nodes plus relationships created by one query, checked against all source rows before any insert.  |
+
+The defaults are starting values, not measured ones (#16).
+
+## Translation rules
+
+| Cypher                                                      | SQL                                                                                                                             |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Node pattern `(a:Label {k: v})`                             | Scan of the node table with label and property filters                                                                          |
+| Fixed relationship `-[r:T]->`                               | Join to the edge table on start and end ids                                                                                     |
+| Undirected `-[r]-`                                          | Join on either direction (`OR` or `UNION ALL`), without double counting                                                         |
+| Several relationship variables in one `MATCH`               | `r1.id <> r2.id` for each pair (relationship uniqueness)                                                                        |
+| `WHERE`                                                     | SQL expressions with Cypher null semantics and safe casts                                                                       |
+| `RETURN`, `DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT`           | Direct equivalents                                                                                                              |
+| Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`) | SQL aggregates; non-aggregated return items form the `GROUP BY`. `collect` is a JSON array aggregate with nulls removed.        |
+| Variable length `[*1..n]`                                   | Recursive CTE with visited-id arrays and a required upper bound, or iterative steps                                             |
+| `shortestPath` / `allShortestPaths`                         | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                     |
+| `nodes(p)`, `relationships(p)`, `length(p)`                 | Path id arrays, hydrated by the assembler                                                                                       |
+| `OPTIONAL MATCH`                                            | PostgreSQL: `LEFT JOIN LATERAL`. SQLite: `LEFT JOIN` with correlated conditions, or a separate step.                            |
+| `WITH`                                                      | CTE or subquery per stage, or a separate step for large stages                                                                  |
+| `UNWIND`                                                    | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position. |
+| Pattern predicates, `EXISTS { }`                            | `EXISTS (SELECT ...)`                                                                                                           |
+| `CREATE` (write mode)                                       | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`                                               |
+
+## Dialect differences
+
+| Topic                 | PostgreSQL                                             | SQLite                                                                                |
+| --------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| Correlated joins      | `LATERAL`                                              | No `LATERAL`. Use correlated subqueries, table-valued `json_each`, or separate steps. |
+| Arrays                | Native arrays and `jsonb`                              | JSON text only                                                                        |
+| Path cycle check      | Array containment on the path                          | `instr` or `json_each` on a JSON path string                                          |
+| Typing                | Strict; a failed cast raises an error                  | Type affinity; values can change type silently                                        |
+| `LIKE`                | Case sensitive                                         | Case-insensitive for ASCII. Use `instr` / `substr` for `CONTAINS` and `STARTS WITH`.  |
+| Read-only enforcement | `READ ONLY` transaction plus a role with only `SELECT` | Read-only connection or `PRAGMA query_only`                                           |
+| Integer size          | `bigint`, with overflow errors                         | 64-bit integers; overflow silently becomes a float                                    |
+
+## Semantics that need care
+
+- **Nulls.** Cypher and SQL mostly agree on three-valued logic. Lists, maps, and `IN` with nulls do not always agree. Test each case.
+- **Failed casts** return null in Cypher. Use safe-cast helpers in both dialects.
+- **Numbers.** Integer division truncates, and integer overflow is an error. Map both exactly in each dialect.
+- **Mixed-type comparisons** return null in Cypher; SQL raises an error or converts.
+- **Sort order.** Cypher defines a global order across types. Pin null ordering explicitly.
+- **Strings.** Comparison is case sensitive. Use a binary collation explicitly.
+- **Unbounded paths.** `[*]` without an upper bound is capped by `maxPathDepth`.
+- **Row order.** `MATCH` order is undefined, but `UNWIND` order is defined, so plans with `UNWIND` order by every FROM item in clause order (nested-loop order).
+
+## Testing
+
+- **openCypher TCK** (`vendor/openCypher`, pinned submodule). `test/tck` parses the Gherkin features with `@cucumber/gherkin` and generates one vitest test per scenario and dialect. Setup runs on a write graph; the query runs on a read-only graph, which also tests the gate on every scenario. A scenario that hits an unsupported feature is skipped with that reason. `test/tck/allow-list.json` lists the scenarios that must pass, by dialect.
+- **Unit tests** for each stage, and emitted-SQL snapshots per dialect (#4).
+- **Differential tests** against a reference engine such as Neo4j (#20). When results differ, the TCK decides which side is wrong.
+- **Benchmarks** on reference graphs, focused on variable-length and shortest-path queries (#15).
+- Treat a difference between the two dialects on the same scenario as a failure.
+
+## Risks
+
+- **Path search performance** on dense or large graphs. Mitigated by required depth bounds, row caps, multi-step search, indexes on start and end ids, and benchmarks.
+- **Semantic drift** from a graph database (nulls, ordering, duplicate rows). Mitigated by the TCK and differential tests.
+- **Dialect divergence** from SQLite's loose typing and missing `LATERAL`. Mitigated by running every TCK scenario on both dialects.
+- **Consistency across steps** depends on the caller's executor running every step in one transaction. The executor interface requires a transaction, and the example executors show the isolation level.
+- **Scope growth toward full Cypher.** Mitigated by the feature gate and the non-goals.
