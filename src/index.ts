@@ -6,6 +6,7 @@ export * from './errors.js';
 export type { SqlExecutor, SqlTx, Row } from './executor.js';
 export { defaultLimits, type Limits } from './limits.js';
 export { defaultMapping, type GraphMapping } from './mapping.js';
+export { PROPERTY_TYPES, type PropertyType, type PropertyTypes } from './property-types.js';
 export type { CompiledPlan, PlanStep, BindValue } from './plan.js';
 export type { IdStrategy } from './planner/write.js';
 export type { Dialect } from './dialect/dialect.js';

@@ -65,7 +65,16 @@ Rules:
 - The mapping configures table and column names and an optional schema, so one mapping can serve many isolated graphs.
 - Integers are stored without a decimal point (`1`) and floats always with one (`1.0`), so they read back as `bigint` and `number`.
 - Recommended indexes: edge start id, edge end id, edge type, plus expression or GIN indexes for frequently filtered properties.
-- Planned: optional declared property types (`string`, `integer`, `float`, `boolean`, `date`, `datetime`) for casts out of JSON (#5), and later a typed layout with one table per label (#26).
+- Integers read back from JSON outside the 64-bit range are floats (`jsonb` prints `1e308` as plain digits).
+- Later: a typed layout with one table per label (#26).
+
+### Declared property types
+
+`mapping.nodes.propertyTypes` and `mapping.edges.propertyTypes` declare a type for a property key: `string`, `integer`, `float`, `boolean`, `date` (ISO 8601 `YYYY-MM-DD`), or `datetime` (ISO 8601 with a time zone). Temporal values are stored as strings. A type applies to the key across every label (or relationship type), which matches the generic layout: one expression index on a key covers the whole table, and a node with several labels cannot get conflicting types.
+
+- **Writes:** `CREATE` rejects a non-null value that does not have the declared type, with a `SemanticError` and a hint. There is no conversion (`1` is not a float). Values are checked at run time, so literals, parameters, and values from `MATCH`/`UNWIND` rows are all covered. Undeclared keys accept any property value.
+- **Reads:** the planner can therefore cast a declared property out of JSON without a type check. `WHERE` and `ORDER BY` (#7, #8) will use these typed expressions, which also lets them use expression indexes. Undeclared properties keep Cypher's comparison rules, with mixed types comparing as null.
+- Data written to the tables by something other than this library is not checked. Add `CHECK` constraints if other writers exist.
 
 ## Ids (write mode)
 

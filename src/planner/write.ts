@@ -126,7 +126,7 @@ export class WritePlanner {
             { kind: 'json', value: { kind: 'constant', value: labels } },
             true,
           ],
-          [this.mapping.nodes.properties, this.properties(node.properties, valueOf), true],
+          [this.mapping.nodes.properties, this.properties('nodes', node.properties, valueOf), true],
         ]),
       );
       return id;
@@ -171,7 +171,7 @@ export class WritePlanner {
               [edges.startId, start, false],
               [edges.endId, end, false],
               [edges.type, { kind: 'sql', value: rel.types[0]! }, false],
-              [edges.properties, this.properties(rel.properties, valueOf), true],
+              [edges.properties, this.properties('edges', rel.properties, valueOf), true],
             ]),
           );
           previous = next;
@@ -200,14 +200,17 @@ export class WritePlanner {
   }
 
   private properties(
+    kind: 'nodes' | 'edges',
     expr: ast.Expression | undefined,
     valueOf: (expr: ast.Expression) => ValueSource,
   ): BindValue {
+    // Declared types are checked when the values are known, at run time.
+    const types = this.mapping[kind].propertyTypes;
     if (!expr) {
-      return { kind: 'properties', entries: [] };
+      return { kind: 'properties', entries: [], types };
     }
     if (expr.type === 'Parameter') {
-      return { kind: 'propertiesParameter', name: expr.name, position: expr.position };
+      return { kind: 'propertiesParameter', name: expr.name, position: expr.position, types };
     }
     if (expr.type !== 'Map') {
       throw new UnsupportedFeatureError('Properties must be a map literal or a parameter', {
@@ -222,6 +225,7 @@ export class WritePlanner {
         }
         return { key, value: valueOf(value) };
       }),
+      types,
     };
   }
 

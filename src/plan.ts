@@ -3,6 +3,7 @@ import type { Row, SqlExecutor } from './executor.js';
 import type { Limits } from './limits.js';
 import { LimitExceededError, SemanticError } from './errors.js';
 import { parseCypherJson, stringifyCypherJson } from './json.js';
+import { checkDeclaredType, type PropertyTypes } from './property-types.js';
 import { CypherNode, isCypherMap, type CypherMap, type CypherValue } from './values.js';
 
 /**
@@ -15,9 +16,21 @@ export type BindValue =
   | { kind: 'sql'; value: string | number | bigint }
   /** A Cypher value or query parameter, bound as JSON text. */
   | { kind: 'json'; value: ValueSource }
-  /** A property map for a new entity, bound as JSON text with null members removed. */
-  | { kind: 'properties'; entries: { key: string; value: ValueSource }[] }
-  | { kind: 'propertiesParameter'; name: string; position: SourcePosition }
+  /**
+   * A property map for a new entity, bound as JSON text with null members removed.
+   * Values of keys in `types` must have the declared type.
+   */
+  | {
+      kind: 'properties';
+      entries: { key: string; value: ValueSource }[];
+      types: PropertyTypes | undefined;
+    }
+  | {
+      kind: 'propertiesParameter';
+      name: string;
+      position: SourcePosition;
+      types: PropertyTypes | undefined;
+    }
   /** The id of an entity created earlier in the same plan (in the same source row). */
   | { kind: 'entityId'; entity: number }
   /** A column of the current source row, bound as is (for example the id of a matched node). */
@@ -170,7 +183,7 @@ function resolveBind(
       for (const { key, value } of bind.entries) {
         const resolved = resolveValue(value, options.params, row);
         if (resolved !== null) {
-          checkPropertyValue(key, resolved);
+          checkPropertyValue(key, resolved, bind.types);
           map[key] = resolved;
         }
       }
@@ -190,7 +203,7 @@ function resolveBind(
       const map: CypherMap = {};
       for (const [key, v] of Object.entries(value)) {
         if (v !== null) {
-          checkPropertyValue(key, v);
+          checkPropertyValue(key, v, bind.types);
           map[key] = v;
         }
       }
@@ -245,8 +258,20 @@ function requireRow(row: Row | undefined): Row {
   return row;
 }
 
-/** Property values are scalars or lists of scalars (Cypher has no map-valued properties). */
-function checkPropertyValue(key: string, value: CypherValue): void {
+/**
+ * Property values are scalars or lists of scalars (Cypher has no map-valued
+ * properties), and a declared property has its declared type.
+ */
+function checkPropertyValue(
+  key: string,
+  value: CypherValue,
+  types: PropertyTypes | undefined,
+): void {
+  const declared = types && Object.hasOwn(types, key) ? types[key] : undefined;
+  if (declared) {
+    checkDeclaredType(key, value, declared);
+    return;
+  }
   const items = Array.isArray(value) ? value : [value];
   for (const item of items) {
     if (item !== null && typeof item === 'object') {
