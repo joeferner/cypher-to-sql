@@ -109,7 +109,17 @@ export type Expression =
   | NegateExpression
   | IsNullExpression
   | HasLabelsExpression
+  | FunctionCall
   | UnsupportedExpression;
+
+/** `name(args)`, `ns.name(args)`, `name(DISTINCT args)`. */
+export interface FunctionCall extends Node {
+  type: 'FunctionCall';
+  /** As written, with the namespace (`ns.name`). Function names are case-insensitive. */
+  name: string;
+  distinct: boolean;
+  args: Expression[];
+}
 
 export type BooleanOperator = 'OR' | 'XOR' | 'AND';
 export type ComparisonOperator = '=' | '<>' | '<' | '<=' | '>' | '>=';

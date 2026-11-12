@@ -82,6 +82,55 @@ export function postgres(): Dialect {
     contains: (string, part) => `(strpos(${string}, ${part}) > 0)`,
     power: (base, exponent) =>
       `power((${base})::double precision, (${exponent})::double precision)`,
+    // Set-returning JSON functions fail on the wrong type, so their inputs are
+    // guarded (see fromJson).
+    jsonKeys: (map) =>
+      `(SELECT COALESCE(jsonb_agg(k ORDER BY k), '[]'::jsonb) FROM jsonb_object_keys(` +
+      `CASE WHEN jsonb_typeof(${map}) = 'object' THEN ${map} END) AS k)`,
+    jsonElement: (list, index) => `(${list} -> (${index})::int)`,
+    jsonTail: (list) => `(CASE WHEN jsonb_typeof(${list}) = 'array' THEN ${list} - 0 END)`,
+    reverseList: (list) =>
+      `(SELECT COALESCE(jsonb_agg(e.value ORDER BY e.i DESC), '[]'::jsonb) FROM jsonb_array_elements(` +
+      `CASE WHEN jsonb_typeof(${list}) = 'array' THEN ${list} END) WITH ORDINALITY AS e(value, i))`,
+    reverseString: (string) => `reverse(${string})`,
+    range: (start, end, step) =>
+      `(SELECT COALESCE(jsonb_agg(g.v ORDER BY g.i), '[]'::jsonb) FROM generate_series(` +
+      `(${start})::bigint, (${end})::bigint, (${step})::bigint) WITH ORDINALITY AS g(v, i))`,
+    // string_to_array('', ',') is empty, but split('', ',') is [''].
+    split: (string, delimiter) =>
+      `(CASE WHEN ${string} = '' THEN '[""]'::jsonb ELSE to_jsonb(string_to_array(${string}, ${delimiter})) END)`,
+    stringLength: (string) => `char_length(${string})`,
+    substring: (string, start, length) =>
+      `substr(${string}, (${start})::int + 1${length === undefined ? '' : `, (${length})::int`})`,
+    rightString: (string, count) => `right(${string}, (${count})::int)`,
+    // Casts are guarded so that they never fail (see fromJson).
+    parseNumber: (string, type): string => {
+      const int = `'^\\s*[+-]?[0-9]+\\s*$'`;
+      const num = `'^\\s*[+-]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][+-]?[0-9]+)?\\s*$'`;
+      const float = `(CASE WHEN ${string} ~ ${num} THEN trim(${string}) END)::double precision`;
+      return type === 'float'
+        ? float
+        : `COALESCE((CASE WHEN ${string} ~ ${int} THEN trim(${string}) END)::bigint, trunc(${float})::bigint)`;
+    },
+    toFloat: (number) => `(${number})::double precision`,
+    truncate: (float) => `trunc(${float})::bigint`,
+    math: (name, args): string => {
+      const f = args.map((a) => `(${a})::double precision`);
+      switch (name) {
+        case 'log':
+          return `ln(${f[0]})`;
+        case 'log10':
+          return `log(${f[0]})`;
+        case 'e':
+          return 'exp(1::double precision)';
+        case 'pi':
+          return 'pi()';
+        case 'rand':
+          return 'random()';
+        default:
+          return `${name}(${f.join(', ')})`;
+      }
+    },
     floatDivide: (dividend, divisor) =>
       `(CASE WHEN ${divisor} = 0 THEN CASE WHEN ${dividend} > 0 THEN 'Infinity'::float8 ` +
       `WHEN ${dividend} < 0 THEN '-Infinity'::float8 ELSE 'NaN'::float8 END ` +

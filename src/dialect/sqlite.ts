@@ -56,6 +56,67 @@ export function sqlite(): Dialect {
       `WHEN length(${suffix}) = 0 THEN 1 ELSE substr(${string}, -length(${suffix})) = ${suffix} END)`,
     contains: (string, part) => `(instr(${string}, ${part}) > 0)`,
     power: (base, exponent) => `pow(${base}, ${exponent})`,
+    jsonKeys: (map) =>
+      `(SELECT json_group_array(key) FROM (SELECT key FROM json_each(${map}) ORDER BY key))`,
+    // `$[#-1]` is the last element.
+    jsonElement: (list, index) =>
+      `(${list} -> ('$[' || CASE WHEN ${index} < 0 THEN '#' || ${index} ELSE ${index} END || ']'))`,
+    jsonTail: (list) => `json_remove(${list}, '$[0]')`,
+    reverseList: (list) =>
+      `(SELECT json_group_array(json(v)) FROM (SELECT ${elementJson('rv')} AS v ` +
+      `FROM json_each(${list}) AS rv ORDER BY rv.key DESC))`,
+    reverseString: (string) =>
+      `(WITH RECURSIVE rs(i, s) AS (SELECT length(${string}), '' UNION ALL ` +
+      `SELECT i - 1, s || substr(${string}, i, 1) FROM rs WHERE i > 0) SELECT s FROM rs WHERE i = 0)`,
+    range: (start, end, step) =>
+      `(WITH RECURSIVE rg(v) AS (SELECT ${start} UNION ALL SELECT v + ${step} FROM rg ` +
+      `WHERE (${step} > 0 AND v + ${step} <= ${end}) OR (${step} < 0 AND v + ${step} >= ${end})) ` +
+      `SELECT json_group_array(v) FROM rg WHERE (${step} > 0 AND v <= ${end}) OR (${step} < 0 AND v >= ${end}))`,
+    // An empty delimiter does not split (it would never advance).
+    split: (string, delimiter) =>
+      `(WITH RECURSIVE sp(i, part, rest) AS (SELECT 0, NULL, ${string} UNION ALL ` +
+      `SELECT i + 1, CASE WHEN ${delimiter} <> '' AND instr(rest, ${delimiter}) > 0 ` +
+      `THEN substr(rest, 1, instr(rest, ${delimiter}) - 1) ELSE rest END, ` +
+      `CASE WHEN ${delimiter} <> '' AND instr(rest, ${delimiter}) > 0 ` +
+      `THEN substr(rest, instr(rest, ${delimiter}) + length(${delimiter})) END ` +
+      `FROM sp WHERE rest IS NOT NULL) ` +
+      `SELECT json_group_array(part) FROM (SELECT part FROM sp WHERE i > 0 ORDER BY i))`,
+    stringLength: (string) => `length(${string})`,
+    substring: (string, start, length) =>
+      `substr(${string}, ${start} + 1${length === undefined ? '' : `, ${length}`})`,
+    // substr(s, -0) would return the whole string.
+    rightString: (string, count) =>
+      `(CASE WHEN ${count} = 0 THEN '' ELSE substr(${string}, -(${count})) END)`,
+    // A number is valid JSON whose type is integer or real (so `+1` and `.5` are not numbers).
+    parseNumber: (string, type): string => {
+      const t = `trim(${string})`;
+      const real =
+        type === 'integer' ? `CAST(CAST(${t} AS REAL) AS INTEGER)` : `CAST(${t} AS REAL)`;
+      const int = type === 'integer' ? `CAST(${t} AS INTEGER)` : `CAST(${t} AS REAL)`;
+      return (
+        `(CASE WHEN json_valid(${t}) THEN CASE json_type(${t}) ` +
+        `WHEN 'integer' THEN ${int} WHEN 'real' THEN ${real} END END)`
+      );
+    },
+    toFloat: (number) => `CAST(${number} AS REAL)`,
+    truncate: (float) => `CAST(${float} AS INTEGER)`,
+    math: (name, args): string => {
+      switch (name) {
+        case 'log':
+          return `ln(${args[0]})`;
+        case 'e':
+          return 'exp(1)';
+        case 'pi':
+          return 'pi()';
+        case 'rand':
+          return '(abs(random()) / 9223372036854775808.0)';
+        case 'floor':
+        case 'ceil':
+          return `CAST(${name}(${args[0]}) AS REAL)`;
+        default:
+          return `${name}(${args.join(', ')})`;
+      }
+    },
     // Walks both values in parallel with a recursive CTE: one row per pair of
     // values at the same position, then a three-valued AND over the rows.
     // Scalars are carried as SQL values with their json_each type, so reals

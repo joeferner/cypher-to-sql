@@ -525,6 +525,8 @@ function mapChildren(
       return { ...expr, subject: f(expr.subject) };
     case 'Binary':
       return { ...expr, left: f(expr.left), right: f(expr.right) };
+    case 'FunctionCall':
+      return { ...expr, args: expr.args.map(f) };
     case 'Not':
     case 'Negate':
     case 'IsNull':

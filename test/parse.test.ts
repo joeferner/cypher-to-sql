@@ -265,6 +265,22 @@ describe('parse: operators', () => {
   });
 });
 
+describe('parse: function calls', () => {
+  it('keeps the name as written, with its namespace, DISTINCT, and arguments', () => {
+    expect(expr('toUpper(a, 1)')).toMatchObject({
+      type: 'FunctionCall',
+      name: 'toUpper',
+      distinct: false,
+      args: [
+        { type: 'Variable', name: 'a' },
+        { type: 'Literal', value: 1n },
+      ],
+    });
+    expect(expr('my.ns.f(DISTINCT a)')).toMatchObject({ name: 'my.ns.f', distinct: true });
+    expect(expr('rand()')).toMatchObject({ name: 'rand', args: [] });
+  });
+});
+
 describe('parse: unsupported expressions', () => {
   it.each([
     ['a[0]', 'list indexing and slicing'],
@@ -274,7 +290,6 @@ describe('parse: unsupported expressions', () => {
     ['[(a)-->(b) | b]', 'pattern comprehensions'],
     ['all(x IN a WHERE x)', 'list quantifiers (all, any, none, single)'],
     ['(a)-->()', 'pattern predicates'],
-    ['size(a)', 'function calls'],
     ['EXISTS { (a)-->() }', 'EXISTS subqueries'],
   ])('%s → %s', (text, description) => {
     expect(expr(text)).toMatchObject({
@@ -285,11 +300,14 @@ describe('parse: unsupported expressions', () => {
   });
 
   it('keeps unsupported expressions nested inside supported ones', () => {
-    expect(expr('[1, a + size(b)]')).toMatchObject({
+    expect(expr('[1, a + b[0]]')).toMatchObject({
       type: 'List',
       items: [
         { type: 'Literal' },
-        { type: 'Binary', right: { type: 'UnsupportedExpression', description: 'function calls' } },
+        {
+          type: 'Binary',
+          right: { type: 'UnsupportedExpression', description: 'list indexing and slicing' },
+        },
       ],
     });
   });

@@ -504,6 +504,22 @@ class AstBuilder {
     if (parenthesized) {
       return this.expression(parenthesized.oC_Expression());
     }
+    const call = ctx.oC_FunctionInvocation();
+    if (call) {
+      const name = call.oC_FunctionName();
+      const namespace = name
+        .oC_Namespace()
+        .oC_SymbolicName()
+        .map((part) => `${this.symbolicName(part)}.`)
+        .join('');
+      return {
+        type: 'FunctionCall',
+        position: pos(ctx),
+        name: namespace + this.symbolicName(name.oC_SymbolicName()),
+        distinct: call.DISTINCT() !== null,
+        args: call.oC_Expression().map((arg) => this.expression(arg)),
+      };
+    }
     let description: string;
     if (ctx.oC_CaseExpression()) {
       description = 'CASE expressions';
@@ -517,8 +533,6 @@ class AstBuilder {
       description = 'list quantifiers (all, any, none, single)';
     } else if (ctx.oC_PatternPredicate()) {
       description = 'pattern predicates';
-    } else if (ctx.oC_FunctionInvocation()) {
-      description = 'function calls';
     } else {
       description = 'EXISTS subqueries';
     }

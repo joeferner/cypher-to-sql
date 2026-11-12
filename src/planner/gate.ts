@@ -79,6 +79,8 @@ function findUnsupported(expr: ast.Expression): ast.UnsupportedExpression | unde
       return findUnsupported(expr.subject);
     case 'Binary':
       return findUnsupported(expr.left) ?? findUnsupported(expr.right);
+    case 'FunctionCall':
+      return firstDefined(expr.args.map(findUnsupported));
     case 'Not':
     case 'Negate':
     case 'IsNull':

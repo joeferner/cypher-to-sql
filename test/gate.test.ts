@@ -88,9 +88,9 @@ describe('feature gate', () => {
   it('rejects unsupported expressions anywhere in the query, at their position', () => {
     const cases: [string, string, number][] = [
       ['RETURN 1 + [1][0]', 'list indexing and slicing', 11],
-      ['MATCH (n {k: size([])}) RETURN n', 'function calls', 13],
-      ['UNWIND size([]) AS x RETURN x', 'function calls', 7],
-      ['MATCH (n) WHERE n.x = size([]) RETURN n', 'function calls', 22],
+      ['MATCH (n {k: [1][0]}) RETURN n', 'list indexing and slicing', 13],
+      ['UNWIND [x IN [] | x] AS x RETURN x', 'list comprehensions', 7],
+      ['MATCH (n) WHERE n.x = size([[1][0]]) RETURN n', 'list indexing and slicing', 28],
       ['RETURN 1 ORDER BY count(*)', 'count(*)', 18],
     ];
     for (const [cypher, description, column] of cases) {

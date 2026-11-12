@@ -22,6 +22,7 @@ const readQueries = [
   'MATCH (n) WHERE n.age > 30 AND n.name STARTS WITH $p RETURN n.name, n.age + 1 AS next',
   'MATCH (n) RETURN n.name AS name ORDER BY name DESC, n.age SKIP $s LIMIT 10',
   'MATCH (n) RETURN DISTINCT n.name AS name ORDER BY name',
+  "MATCH (n) WHERE toLower(n.name) STARTS WITH 'a' RETURN size(labels(n)), coalesce(n.x, 0), range(1, $n)",
 ];
 
 const writeQueries = [

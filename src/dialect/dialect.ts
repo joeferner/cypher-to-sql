@@ -97,6 +97,43 @@ export interface Dialect {
   /** `base ^ exponent` as a float. */
   power(base: string, exponent: string): string;
 
+  // ---- functions (arguments are non-null values of the stated type) --------------
+
+  /** JSON list of the keys of a JSON map, sorted. */
+  jsonKeys(map: string): string;
+  /** Element of a JSON list at an integer index (negative counts from the end); NULL if out of range. */
+  jsonElement(list: string, index: string): string;
+  /** A JSON list without its first element. */
+  jsonTail(list: string): string;
+  /** A JSON list in reverse order. */
+  reverseList(list: string): string;
+  reverseString(string: string): string;
+  /** JSON list of the integers `start`, `start + step`, ... while not past `end`. */
+  range(start: string, end: string, step: string): string;
+  /** JSON list of the parts of a string between occurrences of a delimiter. */
+  split(string: string, delimiter: string): string;
+  /** Number of characters in a string. */
+  stringLength(string: string): string;
+  /** Characters from 0-based `start`, `length` of them or to the end. */
+  substring(string: string, start: string, length: string | undefined): string;
+  /** The last `count` characters. */
+  rightString(string: string, count: string): string;
+  /**
+   * A string parsed as a number (surrounding whitespace allowed), or NULL if it
+   * is not a number. For `integer`, a float string is truncated toward zero.
+   */
+  parseNumber(string: string, type: 'integer' | 'float'): string;
+  /** A number as a float. */
+  toFloat(number: string): string;
+  /** A float truncated toward zero, as an integer. */
+  truncate(float: string): string;
+  /**
+   * A math function by its Cypher name (`sqrt`, `exp`, `log`, `log10`, `sin`,
+   * `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `floor`, `ceil`, `pi`, `e`,
+   * `rand`). Arguments are floats; the result is a float.
+   */
+  math(name: string, args: string[]): string;
+
   /**
    * Float division. Dividing by zero gives infinity (or NaN for zero by zero)
    * instead of an error, as in Cypher. SQLite has no NaN; it gives NULL.

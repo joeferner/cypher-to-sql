@@ -1,6 +1,7 @@
 import type * as ast from '../ast.js';
 import type { ScalarType } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError, type SourcePosition } from '../errors.js';
+import { compileFunction } from './functions.js';
 import { constantValue, type SqlBuilder } from './sql-builder.js';
 
 /**
@@ -39,7 +40,7 @@ export function orderTerm(sql: string, key: SortKey, descending: boolean): strin
 }
 
 /** An operand inside `share`: atomic, and for JSON with its run-time type as SQL. */
-interface Shared extends Expr {
+export interface Shared extends Expr {
   /** SQL text naming the JSON type (see `Dialect.jsonType`); only for `json`. */
   jsonType: string;
 }
@@ -65,7 +66,7 @@ export class ExprCompiler {
   private aliases = 0;
 
   public constructor(
-    private readonly b: SqlBuilder,
+    public readonly b: SqlBuilder,
     private readonly lookup: (variable: ast.Variable) => VariableBinding,
   ) {}
 
@@ -115,6 +116,8 @@ export class ExprCompiler {
         return this.negate(expr);
       case 'Binary':
         return this.binary(expr);
+      case 'FunctionCall':
+        return compileFunction(this, expr);
       case 'UnsupportedExpression':
         throw new UnsupportedFeatureError(`${expr.description} are not supported yet`, {
           position: expr.position,
@@ -240,7 +243,8 @@ export class ExprCompiler {
     }
   }
 
-  private toJson(e: Expr, position: SourcePosition): string {
+  /** The value as the dialect's JSON type. */
+  public toJson(e: Expr, position: SourcePosition): string {
     switch (e.type) {
       case 'json':
         return e.sql;
@@ -266,7 +270,7 @@ export class ExprCompiler {
    * type of each JSON operand computed once: anything that is not atomic, and
    * the types, are computed in a scalar subquery and referred to by column.
    */
-  private share(exprs: Expr[], body: (shared: Shared[]) => string): string {
+  public share(exprs: Expr[], body: (shared: Shared[]) => string): string {
     const d = this.b.dialect;
     const alias = `s${this.aliases++}`;
     const values: string[] = [];
@@ -743,7 +747,11 @@ function boolean(sql: string): Expr {
   return { sql, type: 'boolean', atomic: false };
 }
 
-function typeError(expected: string, actual: string, position: SourcePosition): SemanticError {
+export function typeError(
+  expected: string,
+  actual: string,
+  position: SourcePosition,
+): SemanticError {
   return new SemanticError(`Type mismatch: expected ${expected} but was ${describeType(actual)}`, {
     position,
   });

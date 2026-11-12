@@ -99,6 +99,20 @@ Rules:
 - **Type errors:** a type error the compiler can see (`1 AND true`, `'a' - 1`, `[] OR x`) is a `SemanticError` at compile time. A type error that depends on data is null at run time instead of an error (#30).
 - **PostgreSQL constant folding:** PostgreSQL may evaluate a CASE branch early when its input is a constant (a bound parameter), even if the branch is not taken. Casts out of JSON are therefore guarded so that they never fail.
 
+### Functions
+
+`src/planner/functions.ts` compiles function calls (names are case-insensitive). Arguments of a known wrong type are a `SemanticError` at compile time; JSON arguments of the wrong type give null at run time (#30); a null argument gives null.
+
+| Group      | Functions                                                                                                                                       |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Entities   | `id`, `labels`, `type`, `keys`, `properties`                                                                                                    |
+| Conversion | `coalesce`, `toString`, `toInteger`, `toFloat`, `toBoolean`, and their `...OrNull` forms                                                        |
+| Lists      | `size`, `head`, `last`, `tail`, `reverse`, `range`                                                                                              |
+| Strings    | `size`, `substring`, `left`, `right`, `toUpper`/`upper`, `toLower`/`lower`, `trim`, `ltrim`, `rtrim`, `replace`, `split`, `reverse`             |
+| Numbers    | `abs`, `sign`, `round`, `ceil`, `floor`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pi`, `e`, `rand` |
+
+Any other function is an `UnsupportedFeatureError` whose hint lists the supported ones. Aggregates are #9; temporal functions, path functions (`nodes`, `relationships`, `length`), `startNode`/`endNode`, and `round` with a precision are not supported yet. Known differences: string parsing in `toInteger`/`toFloat` accepts JSON number syntax on SQLite (so not `+1` or `.5`) and a slightly wider syntax on PostgreSQL; `toUpper`/`toLower` follow the database (SQLite changes ASCII letters only); `trim` removes spaces only.
+
 ## Ids (write mode)
 
 - `{ kind: 'database' }` (the default): the database generates ids. Each `INSERT` uses `RETURNING id` so that later parts of the pattern can refer to the new entity. PostgreSQL does not guarantee row order for a multi-row `RETURNING`, so this mode inserts one entity per statement. Speed is not a goal for `CREATE`.
