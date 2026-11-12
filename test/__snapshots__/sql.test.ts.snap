@@ -1,0 +1,295 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`postgres > create with database ids: CREATE () 1`] = `
+"CREATE ()
+-- step 1
+INSERT INTO "nodes" ("labels", "properties") VALUES (($1::jsonb), ($2::jsonb)) RETURNING "id" AS id
+-- values: [], {}"
+`;
+
+exports[`postgres > create with database ids: CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a) 1`] = `
+"CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a)
+-- step 1
+INSERT INTO "nodes" ("labels", "properties") VALUES (($1::jsonb), ($2::jsonb)) RETURNING "id" AS id
+-- values: ["A"], {name: "x", n: null}
+-- step 2
+INSERT INTO "nodes" ("labels", "properties") VALUES (($1::jsonb), ($2::jsonb)) RETURNING "id" AS id
+-- values: ["B"], $props
+-- step 3
+INSERT INTO "edges" ("start_id", "end_id", "type", "properties") VALUES ($1, $2, $3, ($4::jsonb)) RETURNING "id" AS id
+-- values: id(entity 0), id(entity 1), "T", {w: 1.5}
+-- step 4
+INSERT INTO "edges" ("start_id", "end_id", "type", "properties") VALUES ($1, $2, $3, ($4::jsonb)) RETURNING "id" AS id
+-- values: id(entity 0), id(entity 1), "U", {}"
+`;
+
+exports[`postgres > create with database ids: MATCH (a:A), (b:B) CREATE (a)-[:T {k: a.k}]->(b), (b)-[:BACK]->(:New) 1`] = `
+"MATCH (a:A), (b:B) CREATE (a)-[:T {k: a.k}]->(b), (b)-[:BACK]->(:New)
+-- step 1
+SELECT n0."id" AS r0, n1."id" AS r1, ((n0."properties" -> $1::text))::text AS r2 FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 WHERE (n0."labels" @> jsonb_build_array($2::text)) AND (n1."labels" @> jsonb_build_array($3::text)) LIMIT $4
+-- values: "k", "A", "B", limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "edges" ("start_id", "end_id", "type", "properties") VALUES ($1, $2, $3, ($4::jsonb)) RETURNING "id" AS id
+-- values: row.r0, row.r1, "T", {k: row.r2}
+-- step 3 (for each source row)
+INSERT INTO "nodes" ("labels", "properties") VALUES (($1::jsonb), ($2::jsonb)) RETURNING "id" AS id
+-- values: ["New"], {}
+-- step 4 (for each source row)
+INSERT INTO "edges" ("start_id", "end_id", "type", "properties") VALUES ($1, $2, $3, ($4::jsonb)) RETURNING "id" AS id
+-- values: row.r1, id(entity 1), "BACK", {}"
+`;
+
+exports[`postgres > create with database ids: UNWIND $rows AS row CREATE (:N {v: row.v}) 1`] = `
+"UNWIND $rows AS row CREATE (:N {v: row.v})
+-- step 1
+SELECT ((u0.value -> $1::text))::text AS r0 FROM LATERAL (SELECT e.value, e.ord FROM jsonb_array_elements(CASE WHEN jsonb_typeof(($2::jsonb)) = 'array' THEN ($3::jsonb) END) WITH ORDINALITY AS e(value, ord) UNION ALL SELECT ($4::jsonb), 1 WHERE jsonb_typeof(($5::jsonb)) NOT IN ('array', 'null')) AS u0 ORDER BY u0.ord LIMIT $6
+-- values: "v", $rows, $rows, $rows, $rows, limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "nodes" ("labels", "properties") VALUES (($1::jsonb), ($2::jsonb)) RETURNING "id" AS id
+-- values: ["N"], {v: row.r0}"
+`;
+
+exports[`postgres > create with generated ids: CREATE () 1`] = `
+"CREATE ()
+-- step 1
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES ($1, ($2::jsonb), ($3::jsonb))
+-- values: id(entity 0), [], {}"
+`;
+
+exports[`postgres > create with generated ids: CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a) 1`] = `
+"CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a)
+-- step 1
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES ($1, ($2::jsonb), ($3::jsonb))
+-- values: id(entity 0), ["A"], {name: "x", n: null}
+-- step 2
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES ($1, ($2::jsonb), ($3::jsonb))
+-- values: id(entity 1), ["B"], $props
+-- step 3
+INSERT INTO "edges" ("id", "start_id", "end_id", "type", "properties") VALUES ($1, $2, $3, $4, ($5::jsonb))
+-- values: id(entity 2), id(entity 0), id(entity 1), "T", {w: 1.5}
+-- step 4
+INSERT INTO "edges" ("id", "start_id", "end_id", "type", "properties") VALUES ($1, $2, $3, $4, ($5::jsonb))
+-- values: id(entity 3), id(entity 0), id(entity 1), "U", {}"
+`;
+
+exports[`postgres > create with generated ids: MATCH (a:A), (b:B) CREATE (a)-[:T {k: a.k}]->(b), (b)-[:BACK]->(:New) 1`] = `
+"MATCH (a:A), (b:B) CREATE (a)-[:T {k: a.k}]->(b), (b)-[:BACK]->(:New)
+-- step 1
+SELECT n0."id" AS r0, n1."id" AS r1, ((n0."properties" -> $1::text))::text AS r2 FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 WHERE (n0."labels" @> jsonb_build_array($2::text)) AND (n1."labels" @> jsonb_build_array($3::text)) LIMIT $4
+-- values: "k", "A", "B", limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "edges" ("id", "start_id", "end_id", "type", "properties") VALUES ($1, $2, $3, $4, ($5::jsonb))
+-- values: id(entity 0), row.r0, row.r1, "T", {k: row.r2}
+-- step 3 (for each source row)
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES ($1, ($2::jsonb), ($3::jsonb))
+-- values: id(entity 1), ["New"], {}
+-- step 4 (for each source row)
+INSERT INTO "edges" ("id", "start_id", "end_id", "type", "properties") VALUES ($1, $2, $3, $4, ($5::jsonb))
+-- values: id(entity 2), row.r1, id(entity 1), "BACK", {}"
+`;
+
+exports[`postgres > create with generated ids: UNWIND $rows AS row CREATE (:N {v: row.v}) 1`] = `
+"UNWIND $rows AS row CREATE (:N {v: row.v})
+-- step 1
+SELECT ((u0.value -> $1::text))::text AS r0 FROM LATERAL (SELECT e.value, e.ord FROM jsonb_array_elements(CASE WHEN jsonb_typeof(($2::jsonb)) = 'array' THEN ($3::jsonb) END) WITH ORDINALITY AS e(value, ord) UNION ALL SELECT ($4::jsonb), 1 WHERE jsonb_typeof(($5::jsonb)) NOT IN ('array', 'null')) AS u0 ORDER BY u0.ord LIMIT $6
+-- values: "v", $rows, $rows, $rows, $rows, limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES ($1, ($2::jsonb), ($3::jsonb))
+-- values: id(entity 0), ["N"], {v: row.r0}"
+`;
+
+exports[`postgres > read: MATCH (a:A), (b) RETURN * 1`] = `
+"MATCH (a:A), (b) RETURN *
+-- step 1
+SELECT n0."id" AS c0_id, (n0."labels")::text AS c0_labels, (n0."properties")::text AS c0_props, n1."id" AS c1_id, (n1."labels")::text AS c1_labels, (n1."properties")::text AS c1_props FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 WHERE (n0."labels" @> jsonb_build_array($1::text)) LIMIT $2
+-- values: "A", limit(maxRowsPerStep + 1)"
+`;
+
+exports[`postgres > read: MATCH (n) RETURN n LIMIT 10 1`] = `
+"MATCH (n) RETURN n LIMIT 10
+-- step 1
+SELECT n0."id" AS c0_id, (n0."labels")::text AS c0_labels, (n0."properties")::text AS c0_props FROM "nodes" AS n0 LIMIT $1
+-- values: limit(10)"
+`;
+
+exports[`postgres > read: MATCH (n:Person:Admin) RETURN n.name AS name, n 1`] = `
+"MATCH (n:Person:Admin) RETURN n.name AS name, n
+-- step 1
+SELECT ((n0."properties" -> $1::text))::text AS c0, n0."id" AS c1_id, (n0."labels")::text AS c1_labels, (n0."properties")::text AS c1_props FROM "nodes" AS n0 WHERE (n0."labels" @> jsonb_build_array($2::text)) AND (n0."labels" @> jsonb_build_array($3::text)) LIMIT $4
+-- values: "name", "Person", "Admin", limit(maxRowsPerStep + 1)"
+`;
+
+exports[`postgres > read: RETURN 1 AS i, 1.5 AS f, 'x' AS s, [1, null] AS l, {k: true} AS m, $p AS p 1`] = `
+"RETURN 1 AS i, 1.5 AS f, 'x' AS s, [1, null] AS l, {k: true} AS m, $p AS p
+-- step 1
+SELECT (($1::jsonb))::text AS c0, (($2::jsonb))::text AS c1, (($3::jsonb))::text AS c2, (($4::jsonb))::text AS c3, (($5::jsonb))::text AS c4, (($6::jsonb))::text AS c5 LIMIT $7
+-- values: 1, 1.5, "x", [1,null], {"k":true}, $p, limit(maxRowsPerStep + 1)"
+`;
+
+exports[`postgres > read: UNWIND $lists AS l UNWIND l AS x MATCH (n:N) RETURN n.k, x LIMIT $max 1`] = `
+"UNWIND $lists AS l UNWIND l AS x MATCH (n:N) RETURN n.k, x LIMIT $max
+-- step 1
+SELECT ((n2."properties" -> $1::text))::text AS c0, (u1.value)::text AS c1 FROM LATERAL (SELECT e.value, e.ord FROM jsonb_array_elements(CASE WHEN jsonb_typeof(($2::jsonb)) = 'array' THEN ($3::jsonb) END) WITH ORDINALITY AS e(value, ord) UNION ALL SELECT ($4::jsonb), 1 WHERE jsonb_typeof(($5::jsonb)) NOT IN ('array', 'null')) AS u0 CROSS JOIN LATERAL (SELECT e.value, e.ord FROM jsonb_array_elements(CASE WHEN jsonb_typeof(u0.value) = 'array' THEN u0.value END) WITH ORDINALITY AS e(value, ord) UNION ALL SELECT u0.value, 1 WHERE jsonb_typeof(u0.value) NOT IN ('array', 'null')) AS u1 CROSS JOIN "nodes" AS n2 WHERE (n2."labels" @> jsonb_build_array($6::text)) ORDER BY u0.ord, u1.ord, n2."id" LIMIT $7
+-- values: "k", $lists, $lists, $lists, $lists, "N", limit($max)"
+`;
+
+exports[`postgres > read: UNWIND [{a: {b: 1}}] AS m RETURN m.a.b 1`] = `
+"UNWIND [{a: {b: 1}}] AS m RETURN m.a.b
+-- step 1
+SELECT (((u0.value -> $1::text) -> $2::text))::text AS c0 FROM LATERAL (SELECT e.value, e.ord FROM jsonb_array_elements(CASE WHEN jsonb_typeof(($3::jsonb)) = 'array' THEN ($4::jsonb) END) WITH ORDINALITY AS e(value, ord) UNION ALL SELECT ($5::jsonb), 1 WHERE jsonb_typeof(($6::jsonb)) NOT IN ('array', 'null')) AS u0 ORDER BY u0.ord LIMIT $7
+-- values: "a", "b", [{"a":{"b":1}}], [{"a":{"b":1}}], [{"a":{"b":1}}], [{"a":{"b":1}}], limit(maxRowsPerStep + 1)"
+`;
+
+exports[`postgres > read: UNWIND [1, 2] AS x RETURN x 1`] = `
+"UNWIND [1, 2] AS x RETURN x
+-- step 1
+SELECT (u0.value)::text AS c0 FROM LATERAL (SELECT e.value, e.ord FROM jsonb_array_elements(CASE WHEN jsonb_typeof(($1::jsonb)) = 'array' THEN ($2::jsonb) END) WITH ORDINALITY AS e(value, ord) UNION ALL SELECT ($3::jsonb), 1 WHERE jsonb_typeof(($4::jsonb)) NOT IN ('array', 'null')) AS u0 ORDER BY u0.ord LIMIT $5
+-- values: [1,2], [1,2], [1,2], [1,2], limit(maxRowsPerStep + 1)"
+`;
+
+exports[`sqlite > create with database ids: CREATE () 1`] = `
+"CREATE ()
+-- step 1
+INSERT INTO "nodes" ("labels", "properties") VALUES (?, ?) RETURNING "id" AS id
+-- values: [], {}"
+`;
+
+exports[`sqlite > create with database ids: CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a) 1`] = `
+"CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a)
+-- step 1
+INSERT INTO "nodes" ("labels", "properties") VALUES (?, ?) RETURNING "id" AS id
+-- values: ["A"], {name: "x", n: null}
+-- step 2
+INSERT INTO "nodes" ("labels", "properties") VALUES (?, ?) RETURNING "id" AS id
+-- values: ["B"], $props
+-- step 3
+INSERT INTO "edges" ("start_id", "end_id", "type", "properties") VALUES (?, ?, ?, ?) RETURNING "id" AS id
+-- values: id(entity 0), id(entity 1), "T", {w: 1.5}
+-- step 4
+INSERT INTO "edges" ("start_id", "end_id", "type", "properties") VALUES (?, ?, ?, ?) RETURNING "id" AS id
+-- values: id(entity 0), id(entity 1), "U", {}"
+`;
+
+exports[`sqlite > create with database ids: MATCH (a:A), (b:B) CREATE (a)-[:T {k: a.k}]->(b), (b)-[:BACK]->(:New) 1`] = `
+"MATCH (a:A), (b:B) CREATE (a)-[:T {k: a.k}]->(b), (b)-[:BACK]->(:New)
+-- step 1
+SELECT n0."id" AS r0, n1."id" AS r1, (n0."properties" -> ('$."' || ? || '"')) AS r2 FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 WHERE EXISTS (SELECT 1 FROM json_each(n0."labels") WHERE json_each.value = ?) AND EXISTS (SELECT 1 FROM json_each(n1."labels") WHERE json_each.value = ?) LIMIT ?
+-- values: "k", "A", "B", limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "edges" ("start_id", "end_id", "type", "properties") VALUES (?, ?, ?, ?) RETURNING "id" AS id
+-- values: row.r0, row.r1, "T", {k: row.r2}
+-- step 3 (for each source row)
+INSERT INTO "nodes" ("labels", "properties") VALUES (?, ?) RETURNING "id" AS id
+-- values: ["New"], {}
+-- step 4 (for each source row)
+INSERT INTO "edges" ("start_id", "end_id", "type", "properties") VALUES (?, ?, ?, ?) RETURNING "id" AS id
+-- values: row.r1, id(entity 1), "BACK", {}"
+`;
+
+exports[`sqlite > create with database ids: UNWIND $rows AS row CREATE (:N {v: row.v}) 1`] = `
+"UNWIND $rows AS row CREATE (:N {v: row.v})
+-- step 1
+SELECT ((CASE u0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN u0.value WHEN 'object' THEN u0.value ELSE json_quote(u0.value) END) -> ('$."' || ? || '"')) AS r0 FROM json_each(?) AS u0 WHERE NOT (u0.key IS NULL AND u0.type = 'null') ORDER BY u0.key LIMIT ?
+-- values: "v", $rows, limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "nodes" ("labels", "properties") VALUES (?, ?) RETURNING "id" AS id
+-- values: ["N"], {v: row.r0}"
+`;
+
+exports[`sqlite > create with generated ids: CREATE () 1`] = `
+"CREATE ()
+-- step 1
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES (?, ?, ?)
+-- values: id(entity 0), [], {}"
+`;
+
+exports[`sqlite > create with generated ids: CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a) 1`] = `
+"CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a)
+-- step 1
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES (?, ?, ?)
+-- values: id(entity 0), ["A"], {name: "x", n: null}
+-- step 2
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES (?, ?, ?)
+-- values: id(entity 1), ["B"], $props
+-- step 3
+INSERT INTO "edges" ("id", "start_id", "end_id", "type", "properties") VALUES (?, ?, ?, ?, ?)
+-- values: id(entity 2), id(entity 0), id(entity 1), "T", {w: 1.5}
+-- step 4
+INSERT INTO "edges" ("id", "start_id", "end_id", "type", "properties") VALUES (?, ?, ?, ?, ?)
+-- values: id(entity 3), id(entity 0), id(entity 1), "U", {}"
+`;
+
+exports[`sqlite > create with generated ids: MATCH (a:A), (b:B) CREATE (a)-[:T {k: a.k}]->(b), (b)-[:BACK]->(:New) 1`] = `
+"MATCH (a:A), (b:B) CREATE (a)-[:T {k: a.k}]->(b), (b)-[:BACK]->(:New)
+-- step 1
+SELECT n0."id" AS r0, n1."id" AS r1, (n0."properties" -> ('$."' || ? || '"')) AS r2 FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 WHERE EXISTS (SELECT 1 FROM json_each(n0."labels") WHERE json_each.value = ?) AND EXISTS (SELECT 1 FROM json_each(n1."labels") WHERE json_each.value = ?) LIMIT ?
+-- values: "k", "A", "B", limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "edges" ("id", "start_id", "end_id", "type", "properties") VALUES (?, ?, ?, ?, ?)
+-- values: id(entity 0), row.r0, row.r1, "T", {k: row.r2}
+-- step 3 (for each source row)
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES (?, ?, ?)
+-- values: id(entity 1), ["New"], {}
+-- step 4 (for each source row)
+INSERT INTO "edges" ("id", "start_id", "end_id", "type", "properties") VALUES (?, ?, ?, ?, ?)
+-- values: id(entity 2), row.r1, id(entity 1), "BACK", {}"
+`;
+
+exports[`sqlite > create with generated ids: UNWIND $rows AS row CREATE (:N {v: row.v}) 1`] = `
+"UNWIND $rows AS row CREATE (:N {v: row.v})
+-- step 1
+SELECT ((CASE u0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN u0.value WHEN 'object' THEN u0.value ELSE json_quote(u0.value) END) -> ('$."' || ? || '"')) AS r0 FROM json_each(?) AS u0 WHERE NOT (u0.key IS NULL AND u0.type = 'null') ORDER BY u0.key LIMIT ?
+-- values: "v", $rows, limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES (?, ?, ?)
+-- values: id(entity 0), ["N"], {v: row.r0}"
+`;
+
+exports[`sqlite > read: MATCH (a:A), (b) RETURN * 1`] = `
+"MATCH (a:A), (b) RETURN *
+-- step 1
+SELECT n0."id" AS c0_id, n0."labels" AS c0_labels, n0."properties" AS c0_props, n1."id" AS c1_id, n1."labels" AS c1_labels, n1."properties" AS c1_props FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 WHERE EXISTS (SELECT 1 FROM json_each(n0."labels") WHERE json_each.value = ?) LIMIT ?
+-- values: "A", limit(maxRowsPerStep + 1)"
+`;
+
+exports[`sqlite > read: MATCH (n) RETURN n LIMIT 10 1`] = `
+"MATCH (n) RETURN n LIMIT 10
+-- step 1
+SELECT n0."id" AS c0_id, n0."labels" AS c0_labels, n0."properties" AS c0_props FROM "nodes" AS n0 LIMIT ?
+-- values: limit(10)"
+`;
+
+exports[`sqlite > read: MATCH (n:Person:Admin) RETURN n.name AS name, n 1`] = `
+"MATCH (n:Person:Admin) RETURN n.name AS name, n
+-- step 1
+SELECT (n0."properties" -> ('$."' || ? || '"')) AS c0, n0."id" AS c1_id, n0."labels" AS c1_labels, n0."properties" AS c1_props FROM "nodes" AS n0 WHERE EXISTS (SELECT 1 FROM json_each(n0."labels") WHERE json_each.value = ?) AND EXISTS (SELECT 1 FROM json_each(n0."labels") WHERE json_each.value = ?) LIMIT ?
+-- values: "name", "Person", "Admin", limit(maxRowsPerStep + 1)"
+`;
+
+exports[`sqlite > read: RETURN 1 AS i, 1.5 AS f, 'x' AS s, [1, null] AS l, {k: true} AS m, $p AS p 1`] = `
+"RETURN 1 AS i, 1.5 AS f, 'x' AS s, [1, null] AS l, {k: true} AS m, $p AS p
+-- step 1
+SELECT ? AS c0, ? AS c1, ? AS c2, ? AS c3, ? AS c4, ? AS c5 LIMIT ?
+-- values: 1, 1.5, "x", [1,null], {"k":true}, $p, limit(maxRowsPerStep + 1)"
+`;
+
+exports[`sqlite > read: UNWIND $lists AS l UNWIND l AS x MATCH (n:N) RETURN n.k, x LIMIT $max 1`] = `
+"UNWIND $lists AS l UNWIND l AS x MATCH (n:N) RETURN n.k, x LIMIT $max
+-- step 1
+SELECT (n2."properties" -> ('$."' || ? || '"')) AS c0, (CASE u1.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN u1.value WHEN 'object' THEN u1.value ELSE json_quote(u1.value) END) AS c1 FROM json_each(?) AS u0 CROSS JOIN json_each((CASE u0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN u0.value WHEN 'object' THEN u0.value ELSE json_quote(u0.value) END)) AS u1 CROSS JOIN "nodes" AS n2 WHERE NOT (u0.key IS NULL AND u0.type = 'null') AND NOT (u1.key IS NULL AND u1.type = 'null') AND EXISTS (SELECT 1 FROM json_each(n2."labels") WHERE json_each.value = ?) ORDER BY u0.key, u1.key, n2."id" LIMIT ?
+-- values: "k", $lists, "N", limit($max)"
+`;
+
+exports[`sqlite > read: UNWIND [{a: {b: 1}}] AS m RETURN m.a.b 1`] = `
+"UNWIND [{a: {b: 1}}] AS m RETURN m.a.b
+-- step 1
+SELECT (((CASE u0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN u0.value WHEN 'object' THEN u0.value ELSE json_quote(u0.value) END) -> ('$."' || ? || '"')) -> ('$."' || ? || '"')) AS c0 FROM json_each(?) AS u0 WHERE NOT (u0.key IS NULL AND u0.type = 'null') ORDER BY u0.key LIMIT ?
+-- values: "a", "b", [{"a":{"b":1}}], limit(maxRowsPerStep + 1)"
+`;
+
+exports[`sqlite > read: UNWIND [1, 2] AS x RETURN x 1`] = `
+"UNWIND [1, 2] AS x RETURN x
+-- step 1
+SELECT (CASE u0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN u0.value WHEN 'object' THEN u0.value ELSE json_quote(u0.value) END) AS c0 FROM json_each(?) AS u0 WHERE NOT (u0.key IS NULL AND u0.type = 'null') ORDER BY u0.key LIMIT ?
+-- values: [1,2], limit(maxRowsPerStep + 1)"
+`;
