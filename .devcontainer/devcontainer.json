@@ -4,6 +4,21 @@
   "features": {
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
+  // Mount the workspace at the same path as on the host. Claude Code keys its
+  // session history (~/.claude/projects/<path>) by the absolute project path,
+  // so this makes /resume see the same sessions inside and outside the container.
+  "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind",
+  "workspaceFolder": "${localWorkspaceFolder}",
+  "mounts": [
+    // Claude Code: sessions, memory, settings, credentials
+    "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind",
+    // Git identity/aliases (read-only; single-file mounts can't be rewritten in place)
+    "source=${localEnv:HOME}/.gitconfig,target=/home/node/.gitconfig,type=bind,readonly",
+    // Global git ignore etc.
+    "source=${localEnv:HOME}/.config/git,target=/home/node/.config/git,type=bind,readonly",
+    // gh auth, used by the git credential helper in .gitconfig
+    "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind"
+  ],
   "customizations": {
     "vscode": {
       "extensions": [
