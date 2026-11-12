@@ -1,3 +1,6 @@
+/** Native SQL types the expression compiler works with. */
+export type ScalarType = 'boolean' | 'integer' | 'float' | 'string';
+
 /**
  * SQL differences between databases. The planner builds SQL from these pieces,
  * so it never writes database-specific syntax itself.
@@ -5,6 +8,10 @@
  * Every JSON-valued expression the planner selects is returned as JSON *text*
  * (see `jsonText`), and the assembler parses it. That keeps the int/float
  * distinction and works the same way on every driver.
+ *
+ * Methods may use an argument more than once in the SQL they return. The
+ * expression compiler only passes arguments that are cheap to repeat (columns,
+ * bind values, or columns of a shared subquery).
  */
 export interface Dialect {
   readonly name: string;
@@ -29,15 +36,87 @@ export interface Dialect {
    */
   jsonMember(objectExpr: string, keyPlaceholder: string, key: string): string;
 
+  /**
+   * The member `key` of the JSON object `objectExpr`, read as a native value of
+   * `type`, for a property whose type the mapping declares. The key comes from
+   * the mapping (never from a query) and is written into the SQL as a string
+   * literal, so that an expression index on the same expression can be used.
+   */
+  typedMember(objectExpr: string, key: string, type: ScalarType): string;
+
   /** Condition: the JSON array of strings `labelsExpr` contains the bound label. */
   hasLabel(labelsExpr: string, labelPlaceholder: string): string;
 
+  /** A bind placeholder holding a value of `type`, with the type made explicit. */
+  typedPlaceholder(placeholder: string, type: 'integer' | 'float' | 'string'): string;
+
+  /** A boolean literal; `null` is the unknown truth value. */
+  booleanLiteral(value: boolean | null): string;
+
   /**
-   * Condition that is true exactly when two JSON values are equal in Cypher:
-   * integers and floats compare by value (`1 = 1.0`), other types only with the
-   * same type. It is never true when either side is SQL NULL or JSON null.
+   * The Cypher type of a JSON value at run time, as SQL text: `null`, `boolean`,
+   * `integer`, `float`, `string`, `list`, or `map`. SQL NULL for SQL NULL.
    */
-  jsonEquals(left: string, right: string): string;
+  jsonType(json: string): string;
+
+  /** Condition: the JSON value is null (SQL NULL or JSON null). */
+  jsonIsNull(json: string): string;
+
+  /**
+   * A JSON scalar already known to be of `type`, as a native value. `number` is
+   * an integer or float, as a value that compares exactly with either.
+   */
+  fromJson(json: string, type: ScalarType | 'number'): string;
+
+  /** The JSON value of a native value of `type`. Floats keep a fraction (`2.0`). */
+  toJson(value: string, type: ScalarType): string;
+
+  /** A JSON list of JSON values. */
+  jsonArray(items: string[]): string;
+
+  /** A JSON map; keys are bind placeholders, values are JSON values. */
+  jsonObject(entries: { keyPlaceholder: string; value: string }[]): string;
+
+  /** Number of elements of a JSON value known to be a list. */
+  listLength(json: string): string;
+
+  /** Comparison of two strings by code point (binary collation). */
+  compareStrings(
+    left: string,
+    operator: '=' | '<>' | '<' | '<=' | '>' | '>=',
+    right: string,
+  ): string;
+
+  startsWith(string: string, prefix: string): string;
+  endsWith(string: string, suffix: string): string;
+  contains(string: string, part: string): string;
+
+  /** `base ^ exponent` as a float. */
+  power(base: string, exponent: string): string;
+
+  /**
+   * Float division. Dividing by zero gives infinity (or NaN for zero by zero)
+   * instead of an error, as in Cypher. SQLite has no NaN; it gives NULL.
+   */
+  floatDivide(dividend: string, divisor: string): string;
+
+  /** Concatenation of two JSON values known to be lists. */
+  concatLists(left: string, right: string): string;
+
+  /**
+   * Cypher `=` on two JSON values, at any depth: false if they differ in type
+   * (numbers compare by value), list length, map keys, or any pair of non-null
+   * values; otherwise null if a null is compared; otherwise true.
+   */
+  jsonDeepEquals(left: string, right: string): string;
+
+  /**
+   * Clause to append to a derived table so that the optimizer does not flatten
+   * it into the outer query. Flattening would copy the derived table's
+   * expressions into every place that uses them, which grows exponentially for
+   * nested expressions.
+   */
+  readonly noFlatten: string;
 
   /**
    * `UNWIND listExpr AS ...` as a FROM item named `alias`, cross-joined after the
@@ -57,4 +136,9 @@ export interface Dialect {
     /** Expression that orders the rows in list order. */
     order: string;
   };
+}
+
+/** A string literal for a key from the mapping (validated not to contain `"`). */
+export function sqlStringLiteral(text: string): string {
+  return `'${text.replaceAll("'", "''")}'`;
 }

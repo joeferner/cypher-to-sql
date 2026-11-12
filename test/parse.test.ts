@@ -209,21 +209,65 @@ describe('parse: literals', () => {
   });
 });
 
+describe('parse: operators', () => {
+  const v = (name: string): object => ({ type: 'Variable', name });
+  const bin = (operator: string, left: object, right: object): object => ({
+    type: 'Binary',
+    operator,
+    left,
+    right,
+  });
+
+  it('gives boolean operators their precedence: NOT, AND, XOR, OR', () => {
+    expect(expr('a OR b XOR c AND NOT d')).toMatchObject(
+      bin('OR', v('a'), bin('XOR', v('b'), bin('AND', v('c'), { type: 'Not', operand: v('d') }))),
+    );
+    expect(expr('NOT NOT a')).toMatchObject({
+      type: 'Not',
+      operand: { type: 'Not', operand: v('a') },
+    });
+  });
+
+  it('chains comparisons with AND', () => {
+    expect(expr('a < b <= c')).toMatchObject(
+      bin('AND', bin('<', v('a'), v('b')), bin('<=', v('b'), v('c'))),
+    );
+    expect(expr('a <> b')).toMatchObject(bin('<>', v('a'), v('b')));
+  });
+
+  it('gives arithmetic its precedence and left associativity', () => {
+    expect(expr('a + b * c ^ d')).toMatchObject(
+      bin('+', v('a'), bin('*', v('b'), bin('^', v('c'), v('d')))),
+    );
+    expect(expr('a - b - c')).toMatchObject(bin('-', bin('-', v('a'), v('b')), v('c')));
+    expect(expr('a / b % c')).toMatchObject(bin('%', bin('/', v('a'), v('b')), v('c')));
+  });
+
+  it('folds a minus into number literals only', () => {
+    expect(expr('-1')).toMatchObject({ type: 'Literal', value: -1n });
+    expect(expr('-a')).toMatchObject({ type: 'Negate', operand: v('a') });
+    expect(expr('-a.b')).toMatchObject({ type: 'Negate', operand: { type: 'PropertyAccess' } });
+    expect(expr('- 2 ^ 2')).toMatchObject(bin('^', { value: -2n }, { value: 2n }));
+  });
+
+  it('parses string, list, and null predicates left to right', () => {
+    expect(expr("a STARTS WITH 'x'")).toMatchObject(bin('STARTS WITH', v('a'), { value: 'x' }));
+    expect(expr("a ENDS WITH 'x'")).toMatchObject({ operator: 'ENDS WITH' });
+    expect(expr("a CONTAINS 'x'")).toMatchObject({ operator: 'CONTAINS' });
+    expect(expr('a IN [1]')).toMatchObject(bin('IN', v('a'), { type: 'List' }));
+    expect(expr('a IS NULL')).toMatchObject({ type: 'IsNull', negated: false, operand: v('a') });
+    expect(expr('a IS NOT NULL')).toMatchObject({ type: 'IsNull', negated: true });
+    expect(expr('a + 1 IS NULL')).toMatchObject({ type: 'IsNull', operand: { operator: '+' } });
+  });
+
+  it('parses label predicates', () => {
+    expect(expr('n:A:B')).toMatchObject({ type: 'HasLabels', subject: v('n'), labels: ['A', 'B'] });
+  });
+});
+
 describe('parse: unsupported expressions', () => {
   it.each([
-    ['a OR b', 'OR'],
-    ['a XOR b', 'XOR'],
-    ['a AND b', 'AND'],
-    ['NOT a', 'NOT'],
-    ['a = 1', 'comparison operators'],
-    ['a IS NULL', 'string, list, and null predicates'],
-    ["a STARTS WITH 'x'", 'string, list, and null predicates'],
-    ['1 + 2', 'arithmetic'],
-    ['2 * 3', 'arithmetic'],
-    ['2 ^ 3', 'arithmetic'],
-    ['-a', 'unary minus'],
     ['a[0]', 'list indexing and slicing'],
-    ['a:Label', 'label predicates'],
     ['CASE WHEN a THEN 1 END', 'CASE expressions'],
     ['count(*)', 'count(*)'],
     ['[x IN a | x]', 'list comprehensions'],
@@ -241,9 +285,12 @@ describe('parse: unsupported expressions', () => {
   });
 
   it('keeps unsupported expressions nested inside supported ones', () => {
-    expect(expr('[1, a + 1]')).toMatchObject({
+    expect(expr('[1, a + size(b)]')).toMatchObject({
       type: 'List',
-      items: [{ type: 'Literal' }, { type: 'UnsupportedExpression', description: 'arithmetic' }],
+      items: [
+        { type: 'Literal' },
+        { type: 'Binary', right: { type: 'UnsupportedExpression', description: 'function calls' } },
+      ],
     });
   });
 });

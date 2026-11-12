@@ -1,3 +1,4 @@
+import type { ScalarType } from './dialect/dialect.js';
 import type { SourcePosition } from './errors.js';
 import type { Row, SqlExecutor } from './executor.js';
 import type { Limits } from './limits.js';
@@ -77,7 +78,9 @@ export type ColumnSpec =
       endId: string;
       properties: string;
     }
-  | { name: string; kind: 'json'; column: string };
+  | { name: string; kind: 'json'; column: string }
+  /** A native SQL value of a known type. */
+  | { name: string; kind: 'scalar'; type: ScalarType; column: string };
 
 export interface CompiledPlan {
   /** True when the plan has no write steps. It then runs in a `'read'` transaction. */
@@ -323,11 +326,36 @@ function assembleRecord(row: Row, columns: readonly ColumnSpec[]): Record<string
               idToString(row[column.endId]),
               parseJsonColumn(row[column.properties]) as CypherMap,
             );
+    } else if (column.kind === 'scalar') {
+      record[column.name] = scalarValue(row[column.column], column.type);
     } else {
       record[column.name] = parseJsonColumn(row[column.column]);
     }
   }
   return record;
+}
+
+/**
+ * A native SQL value as a Cypher value. Drivers differ: `pg` returns bigint as
+ * text and booleans as booleans; SQLite returns booleans as 1 and 0.
+ */
+function scalarValue(raw: unknown, type: ScalarType): CypherValue {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  switch (type) {
+    case 'integer':
+      return BigInt(raw as string | number | bigint);
+    case 'float':
+      return Number(raw);
+    case 'boolean':
+      return raw === true || raw === 1 || raw === 1n || raw === '1' || raw === 't';
+    case 'string':
+      if (typeof raw !== 'string') {
+        throw new Error(`Internal error: expected a string from the database, got ${typeof raw}`);
+      }
+      return raw;
+  }
 }
 
 /** Ids are whatever the driver returns for the id column: a string, number, or bigint. */

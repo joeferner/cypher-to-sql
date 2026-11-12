@@ -37,6 +37,7 @@ Cypher text
 - Keep `readOnly: true` for any graph that runs user-supplied or generated queries. Give its executor a database role (PostgreSQL) or a read-only connection (SQLite, or `PRAGMA query_only`) that can only read the mapped tables.
 - For writes, make a separate graph with `readOnly: false` and a separate executor that can write. Never pass that graph untrusted queries.
 - Set a statement timeout in the executor (for example, PostgreSQL `statement_timeout`), and keep the library's limits at or below the defaults.
+- On PostgreSQL, turn JIT off in the executor (`SET LOCAL jit = off` after `BEGIN`, or for the role). The SQL for expressions on JSON lists uses set-returning functions and recursive CTEs with high row estimates, so JIT compilation can take hundreds of milliseconds for a query that runs in under one.
 - Treat the library's read-only gate as one layer of defense, not the only one.
 
 ## Execution model
@@ -73,8 +74,30 @@ Rules:
 `mapping.nodes.propertyTypes` and `mapping.edges.propertyTypes` declare a type for a property key: `string`, `integer`, `float`, `boolean`, `date` (ISO 8601 `YYYY-MM-DD`), or `datetime` (ISO 8601 with a time zone). Temporal values are stored as strings. A type applies to the key across every label (or relationship type), which matches the generic layout: one expression index on a key covers the whole table, and a node with several labels cannot get conflicting types.
 
 - **Writes:** `CREATE` rejects a non-null value that does not have the declared type, with a `SemanticError` and a hint. There is no conversion (`1` is not a float). Values are checked at run time, so literals, parameters, and values from `MATCH`/`UNWIND` rows are all covered. Undeclared keys accept any property value.
-- **Reads:** the planner can therefore cast a declared property out of JSON without a type check. `WHERE` and `ORDER BY` (#7, #8) will use these typed expressions, which also lets them use expression indexes. Undeclared properties keep Cypher's comparison rules, with mixed types comparing as null.
-- Data written to the tables by something other than this library is not checked. Add `CHECK` constraints if other writers exist.
+- **Reads:** a declared property is read as a native SQL value without a type check (`Dialect.typedMember`), so comparisons against it are plain SQL and can use an expression index. The key comes from the mapping and is written into the SQL as a literal, so the index expression must match it exactly:
+
+  ```sql
+  -- PostgreSQL, for nodes.propertyTypes = { age: 'integer', name: 'string' }
+  CREATE INDEX nodes_age ON nodes (((properties ->> 'age')::bigint));
+  CREATE INDEX nodes_name ON nodes ((properties ->> 'name'));
+  -- SQLite
+  CREATE INDEX nodes_age ON nodes (properties ->> '$."age"');
+  ```
+
+  Undeclared properties are JSON values whose type is checked at run time (see "Expressions"); they cannot use these indexes.
+
+- Data written to the tables by something other than this library is not checked. Add `CHECK` constraints if other writers exist, because a value of the wrong type makes the PostgreSQL cast fail.
+
+## Expressions
+
+`src/planner/expr.ts` compiles expressions (in `WHERE`, `RETURN`, `UNWIND`, and property maps) with a static type for each one: a native SQL value (boolean, integer, float, string), a JSON value whose Cypher type is known only at run time, null, or an entity.
+
+- **Both types known** (literals, declared properties, results of typed operations): plain SQL, for example `(properties ->> 'age')::bigint > $1`.
+- **A JSON operand:** the SQL checks its run-time type (`Dialect.jsonType`) and gives null for values of a different type, as Cypher does. Operands used more than once are computed once in a scalar subquery with an optimization fence (`Dialect.noFlatten`); without the fence, the planners copy the expression into every use, which grows exponentially with nesting.
+- **Lists and maps:** `=` walks both values with a recursive CTE (`Dialect.jsonDeepEquals`), so nesting depth does not change the SQL size. List ordering is lexicographic at the top level; ordering nested lists or maps is null.
+- **Results:** a native value is selected in its SQL type and converted by the assembler, so floats stay exact. Floats converted to JSON keep a fraction (`2.0`); on SQLite this goes through the shortest of 15 to 17 significant digits, because `json_quote` rounds to 15.
+- **Type errors:** a type error the compiler can see (`1 AND true`, `'a' - 1`, `[] OR x`) is a `SemanticError` at compile time. A type error that depends on data is null at run time instead of an error (#30).
+- **PostgreSQL constant folding:** PostgreSQL may evaluate a CASE branch early when its input is a constant (a bound parameter), even if the branch is not taken. Casts out of JSON are therefore guarded so that they never fail.
 
 ## Ids (write mode)
 
@@ -100,24 +123,24 @@ The defaults are starting values, not measured ones (#16).
 
 ## Translation rules
 
-| Cypher                                                      | SQL                                                                                                                               |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Node pattern `(a:Label {k: v})`                             | Scan of the node table with label and property filters                                                                            |
-| Fixed relationship `-[r:T]->`                               | Join to the edge table on start and end ids                                                                                       |
-| Undirected `-[r]-`                                          | Join on either direction with `OR`. As in Cypher, a relationship matches once per orientation that fits (a self-loop once)        |
-| Several relationship patterns in one `MATCH`                | `r1.id <> r2.id` for each pair (relationship uniqueness), including anonymous ones and ones bound by an earlier clause            |
-| Inline property map `{k: v}` in `MATCH`                     | `Dialect.jsonEquals` per entry: numbers compare by value, a missing property or a null never matches. A parameter map is an error |
-| `WHERE`                                                     | SQL expressions with Cypher null semantics and safe casts                                                                         |
-| `RETURN`, `DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT`           | Direct equivalents                                                                                                                |
-| Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`) | SQL aggregates; non-aggregated return items form the `GROUP BY`. `collect` is a JSON array aggregate with nulls removed.          |
-| Variable length `[*1..n]`                                   | Recursive CTE with visited-id arrays and a required upper bound, or iterative steps                                               |
-| `shortestPath` / `allShortestPaths`                         | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                       |
-| `nodes(p)`, `relationships(p)`, `length(p)`                 | Path id arrays, hydrated by the assembler                                                                                         |
-| `OPTIONAL MATCH`                                            | PostgreSQL: `LEFT JOIN LATERAL`. SQLite: `LEFT JOIN` with correlated conditions, or a separate step.                              |
-| `WITH`                                                      | CTE or subquery per stage, or a separate step for large stages                                                                    |
-| `UNWIND`                                                    | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position.   |
-| Pattern predicates, `EXISTS { }`                            | `EXISTS (SELECT ...)`                                                                                                             |
-| `CREATE` (write mode)                                       | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`                                                 |
+| Cypher                                                      | SQL                                                                                                                             |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Node pattern `(a:Label {k: v})`                             | Scan of the node table with label and property filters                                                                          |
+| Fixed relationship `-[r:T]->`                               | Join to the edge table on start and end ids                                                                                     |
+| Undirected `-[r]-`                                          | Join on either direction with `OR`. As in Cypher, a relationship matches once per orientation that fits (a self-loop once)      |
+| Several relationship patterns in one `MATCH`                | `r1.id <> r2.id` for each pair (relationship uniqueness), including anonymous ones and ones bound by an earlier clause          |
+| Inline property map `{k: v}` in `MATCH`                     | `n.k = v` per entry with Cypher equality: a missing property or a null never matches. A parameter map is an error               |
+| `WHERE`                                                     | The expression compiler (see "Expressions"), with Cypher null semantics                                                         |
+| `RETURN`, `DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT`           | Direct equivalents                                                                                                              |
+| Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`) | SQL aggregates; non-aggregated return items form the `GROUP BY`. `collect` is a JSON array aggregate with nulls removed.        |
+| Variable length `[*1..n]`                                   | Recursive CTE with visited-id arrays and a required upper bound, or iterative steps                                             |
+| `shortestPath` / `allShortestPaths`                         | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                     |
+| `nodes(p)`, `relationships(p)`, `length(p)`                 | Path id arrays, hydrated by the assembler                                                                                       |
+| `OPTIONAL MATCH`                                            | PostgreSQL: `LEFT JOIN LATERAL`. SQLite: `LEFT JOIN` with correlated conditions, or a separate step.                            |
+| `WITH`                                                      | CTE or subquery per stage, or a separate step for large stages                                                                  |
+| `UNWIND`                                                    | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position. |
+| Pattern predicates, `EXISTS { }`                            | `EXISTS (SELECT ...)`                                                                                                           |
+| `CREATE` (write mode)                                       | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`                                               |
 
 ## Dialect differences
 
@@ -138,8 +161,9 @@ The defaults are starting values, not measured ones (#16).
 - **Numbers.** Integer division truncates, and integer overflow is an error. Map both exactly in each dialect.
 - **Mixed-type comparisons** return null in Cypher; SQL raises an error or converts.
 - **Sort order.** Cypher defines a global order across types. Pin null ordering explicitly.
-- **Strings.** Comparison is case sensitive. Use a binary collation explicitly.
-- **List equality on SQLite.** `jsonEquals` compares lists as minified JSON text, so `[1] = [1.0]` is false on SQLite but true on PostgreSQL (and in Cypher). Fix this with list comparison in #7.
+- **Strings.** Comparison is case sensitive and by code point: `COLLATE "C"` on PostgreSQL, the default BINARY collation on SQLite. `STARTS WITH`, `ENDS WITH`, and `CONTAINS` never use `LIKE` (case-insensitive on SQLite, and `%`/`_` are wildcards).
+- **NaN.** SQLite has no NaN (`0.0 / 0.0` is null there), and PostgreSQL treats `NaN = NaN` as true and NaN as larger than every number. NaN comparisons do not match Cypher on either dialect.
+- **Integer errors on SQLite.** Integer overflow becomes a float and integer division by zero gives null, where Cypher raises an error (#30). PostgreSQL raises its own errors for both.
 - **Unbounded paths.** `[*]` without an upper bound is capped by `maxPathDepth`.
 - **Row order.** `MATCH` order is undefined, but `UNWIND` order is defined, so plans with `UNWIND` order by every FROM item in clause order (nested-loop order).
 

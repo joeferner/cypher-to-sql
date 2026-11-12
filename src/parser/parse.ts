@@ -14,9 +14,22 @@ import { CypherSyntaxError, UnsupportedFeatureError, type SourcePosition } from 
 import { CypherLexer } from './generated/CypherLexer.js';
 import {
   CypherParser,
+  OC_ListPredicateExpressionContext,
+  OC_MultiplyDivideModuloExpressionContext,
+  OC_NullPredicateExpressionContext,
+  OC_PowerOfExpressionContext,
+  OC_StringPredicateExpressionContext,
+  OC_UnaryAddOrSubtractExpressionContext,
+  type OC_AddOrSubtractExpressionContext,
+  type OC_AndExpressionContext,
   type OC_AtomContext,
+  type OC_ComparisonExpressionContext,
   type OC_CreateContext,
   type OC_ExpressionContext,
+  type OC_NotExpressionContext,
+  type OC_OrExpressionContext,
+  type OC_StringListNullPredicateExpressionContext,
+  type OC_XorExpressionContext,
   type OC_IntegerLiteralContext,
   type OC_LiteralContext,
   type OC_MapLiteralContext,
@@ -33,7 +46,6 @@ import {
   type OC_SchemaNameContext,
   type OC_SinglePartQueryContext,
   type OC_SymbolicNameContext,
-  type OC_UnaryAddOrSubtractExpressionContext,
   type OC_UpdatingClauseContext,
 } from './generated/CypherParser.js';
 
@@ -289,49 +301,141 @@ class AstBuilder {
   // ---- expressions ----------------------------------------------------------
 
   private expression(ctx: OC_ExpressionContext): ast.Expression {
-    // Walk down the precedence chain. Each level with more than one operand is an
-    // operator this slice does not translate yet.
-    const or = ctx.oC_OrExpression();
-    if (or.oC_XorExpression().length > 1) {
-      return this.unsupported(or, 'OR');
+    return this.orExpression(ctx.oC_OrExpression());
+  }
+
+  private orExpression(ctx: OC_OrExpressionContext): ast.Expression {
+    return this.chain(
+      ctx,
+      ctx.oC_XorExpression().map((x) => this.xorExpression(x)),
+      'OR',
+    );
+  }
+
+  private xorExpression(ctx: OC_XorExpressionContext): ast.Expression {
+    return this.chain(
+      ctx,
+      ctx.oC_AndExpression().map((a) => this.andExpression(a)),
+      'XOR',
+    );
+  }
+
+  private andExpression(ctx: OC_AndExpressionContext): ast.Expression {
+    return this.chain(
+      ctx,
+      ctx.oC_NotExpression().map((n) => this.notExpression(n)),
+      'AND',
+    );
+  }
+
+  /** Left-associative chain of one boolean operator. */
+  private chain(
+    ctx: ParserRuleContext,
+    operands: ast.Expression[],
+    operator: ast.BooleanOperator,
+  ): ast.Expression {
+    return operands.reduce((left, right) => ({
+      type: 'Binary',
+      position: pos(ctx),
+      operator,
+      left,
+      right,
+    }));
+  }
+
+  private notExpression(ctx: OC_NotExpressionContext): ast.Expression {
+    let expr = this.comparison(ctx.oC_ComparisonExpression());
+    for (let i = 0; i < ctx.NOT().length; i++) {
+      expr = { type: 'Not', position: pos(ctx), operand: expr };
     }
-    const xor = or.oC_XorExpression(0)!;
-    if (xor.oC_AndExpression().length > 1) {
-      return this.unsupported(xor, 'XOR');
+    return expr;
+  }
+
+  /** `a < b <= c` means `a < b AND b <= c`. */
+  private comparison(ctx: OC_ComparisonExpressionContext): ast.Expression {
+    let left = this.predicate(ctx.oC_StringListNullPredicateExpression());
+    let result: ast.Expression | undefined;
+    for (const partial of ctx.oC_PartialComparisonExpression()) {
+      const right = this.predicate(partial.oC_StringListNullPredicateExpression()!);
+      const comparison: ast.Expression = {
+        type: 'Binary',
+        position: pos(partial),
+        operator: partial.getChild(0)!.getText() as ast.ComparisonOperator,
+        left,
+        right,
+      };
+      result = result
+        ? { type: 'Binary', position: pos(ctx), operator: 'AND', left: result, right: comparison }
+        : comparison;
+      left = right;
     }
-    const and = xor.oC_AndExpression(0)!;
-    if (and.oC_NotExpression().length > 1) {
-      return this.unsupported(and, 'AND');
+    return result ?? left;
+  }
+
+  private predicate(ctx: OC_StringListNullPredicateExpressionContext): ast.Expression {
+    let expr = this.additive(ctx.oC_AddOrSubtractExpression());
+    // The predicates apply left to right: `a IS NULL IS NULL`.
+    for (const child of ctx.children.slice(1)) {
+      if (child instanceof OC_StringPredicateExpressionContext) {
+        const operator: ast.StringOperator = child.STARTS()
+          ? 'STARTS WITH'
+          : child.ENDS()
+            ? 'ENDS WITH'
+            : 'CONTAINS';
+        const right = this.additive(child.oC_AddOrSubtractExpression());
+        expr = { type: 'Binary', position: pos(child), operator, left: expr, right };
+      } else if (child instanceof OC_ListPredicateExpressionContext) {
+        const right = this.additive(child.oC_AddOrSubtractExpression());
+        expr = { type: 'Binary', position: pos(child), operator: 'IN', left: expr, right };
+      } else if (child instanceof OC_NullPredicateExpressionContext) {
+        expr = {
+          type: 'IsNull',
+          position: pos(child),
+          operand: expr,
+          negated: child.NOT() !== null,
+        };
+      }
     }
-    const not = and.oC_NotExpression(0)!;
-    if (not.NOT().length > 0) {
-      return this.unsupported(not, 'NOT');
+    return expr;
+  }
+
+  private additive(ctx: OC_AddOrSubtractExpressionContext): ast.Expression {
+    return this.arithmetic(ctx, OC_MultiplyDivideModuloExpressionContext, (c) =>
+      this.multiplicative(c),
+    );
+  }
+
+  private multiplicative(ctx: OC_MultiplyDivideModuloExpressionContext): ast.Expression {
+    return this.arithmetic(ctx, OC_PowerOfExpressionContext, (c) => this.power(c));
+  }
+
+  private power(ctx: OC_PowerOfExpressionContext): ast.Expression {
+    return this.arithmetic(ctx, OC_UnaryAddOrSubtractExpressionContext, (c) => this.unary(c));
+  }
+
+  /**
+   * A left-associative arithmetic level: operands of type `operandType`, with the
+   * operator tokens (`+`, `*`, `^`, ...) between them.
+   */
+  private arithmetic<T extends ParserRuleContext>(
+    ctx: ParserRuleContext,
+    operandType: new (...args: never[]) => T,
+    operand: (ctx: T) => ast.Expression,
+  ): ast.Expression {
+    let expr: ast.Expression | undefined;
+    let operator: ast.ArithmeticOperator | undefined;
+    for (const child of ctx.children) {
+      if (child instanceof operandType) {
+        const right = operand(child);
+        expr =
+          expr && operator
+            ? { type: 'Binary', position: pos(ctx), operator, left: expr, right }
+            : right;
+      } else if (['+', '-', '*', '/', '%', '^'].includes(child.getText())) {
+        operator = child.getText() as ast.ArithmeticOperator;
+      }
     }
-    const comparison = not.oC_ComparisonExpression();
-    if (comparison.oC_PartialComparisonExpression().length > 0) {
-      return this.unsupported(comparison, 'comparison operators');
-    }
-    const predicate = comparison.oC_StringListNullPredicateExpression();
-    if (
-      predicate.oC_StringPredicateExpression().length > 0 ||
-      predicate.oC_ListPredicateExpression().length > 0 ||
-      predicate.oC_NullPredicateExpression().length > 0
-    ) {
-      return this.unsupported(predicate, 'string, list, and null predicates');
-    }
-    const add = predicate.oC_AddOrSubtractExpression();
-    if (add.oC_MultiplyDivideModuloExpression().length > 1) {
-      return this.unsupported(add, 'arithmetic');
-    }
-    const mul = add.oC_MultiplyDivideModuloExpression(0)!;
-    if (mul.oC_PowerOfExpression().length > 1) {
-      return this.unsupported(mul, 'arithmetic');
-    }
-    const power = mul.oC_PowerOfExpression(0)!;
-    if (power.oC_UnaryAddOrSubtractExpression().length > 1) {
-      return this.unsupported(power, 'arithmetic');
-    }
-    return this.unary(power.oC_UnaryAddOrSubtractExpression(0)!);
+    return expr!;
   }
 
   private unary(ctx: OC_UnaryAddOrSubtractExpressionContext): ast.Expression {
@@ -342,11 +446,16 @@ class AstBuilder {
     if (operand.oC_ListOperatorExpression().length > 0) {
       return this.unsupported(operand, 'list indexing and slicing');
     }
-    if (operand.oC_NodeLabels()) {
-      return this.unsupported(operand, 'label predicates');
-    }
 
-    let expr = this.atom(operand.oC_Atom(), negate);
+    // `-1` is a literal (so that the smallest integer can be written); any other
+    // minus is an operator.
+    const atom = operand.oC_Atom();
+    const foldMinus =
+      negate &&
+      atom.oC_Literal()?.oC_NumberLiteral() != null &&
+      operand.oC_PropertyLookup().length === 0 &&
+      !operand.oC_NodeLabels();
+    let expr = this.atom(atom, foldMinus);
     for (const lookup of operand.oC_PropertyLookup()) {
       expr = {
         type: 'PropertyAccess',
@@ -355,8 +464,17 @@ class AstBuilder {
         key: this.schemaName(lookup.oC_PropertyKeyName()!.oC_SchemaName()),
       };
     }
-    if (negate && expr.type !== 'Literal') {
-      return this.unsupported(ctx, 'unary minus');
+    const labels = operand.oC_NodeLabels();
+    if (labels) {
+      expr = {
+        type: 'HasLabels',
+        position: pos(operand),
+        subject: expr,
+        labels: this.nodeLabels(labels),
+      };
+    }
+    if (negate && !foldMinus) {
+      expr = { type: 'Negate', position: pos(ctx), operand: expr };
     }
     return expr;
   }

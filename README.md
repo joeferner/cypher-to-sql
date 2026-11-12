@@ -49,7 +49,7 @@ console.log(graph.compile('MATCH (p:Person) RETURN p LIMIT 5').explain());
 
 The test executor in [test/support/sqlite.ts](test/support/sqlite.ts) is a more complete example. For example, it sets `PRAGMA query_only` on read transactions.
 
-For PostgreSQL, use `postgres()` and an executor over your driver. [test/support/postgres.ts](test/support/postgres.ts) has one for `pg`. Read transactions use `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`, so every step of a query sees the same snapshot. The same file has the DDL for the storage layout with `jsonb` columns.
+For PostgreSQL, use `postgres()` and an executor over your driver. [test/support/postgres.ts](test/support/postgres.ts) has one for `pg`. Read transactions use `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`, so every step of a query sees the same snapshot. The executor also runs `SET LOCAL jit = off`: expressions on JSON lists have high row estimates that can trigger JIT compilation, which then takes far longer than the query (hundreds of milliseconds instead of under one). The same file has the DDL for the storage layout with `jsonb` columns.
 
 ### Writing
 

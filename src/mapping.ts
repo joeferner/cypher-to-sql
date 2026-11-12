@@ -82,6 +82,13 @@ function checkPropertyTypes(path: string, types: unknown): void {
     if (key === '') {
       throw new MappingError(`Mapping value ${path} has an empty property key`);
     }
+    // Declared keys are written into SQL (as string literals and JSON paths) so
+    // that expression indexes match; a double quote cannot be addressed exactly.
+    if (key.includes('"') || [...key].some((c) => c.charCodeAt(0) < 0x20)) {
+      throw new MappingError(
+        `Mapping value ${path} has a key with a double quote or control character: ${JSON.stringify(key)}`,
+      );
+    }
     if (!isPropertyType(type)) {
       throw new MappingError(
         `Mapping value ${path}.${key} must be one of ${PROPERTY_TYPES.join(', ')}, got ${JSON.stringify(type)}`,

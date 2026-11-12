@@ -47,6 +47,7 @@ describe('mapping validation', () => {
     });
     expect(() => create(withTypes({ age: 'int' }))).toThrow(MappingError);
     expect(() => create(withTypes({ '': 'string' }))).toThrow(MappingError);
+    expect(() => create(withTypes({ 'a"b': 'string' }))).toThrow(MappingError);
     expect(() => create(withTypes(['string']))).toThrow(MappingError);
   });
 });

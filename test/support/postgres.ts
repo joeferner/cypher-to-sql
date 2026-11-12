@@ -96,6 +96,10 @@ export function postgresExecutor(client: pg.Client): SqlExecutor & { log: string
         mode === 'read' ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN',
       );
       try {
+        // Expressions on JSON lists use set-returning functions and recursive
+        // CTEs whose row estimates are high, which can trigger JIT compilation
+        // that takes far longer than the query itself.
+        await client.query('SET LOCAL jit = off');
         const result = await fn(tx);
         await client.query('COMMIT');
         return result;

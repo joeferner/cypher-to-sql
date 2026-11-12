@@ -1,16 +1,15 @@
 import type * as ast from '../ast.js';
 import { SemanticError, UnsupportedFeatureError } from '../errors.js';
 import type { ColumnSpec, PlanStep, ValueSource } from '../plan.js';
+import { ExprCompiler, type VariableBinding } from './expr.js';
 import { constantValue, type SqlBuilder } from './sql-builder.js';
 
-/** What a variable refers to in SQL. */
-export type Binding =
-  /** A node: an alias of the node table. */
-  | { kind: 'node'; alias: string }
-  /** A relationship: an alias of the edge table. */
-  | { kind: 'relationship'; alias: string }
-  /** Any other value: a SQL expression of the dialect's JSON type. */
-  | { kind: 'value'; sql: string };
+/**
+ * What a variable refers to in SQL: a node (an alias of the node table), a
+ * relationship (an alias of the edge table), or any other value (a SQL
+ * expression of the dialect's JSON type).
+ */
+export type Binding = VariableBinding;
 
 /**
  * The rows produced by the reading clauses of a query (MATCH and UNWIND), as the
@@ -23,8 +22,11 @@ export class ReadScope {
   /** Expressions that order rows the way Cypher produces them (one per FROM item). */
   private readonly order: string[] = [];
   private hasUnwind = false;
+  public readonly expressions: ExprCompiler;
 
-  public constructor(public readonly b: SqlBuilder) {}
+  public constructor(public readonly b: SqlBuilder) {
+    this.expressions = new ExprCompiler(b, (variable) => this.lookup(variable));
+  }
 
   public static of(b: SqlBuilder, clauses: ast.ReadingClause[]): ReadScope {
     const scope = new ReadScope(b);
@@ -63,11 +65,6 @@ export class ReadScope {
         position: match.position,
       });
     }
-    if (match.where) {
-      throw new UnsupportedFeatureError('WHERE is not supported yet', {
-        position: match.where.position,
-      });
-    }
     /** Edge aliases of this clause's relationships, for relationship uniqueness. */
     const relationships: string[] = [];
     /** Relationship variables bound by this clause. */
@@ -92,6 +89,9 @@ export class ReadScope {
       for (let j = i + 1; j < relationships.length; j++) {
         this.where.push(`${relationships[i]}.${id} <> ${relationships[j]}.${id}`);
       }
+    }
+    if (match.where) {
+      this.where.push(this.expressions.condition(match.where));
     }
   }
 
@@ -123,7 +123,7 @@ export class ReadScope {
         ),
       );
     }
-    this.matchProperties(`${alias}.${b.ident(b.mapping.nodes.properties)}`, node.properties);
+    this.matchProperties({ kind: 'node', alias }, node.properties);
     return alias;
   }
 
@@ -194,29 +194,30 @@ export class ReadScope {
         binds.length === 1 ? `${type} = ${binds[0]}` : `${type} IN (${binds.join(', ')})`,
       );
     }
-    this.matchProperties(`${alias}.${b.ident(edges.properties)}`, rel.properties);
+    this.matchProperties({ kind: 'relationship', alias }, rel.properties);
     return alias;
   }
 
-  /** Adds an equality filter for each entry of an inline property map `{k: v}`. */
-  private matchProperties(propertiesColumn: string, properties: ast.Expression | undefined): void {
+  /**
+   * Adds a filter `entity.k = v` for each entry of an inline property map
+   * `{k: v}`, with Cypher equality (so a null or missing property never matches).
+   */
+  private matchProperties(
+    entity: { kind: 'node' | 'relationship'; alias: string },
+    properties: ast.Expression | undefined,
+  ): void {
     if (!properties) {
       return;
     }
-    const b = this.b;
     if (properties.type !== 'Map') {
       throw new SemanticError('A parameter cannot be used as a property map in MATCH', {
         position: properties.position,
         hint: 'Write the properties out, for example (n {name: $name}).',
       });
     }
+    const e = this.expressions;
     for (const { key, value } of properties.entries) {
-      const member = b.dialect.jsonMember(
-        propertiesColumn,
-        b.bind({ kind: 'sql', value: key }),
-        key,
-      );
-      this.where.push(b.dialect.jsonEquals(member, this.value(value)));
+      this.where.push(e.comparison('=', e.member(entity, key), e.compile(value)).sql);
     }
   }
 
@@ -240,41 +241,7 @@ export class ReadScope {
 
   /** SQL of the dialect's JSON type for a non-entity expression. */
   public value(expr: ast.Expression): string {
-    const b = this.b;
-    const constant = constantValue(expr);
-    if (constant) {
-      return b.dialect.jsonInput(b.bind({ kind: 'json', value: constant }));
-    }
-    if (expr.type === 'Variable') {
-      const binding = this.lookup(expr);
-      if (binding.kind !== 'value') {
-        const what = binding.kind === 'node' ? 'Node' : 'Relationship';
-        throw new UnsupportedFeatureError(
-          `${what} \`${expr.name}\` cannot be used as a value here yet`,
-          { position: expr.position },
-        );
-      }
-      return binding.sql;
-    }
-    if (expr.type === 'PropertyAccess') {
-      let object: string;
-      if (expr.subject.type === 'Variable') {
-        const binding = this.lookup(expr.subject);
-        if (binding.kind === 'node') {
-          object = `${binding.alias}.${b.ident(b.mapping.nodes.properties)}`;
-        } else if (binding.kind === 'relationship') {
-          object = `${binding.alias}.${b.ident(b.mapping.edges.properties)}`;
-        } else {
-          object = binding.sql;
-        }
-      } else {
-        object = this.value(expr.subject);
-      }
-      return b.dialect.jsonMember(object, b.bind({ kind: 'sql', value: expr.key }), expr.key);
-    }
-    throw new UnsupportedFeatureError('This expression is not supported here yet', {
-      position: expr.position,
-    });
+    return this.expressions.json(expr);
   }
 
   /** The SELECT over this scope. The row limit is always applied. */
@@ -410,8 +377,25 @@ export function planRead(
       });
       continue;
     }
-    select.push(`${b.dialect.jsonText(scope.value(expr))} AS ${c}`);
-    columns.push({ name: item.name, kind: 'json', column: c });
+    const compiled = scope.expressions.compile(expr);
+    if (compiled.type === 'node' || compiled.type === 'relationship') {
+      throw new UnsupportedFeatureError(
+        `Returning this ${compiled.type} expression is not supported yet`,
+        {
+          position: expr.position,
+        },
+      );
+    }
+    if (compiled.type === 'json' || compiled.type === 'null') {
+      select.push(
+        `${b.dialect.jsonText(compiled.type === 'null' ? 'NULL' : compiled.sql)} AS ${c}`,
+      );
+      columns.push({ name: item.name, kind: 'json', column: c });
+    } else {
+      // Native values come back in their SQL type, which keeps floats exact.
+      select.push(`${compiled.sql} AS ${c}`);
+      columns.push({ name: item.name, kind: 'scalar', type: compiled.type, column: c });
+    }
   }
 
   let userLimit: ValueSource | undefined;

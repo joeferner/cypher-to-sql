@@ -75,7 +75,14 @@ function findUnsupported(expr: ast.Expression): ast.UnsupportedExpression | unde
     case 'Map':
       return firstDefined(expr.entries.map((e) => findUnsupported(e.value)));
     case 'PropertyAccess':
+    case 'HasLabels':
       return findUnsupported(expr.subject);
+    case 'Binary':
+      return findUnsupported(expr.left) ?? findUnsupported(expr.right);
+    case 'Not':
+    case 'Negate':
+    case 'IsNull':
+      return findUnsupported(expr.operand);
     default:
       return undefined;
   }

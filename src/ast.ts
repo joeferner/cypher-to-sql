@@ -104,7 +104,53 @@ export type Expression =
   | Parameter
   | Variable
   | PropertyAccess
+  | BinaryExpression
+  | NotExpression
+  | NegateExpression
+  | IsNullExpression
+  | HasLabelsExpression
   | UnsupportedExpression;
+
+export type BooleanOperator = 'OR' | 'XOR' | 'AND';
+export type ComparisonOperator = '=' | '<>' | '<' | '<=' | '>' | '>=';
+export type ArithmeticOperator = '+' | '-' | '*' | '/' | '%' | '^';
+export type StringOperator = 'STARTS WITH' | 'ENDS WITH' | 'CONTAINS';
+
+/**
+ * A binary operator. A comparison chain `a < b < c` is parsed as
+ * `a < b AND b < c`, as openCypher defines it.
+ */
+export interface BinaryExpression extends Node {
+  type: 'Binary';
+  operator: BooleanOperator | ComparisonOperator | ArithmeticOperator | StringOperator | 'IN';
+  left: Expression;
+  right: Expression;
+}
+
+export interface NotExpression extends Node {
+  type: 'Not';
+  operand: Expression;
+}
+
+/** Unary minus (a minus in front of a number literal is folded into the literal). */
+export interface NegateExpression extends Node {
+  type: 'Negate';
+  operand: Expression;
+}
+
+export interface IsNullExpression extends Node {
+  type: 'IsNull';
+  operand: Expression;
+  /** `IS NOT NULL` */
+  negated: boolean;
+}
+
+/** Label predicate `n:A:B`. */
+export interface HasLabelsExpression extends Node {
+  type: 'HasLabels';
+  subject: Expression;
+  labels: string[];
+}
 
 export interface Literal extends Node {
   type: 'Literal';
