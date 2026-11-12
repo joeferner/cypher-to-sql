@@ -48,6 +48,7 @@ export function sqlite(): Dialect {
     listLength: (json) => `json_array_length(${json})`,
     // The default BINARY collation compares by bytes, which is code point order in UTF-8.
     compareStrings: (left, operator, right) => `(${left} ${operator} ${right})`,
+    orderString: (string) => string,
     // Not LIKE: it is case-insensitive for ASCII and treats % and _ as wildcards.
     startsWith: (string, prefix) => `(substr(${string}, 1, length(${prefix})) = ${prefix})`,
     endsWith: (string, suffix) =>

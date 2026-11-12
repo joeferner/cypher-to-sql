@@ -22,6 +22,22 @@ export interface Expr {
   shape?: 'list' | 'map' | undefined;
 }
 
+/**
+ * One ORDER BY term. `nulls`: SQL NULL means a Cypher null, so it must sort last
+ * ascending and first descending (other keys are NULL only for rows that an
+ * earlier key already separates).
+ */
+export interface SortKey {
+  sql: string;
+  nulls: boolean;
+}
+
+/** An ORDER BY term as SQL. */
+export function orderTerm(sql: string, key: SortKey, descending: boolean): string {
+  const nulls = key.nulls ? (descending ? ' NULLS FIRST' : ' NULLS LAST') : '';
+  return `${sql} ${descending ? 'DESC' : 'ASC'}${nulls}`;
+}
+
 /** An operand inside `share`: atomic, and for JSON with its run-time type as SQL. */
 interface Shared extends Expr {
   /** SQL text naming the JSON type (see `Dialect.jsonType`); only for `json`. */
@@ -133,6 +149,51 @@ export class ExprCompiler {
   /** Cypher `left <op> right` as a boolean. */
   public comparison(operator: Comparison, left: Expr, right: Expr): Expr {
     return this.compare(operator, left, right, 0);
+  }
+
+  /**
+   * ORDER BY terms that sort a value in Cypher's order: across types
+   * map < node < relationship < list < string < boolean < number < null
+   * (ascending; descending reverses it, so nulls come first), and within a type
+   * by value. Lists and maps sort by their JSON text within their type, which
+   * is not Cypher's element-wise order. Apply a direction with `orderTerm`.
+   */
+  public sortKeys(e: Expr): SortKey[] {
+    const d = this.b.dialect;
+    switch (e.type) {
+      case 'null':
+        return [];
+      case 'node':
+      case 'relationship': {
+        const table = this.b.mapping[e.type === 'node' ? 'nodes' : 'edges'];
+        return [{ sql: `${e.sql}.${this.b.ident(table.id)}`, nulls: true }];
+      }
+      case 'string':
+        return [{ sql: d.orderString(e.sql), nulls: true }];
+      case 'json': {
+        // The expression is repeated in each key; ORDER BY has no way to share it.
+        const t = d.jsonType(e.sql);
+        const when = (types: string, value: string): SortKey => ({
+          sql: `(CASE WHEN ${t} IN ${types} THEN ${value} END)`,
+          nulls: false,
+        });
+        return [
+          {
+            // Null (and a missing property) ranks last.
+            sql:
+              `(CASE ${t} WHEN 'map' THEN 1 WHEN 'list' THEN 4 WHEN 'string' THEN 12 ` +
+              `WHEN 'boolean' THEN 13 WHEN 'integer' THEN 14 WHEN 'float' THEN 14 ELSE 99 END)`,
+            nulls: false,
+          },
+          when(NUMBER_TYPES, d.fromJson(e.sql, 'number')),
+          when(`('string')`, d.orderString(d.fromJson(e.sql, 'string'))),
+          when(`('boolean')`, d.fromJson(e.sql, 'boolean')),
+          when(`('list', 'map')`, d.jsonText(e.sql)),
+        ];
+      }
+      default:
+        return [{ sql: e.sql, nulls: true }];
+    }
   }
 
   // ---- values ------------------------------------------------------------------

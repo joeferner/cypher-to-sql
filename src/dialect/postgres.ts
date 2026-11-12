@@ -76,6 +76,7 @@ export function postgres(): Dialect {
       operator === '=' || operator === '<>'
         ? `(${left} ${operator} ${right})`
         : `(${left} COLLATE "C" ${operator} ${right} COLLATE "C")`,
+    orderString: (string) => `(${string} COLLATE "C")`,
     startsWith: (string, prefix) => `starts_with(${string}, ${prefix})`,
     endsWith: (string, suffix) => `(right(${string}, length(${suffix})) = ${suffix})`,
     contains: (string, part) => `(strpos(${string}, ${part}) > 0)`,

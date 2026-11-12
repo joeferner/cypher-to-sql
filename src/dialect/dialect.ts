@@ -87,6 +87,9 @@ export interface Dialect {
     right: string,
   ): string;
 
+  /** A string expression for ORDER BY, so that it sorts by code point. */
+  orderString(string: string): string;
+
   startsWith(string: string, prefix: string): string;
   endsWith(string: string, suffix: string): string;
   contains(string: string, part: string): string;

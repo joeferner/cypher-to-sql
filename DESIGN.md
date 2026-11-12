@@ -131,7 +131,9 @@ The defaults are starting values, not measured ones (#16).
 | Several relationship patterns in one `MATCH`                | `r1.id <> r2.id` for each pair (relationship uniqueness), including anonymous ones and ones bound by an earlier clause          |
 | Inline property map `{k: v}` in `MATCH`                     | `n.k = v` per entry with Cypher equality: a missing property or a null never matches. A parameter map is an error               |
 | `WHERE`                                                     | The expression compiler (see "Expressions"), with Cypher null semantics                                                         |
-| `RETURN`, `DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT`           | Direct equivalents                                                                                                              |
+| `RETURN`, `SKIP`, `LIMIT`                                   | Direct equivalents; `SKIP`/`LIMIT` are bound values checked to be non-negative integers                                         |
+| `ORDER BY`                                                  | Sort keys from `ExprCompiler.sortKeys`: aliases are substituted, then a JSON value sorts by type rank and then value            |
+| `DISTINCT` with `ORDER BY`                                  | `SELECT * FROM (SELECT DISTINCT ..., <sort keys>) AS d ORDER BY d.k0, ...`; the keys may use only projected values              |
 | Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`) | SQL aggregates; non-aggregated return items form the `GROUP BY`. `collect` is a JSON array aggregate with nulls removed.        |
 | Variable length `[*1..n]`                                   | Recursive CTE with visited-id arrays and a required upper bound, or iterative steps                                             |
 | `shortestPath` / `allShortestPaths`                         | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                     |
@@ -160,7 +162,7 @@ The defaults are starting values, not measured ones (#16).
 - **Failed casts** return null in Cypher. Use safe-cast helpers in both dialects.
 - **Numbers.** Integer division truncates, and integer overflow is an error. Map both exactly in each dialect.
 - **Mixed-type comparisons** return null in Cypher; SQL raises an error or converts.
-- **Sort order.** Cypher defines a global order across types. Pin null ordering explicitly.
+- **Sort order.** Cypher defines a global order across types: map < node < relationship < list < string < boolean < number < null, ascending. Typed values use `NULLS LAST` (ascending) or `NULLS FIRST` (descending) explicitly; JSON values sort by a type rank first, with null ranked last. Within lists and maps the sort is by JSON text, not element-wise (#32). Within ORDER BY ties, UNWIND order is kept.
 - **Strings.** Comparison is case sensitive and by code point: `COLLATE "C"` on PostgreSQL, the default BINARY collation on SQLite. `STARTS WITH`, `ENDS WITH`, and `CONTAINS` never use `LIKE` (case-insensitive on SQLite, and `%`/`_` are wildcards).
 - **NaN.** SQLite has no NaN (`0.0 / 0.0` is null there), and PostgreSQL treats `NaN = NaN` as true and NaN as larger than every number. NaN comparisons do not match Cypher on either dialect.
 - **Integer errors on SQLite.** Integer overflow becomes a float and integer division by zero gives null, where Cypher raises an error (#30). PostgreSQL raises its own errors for both.

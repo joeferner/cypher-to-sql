@@ -43,7 +43,9 @@ export type BindValue =
   /** A column of the current source row, bound as is (for example the id of a matched node). */
   | { kind: 'rowId'; column: string }
   /** The SQL `LIMIT` of a step: `min(user limit, maxRowsPerStep + 1)`. */
-  | { kind: 'rowLimit'; userLimit: ValueSource | undefined };
+  | { kind: 'rowLimit'; userLimit: ValueSource | undefined }
+  /** The SQL `OFFSET` of a step: the query's SKIP. */
+  | { kind: 'rowOffset'; skip: ValueSource };
 
 /** A Cypher value known at compile time, a query parameter, or a JSON column of the current source row. */
 export type ValueSource =
@@ -249,6 +251,15 @@ function resolveBind(
       }
       return limit < cap ? limit : cap;
     }
+    case 'rowOffset': {
+      const value = resolveValue(bind.skip, options.params, row);
+      if (typeof value !== 'bigint' || value < 0n) {
+        throw new SemanticError('SKIP must be a non-negative integer', {
+          position: bind.skip.kind === 'parameter' ? bind.skip.position : undefined,
+        });
+      }
+      return value;
+    }
   }
 }
 
@@ -394,6 +405,8 @@ function describeBind(bind: BindValue): string {
       return bind.userLimit
         ? `limit(${describeSource(bind.userLimit)})`
         : 'limit(maxRowsPerStep + 1)';
+    case 'rowOffset':
+      return `skip(${describeSource(bind.skip)})`;
   }
 }
 

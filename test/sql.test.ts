@@ -19,6 +19,9 @@ const readQueries = [
   'MATCH (a:A {k: 1})-[r:T {w: $w}]->(b) RETURN a, r, b',
   'MATCH (a)<-[:T|U]-(b)-[r]-(c) RETURN r.w',
   'MATCH (a)-[r]->(b) MATCH (b)-[r2]->(c), (c)-[r]->(a) RETURN r2',
+  'MATCH (n) WHERE n.age > 30 AND n.name STARTS WITH $p RETURN n.name, n.age + 1 AS next',
+  'MATCH (n) RETURN n.name AS name ORDER BY name DESC, n.age SKIP $s LIMIT 10',
+  'MATCH (n) RETURN DISTINCT n.name AS name ORDER BY name',
 ];
 
 const writeQueries = [

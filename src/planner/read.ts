@@ -1,7 +1,7 @@
 import type * as ast from '../ast.js';
 import { SemanticError, UnsupportedFeatureError } from '../errors.js';
 import type { ColumnSpec, PlanStep, ValueSource } from '../plan.js';
-import { ExprCompiler, type VariableBinding } from './expr.js';
+import { ExprCompiler, orderTerm, type VariableBinding } from './expr.js';
 import { constantValue, type SqlBuilder } from './sql-builder.js';
 
 /**
@@ -244,21 +244,47 @@ export class ReadScope {
     return this.expressions.json(expr);
   }
 
-  /** The SELECT over this scope. The row limit is always applied. */
-  public select(columns: string[], userLimit?: ValueSource): string {
+  /**
+   * The SELECT over this scope. The row limit is always applied.
+   *
+   * With `distinct`, sorting happens outside: the DISTINCT rows become the
+   * derived table `d`, and `orderBy` must refer to its columns. Otherwise
+   * `orderBy` refers to this scope.
+   */
+  public select(
+    columns: string[],
+    options: {
+      distinct?: boolean;
+      orderBy?: string[];
+      skip?: ValueSource | undefined;
+      limit?: ValueSource | undefined;
+    } = {},
+  ): string {
     const b = this.b;
-    let sql = `SELECT ${columns.join(', ')}`;
+    const orderBy = options.orderBy ?? [];
+    let sql = `SELECT ${options.distinct ? 'DISTINCT ' : ''}${columns.join(', ')}`;
     if (this.from.length > 0) {
       sql += ` FROM ${this.from.join(' CROSS JOIN ')}`;
     }
     if (this.where.length > 0) {
       sql += ` WHERE ${this.where.join(' AND ')}`;
     }
-    // UNWIND defines the order of its rows; keep it (nested-loop order across FROM items).
-    if (this.hasUnwind) {
-      sql += ` ORDER BY ${this.order.join(', ')}`;
+    if (options.distinct) {
+      if (orderBy.length > 0) {
+        sql = `SELECT * FROM (${sql}) AS d ORDER BY ${orderBy.join(', ')}`;
+      }
+    } else {
+      // UNWIND defines the order of its rows; keep it (nested-loop order across
+      // FROM items) where ORDER BY leaves ties.
+      const order = [...orderBy, ...(this.hasUnwind ? this.order : [])];
+      if (order.length > 0) {
+        sql += ` ORDER BY ${order.join(', ')}`;
+      }
     }
-    sql += ` LIMIT ${b.bind({ kind: 'rowLimit', userLimit })}`;
+    sql += ` LIMIT ${b.bind({ kind: 'rowLimit', userLimit: options.limit })}`;
+    if (options.skip) {
+      sql += ` OFFSET ${b.bind({ kind: 'rowOffset', skip: options.skip })}`;
+    }
     return sql;
   }
 }
@@ -305,11 +331,6 @@ export function planRead(
 ): { step: PlanStep; columns: ColumnSpec[] } {
   const scope = ReadScope.of(b, clauses);
   const nodes = b.mapping.nodes;
-
-  if (ret.distinct || ret.orderBy.length > 0 || ret.skip) {
-    const what = ret.distinct ? 'DISTINCT' : ret.orderBy.length > 0 ? 'ORDER BY' : 'SKIP';
-    throw new UnsupportedFeatureError(`${what} is not supported yet`, { position: ret.position });
-  }
 
   const items: ast.ProjectionItem[] = [...ret.items];
   if (ret.star) {
@@ -398,23 +419,117 @@ export function planRead(
     }
   }
 
-  let userLimit: ValueSource | undefined;
-  if (ret.limit) {
-    userLimit = constantValue(ret.limit);
-    if (!userLimit) {
-      throw new UnsupportedFeatureError('LIMIT must be an integer literal or a parameter', {
-        position: ret.limit.position,
-      });
+  // ORDER BY sees the projection's names (which hide variables of the same
+  // name) and, without DISTINCT, every variable in scope.
+  const projected = new Map(items.map((item) => [item.name, item.expression]));
+  const orderBy: string[] = [];
+  ret.orderBy.forEach((sort) => {
+    if (ret.distinct) {
+      checkProjectedOnly(sort.expression, items);
     }
-    if (
-      userLimit.kind === 'constant' &&
-      (typeof userLimit.value !== 'bigint' || userLimit.value < 0n)
-    ) {
-      throw new SemanticError('LIMIT must be a non-negative integer', {
-        position: ret.limit.position,
-      });
+    const keys = scope.expressions.sortKeys(
+      scope.expressions.compile(substituteAliases(sort.expression, projected)),
+    );
+    for (const key of keys) {
+      if (ret.distinct) {
+        // The key depends only on projected values, so selecting it does not
+        // change which rows are distinct; the outer query sorts by it.
+        const k = `k${orderBy.length}`;
+        select.push(`${key.sql} AS ${k}`);
+        orderBy.push(orderTerm(`d.${k}`, key, sort.descending));
+      } else {
+        orderBy.push(orderTerm(key.sql, key, sort.descending));
+      }
     }
-  }
+  });
 
-  return { step: b.finish(scope.select(select, userLimit)), columns };
+  const sql = scope.select(select, {
+    distinct: ret.distinct,
+    orderBy,
+    skip: ret.skip ? rowCount(ret.skip, 'SKIP') : undefined,
+    limit: ret.limit ? rowCount(ret.limit, 'LIMIT') : undefined,
+  });
+  return { step: b.finish(sql), columns };
+}
+
+/** A SKIP or LIMIT value: a non-negative integer literal, or a parameter (checked when bound). */
+function rowCount(expr: ast.Expression, clause: 'SKIP' | 'LIMIT'): ValueSource {
+  const value = constantValue(expr);
+  if (!value) {
+    throw new UnsupportedFeatureError(`${clause} must be an integer literal or a parameter`, {
+      position: expr.position,
+    });
+  }
+  if (value.kind === 'constant' && (typeof value.value !== 'bigint' || value.value < 0n)) {
+    throw new SemanticError(`${clause} must be a non-negative integer`, {
+      position: expr.position,
+    });
+  }
+  return value;
+}
+
+/** Replaces variables that name a projection item with the item's expression. */
+function substituteAliases(
+  expr: ast.Expression,
+  projected: Map<string, ast.Expression>,
+): ast.Expression {
+  if (expr.type === 'Variable') {
+    return projected.get(expr.name) ?? expr;
+  }
+  return mapChildren(expr, (child) => substituteAliases(child, projected));
+}
+
+/**
+ * After `RETURN DISTINCT`, ORDER BY may only use projected values: the names of
+ * projection items, and expressions equal to a projected expression.
+ */
+function checkProjectedOnly(expr: ast.Expression, items: ast.ProjectionItem[]): void {
+  if (items.some((item) => sameExpression(item.expression, expr))) {
+    return;
+  }
+  if (expr.type === 'Variable') {
+    if (!items.some((item) => item.name === expr.name)) {
+      throw new SemanticError(
+        `Variable \`${expr.name}\` is not available after RETURN DISTINCT; ORDER BY can only use projected values`,
+        { position: expr.position },
+      );
+    }
+    return;
+  }
+  mapChildren(expr, (child) => {
+    checkProjectedOnly(child, items);
+    return child;
+  });
+}
+
+function sameExpression(a: ast.Expression, b: ast.Expression): boolean {
+  const text = (e: ast.Expression): string =>
+    JSON.stringify(e, (key, value: unknown) =>
+      key === 'position' ? undefined : typeof value === 'bigint' ? `${value}n` : value,
+    );
+  return text(a) === text(b);
+}
+
+/** A copy of `expr` with each direct child expression replaced by `f(child)`. */
+function mapChildren(
+  expr: ast.Expression,
+  f: (child: ast.Expression) => ast.Expression,
+): ast.Expression {
+  switch (expr.type) {
+    case 'List':
+      return { ...expr, items: expr.items.map(f) };
+    case 'Map':
+      return { ...expr, entries: expr.entries.map((e) => ({ key: e.key, value: f(e.value) })) };
+    case 'PropertyAccess':
+    case 'HasLabels':
+      return { ...expr, subject: f(expr.subject) };
+    case 'Binary':
+      return { ...expr, left: f(expr.left), right: f(expr.right) };
+    case 'Not':
+    case 'Negate':
+    case 'IsNull':
+      return { ...expr, operand: f(expr.operand) };
+    default:
+      return expr;
+  }
 }
