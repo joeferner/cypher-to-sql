@@ -1,0 +1,544 @@
+import {
+  BaseErrorListener,
+  CharStream,
+  CommonTokenStream,
+  ParserRuleContext,
+  PredictionMode,
+  type ATNSimulator,
+  type RecognitionException,
+  type Recognizer,
+  type Token,
+} from 'antlr4ng';
+import type * as ast from '../ast.js';
+import { CypherSyntaxError, UnsupportedFeatureError, type SourcePosition } from '../errors.js';
+import { CypherLexer } from './generated/CypherLexer.js';
+import {
+  CypherParser,
+  type OC_AtomContext,
+  type OC_CreateContext,
+  type OC_ExpressionContext,
+  type OC_IntegerLiteralContext,
+  type OC_LiteralContext,
+  type OC_MapLiteralContext,
+  type OC_MatchContext,
+  type OC_MultiPartQueryContext,
+  type OC_NodeLabelsContext,
+  type OC_NodePatternContext,
+  type OC_PatternContext,
+  type OC_PatternElementContext,
+  type OC_ProjectionBodyContext,
+  type OC_PropertiesContext,
+  type OC_ReadingClauseContext,
+  type OC_RelationshipPatternContext,
+  type OC_SchemaNameContext,
+  type OC_SinglePartQueryContext,
+  type OC_SymbolicNameContext,
+  type OC_UnaryAddOrSubtractExpressionContext,
+  type OC_UpdatingClauseContext,
+} from './generated/CypherParser.js';
+
+const MAX_INT64 = 2n ** 63n - 1n;
+
+/** Parses Cypher text into the library's AST. Throws `CypherSyntaxError` for invalid text. */
+export function parse(cypher: string): ast.Query {
+  const lexer = new CypherLexer(CharStream.fromString(cypher));
+  const parser = new CypherParser(new CommonTokenStream(lexer));
+  const errors = new ThrowingErrorListener();
+  lexer.removeErrorListeners();
+  lexer.addErrorListener(errors);
+  parser.removeErrorListeners();
+  parser.addErrorListener(errors);
+  parser.interpreter.predictionMode = PredictionMode.LL;
+
+  const tree = parser.oC_Cypher();
+  const query = tree.oC_Statement().oC_Query();
+  const regular = query.oC_RegularQuery();
+  if (!regular) {
+    throw new UnsupportedFeatureError('Procedure calls (CALL) are not supported', {
+      position: pos(query),
+    });
+  }
+  if (regular.oC_Union().length > 0) {
+    throw new UnsupportedFeatureError('UNION is not supported yet', {
+      position: pos(regular.oC_Union(0)!),
+    });
+  }
+  return new AstBuilder(cypher).query(regular.oC_SingleQuery());
+}
+
+class ThrowingErrorListener extends BaseErrorListener {
+  public override syntaxError<S extends Token, T extends ATNSimulator>(
+    _recognizer: Recognizer<T>,
+    offendingSymbol: S | null,
+    line: number,
+    column: number,
+    msg: string,
+    _e: RecognitionException | null,
+  ): void {
+    throw new CypherSyntaxError(`Invalid Cypher: ${msg}`, {
+      position: { line, column, offset: offendingSymbol?.start ?? -1 },
+    });
+  }
+}
+
+function pos(ctx: ParserRuleContext): SourcePosition {
+  const token = ctx.start;
+  return { line: token?.line ?? 0, column: token?.column ?? 0, offset: token?.start ?? 0 };
+}
+
+class AstBuilder {
+  public constructor(private readonly source: string) {}
+
+  public query(
+    ctx: {
+      oC_SinglePartQuery(): OC_SinglePartQueryContext | null;
+      oC_MultiPartQuery(): OC_MultiPartQueryContext | null;
+    } & ParserRuleContext,
+  ): ast.Query {
+    const single = ctx.oC_SinglePartQuery();
+    if (!single) {
+      const multi = ctx.oC_MultiPartQuery()!;
+      throw new UnsupportedFeatureError('WITH is not supported yet', {
+        position: pos(multi.oC_With(0)!),
+      });
+    }
+    const clauses: ast.Clause[] = [];
+    for (const reading of single.oC_ReadingClause()) {
+      clauses.push(this.readingClause(reading));
+    }
+    for (const updating of single.oC_UpdatingClause()) {
+      clauses.push(this.updatingClause(updating));
+    }
+    const ret = single.oC_Return();
+    if (ret) {
+      clauses.push(this.returnClause(ret.oC_ProjectionBody(), ret));
+    }
+    return { type: 'Query', position: pos(ctx), clauses };
+  }
+
+  private readingClause(ctx: OC_ReadingClauseContext): ast.Clause {
+    const match = ctx.oC_Match();
+    if (match) {
+      return this.matchClause(match);
+    }
+    const name = ctx.oC_Unwind() ? 'UNWIND' : 'CALL';
+    return { type: 'UnsupportedClause', position: pos(ctx), name, write: false };
+  }
+
+  private updatingClause(ctx: OC_UpdatingClauseContext): ast.Clause {
+    const create = ctx.oC_Create();
+    if (create) {
+      return this.createClause(create);
+    }
+    let name: string;
+    if (ctx.oC_Merge()) {
+      name = 'MERGE';
+    } else if (ctx.oC_Set()) {
+      name = 'SET';
+    } else if (ctx.oC_Remove()) {
+      name = 'REMOVE';
+    } else {
+      name = ctx.oC_Delete()?.DETACH() ? 'DETACH DELETE' : 'DELETE';
+    }
+    return { type: 'UnsupportedClause', position: pos(ctx), name, write: true };
+  }
+
+  private matchClause(ctx: OC_MatchContext): ast.MatchClause {
+    const where = ctx.oC_Where();
+    return {
+      type: 'Match',
+      position: pos(ctx),
+      optional: ctx.OPTIONAL() !== null,
+      pattern: this.pattern(ctx.oC_Pattern()),
+      where: where ? this.expression(where.oC_Expression()) : undefined,
+    };
+  }
+
+  private createClause(ctx: OC_CreateContext): ast.CreateClause {
+    return { type: 'Create', position: pos(ctx), pattern: this.pattern(ctx.oC_Pattern()) };
+  }
+
+  private returnClause(body: OC_ProjectionBodyContext, ctx: ParserRuleContext): ast.ReturnClause {
+    const itemsCtx = body.oC_ProjectionItems();
+    const items = itemsCtx.oC_ProjectionItem().map((item): ast.ProjectionItem => {
+      const exprCtx = item.oC_Expression()!;
+      const variable = item.oC_Variable();
+      const alias = variable ? this.symbolicName(variable.oC_SymbolicName()) : undefined;
+      return {
+        position: pos(item),
+        expression: this.expression(exprCtx),
+        alias,
+        name: alias ?? this.text(exprCtx),
+      };
+    });
+    const order = body.oC_Order();
+    const skip = body.oC_Skip();
+    const limit = body.oC_Limit();
+    return {
+      type: 'Return',
+      position: pos(ctx),
+      distinct: body.DISTINCT() !== null,
+      star: itemsCtx.getChild(0)?.getText() === '*',
+      items,
+      orderBy: (order?.oC_SortItem() ?? []).map((sort) => ({
+        position: pos(sort),
+        expression: this.expression(sort.oC_Expression()),
+        descending: sort.DESC() !== null || sort.DESCENDING() !== null,
+      })),
+      skip: skip ? this.expression(skip.oC_Expression()) : undefined,
+      limit: limit ? this.expression(limit.oC_Expression()) : undefined,
+    };
+  }
+
+  // ---- patterns -------------------------------------------------------------
+
+  private pattern(ctx: OC_PatternContext): ast.PatternPart[] {
+    return ctx.oC_PatternPart().map((part) => {
+      const variable = part.oC_Variable();
+      return {
+        position: pos(part),
+        variable: variable ? this.symbolicName(variable.oC_SymbolicName()) : undefined,
+        elements: this.patternElement(part.oC_AnonymousPatternPart()!.oC_PatternElement()),
+      };
+    });
+  }
+
+  private patternElement(ctx: OC_PatternElementContext): ast.PatternElement[] {
+    const nested = ctx.oC_PatternElement();
+    if (nested) {
+      return this.patternElement(nested);
+    }
+    const elements: ast.PatternElement[] = [this.nodePattern(ctx.oC_NodePattern()!)];
+    for (const chain of ctx.oC_PatternElementChain()) {
+      elements.push(this.relationshipPattern(chain.oC_RelationshipPattern()));
+      elements.push(this.nodePattern(chain.oC_NodePattern()));
+    }
+    return elements;
+  }
+
+  private nodePattern(ctx: OC_NodePatternContext): ast.NodePattern {
+    const variable = ctx.oC_Variable();
+    const properties = ctx.oC_Properties();
+    return {
+      type: 'NodePattern',
+      position: pos(ctx),
+      variable: variable ? this.symbolicName(variable.oC_SymbolicName()) : undefined,
+      labels: this.nodeLabels(ctx.oC_NodeLabels()),
+      properties: properties ? this.properties(properties) : undefined,
+    };
+  }
+
+  private relationshipPattern(ctx: OC_RelationshipPatternContext): ast.RelationshipPattern {
+    const left = ctx.oC_LeftArrowHead() !== null;
+    const right = ctx.oC_RightArrowHead() !== null;
+    const detail = ctx.oC_RelationshipDetail();
+    const variable = detail?.oC_Variable();
+    const types = detail?.oC_RelationshipTypes();
+    const range = detail?.oC_RangeLiteral();
+    const properties = detail?.oC_Properties();
+
+    let parsedRange: ast.RelationshipPattern['range'];
+    if (range) {
+      // `*`, `*n`, `*n..`, `*..m`, `*n..m`: an integer before `..` (or without `..`) is the minimum.
+      const hasDots = range.getText().includes('..');
+      const ints = range.oC_IntegerLiteral().map((i) => Number(this.integerLiteral(i)));
+      const text = range.getText();
+      const startsWithInt = /^\*\s*\d/.test(text);
+      if (!hasDots) {
+        parsedRange = { min: ints[0], max: ints[0] };
+      } else if (startsWithInt) {
+        parsedRange = { min: ints[0], max: ints[1] };
+      } else {
+        parsedRange = { min: undefined, max: ints[0] };
+      }
+    }
+
+    return {
+      type: 'RelationshipPattern',
+      position: pos(ctx),
+      variable: variable ? this.symbolicName(variable.oC_SymbolicName()) : undefined,
+      types: (types?.oC_RelTypeName() ?? []).map((t) => this.schemaName(t.oC_SchemaName())),
+      direction: left && !right ? 'left' : right && !left ? 'right' : 'both',
+      range: parsedRange,
+      properties: properties ? this.properties(properties) : undefined,
+    };
+  }
+
+  private nodeLabels(ctx: OC_NodeLabelsContext | null): string[] {
+    return (ctx?.oC_NodeLabel() ?? []).map((l) =>
+      this.schemaName(l.oC_LabelName().oC_SchemaName()),
+    );
+  }
+
+  private properties(ctx: OC_PropertiesContext): ast.Expression {
+    const map = ctx.oC_MapLiteral();
+    if (map) {
+      return this.mapLiteral(map);
+    }
+    return this.parameter(ctx.oC_Parameter()!);
+  }
+
+  // ---- expressions ----------------------------------------------------------
+
+  private expression(ctx: OC_ExpressionContext): ast.Expression {
+    // Walk down the precedence chain. Each level with more than one operand is an
+    // operator this slice does not translate yet.
+    const or = ctx.oC_OrExpression();
+    if (or.oC_XorExpression().length > 1) {
+      return this.unsupported(or, 'OR');
+    }
+    const xor = or.oC_XorExpression(0)!;
+    if (xor.oC_AndExpression().length > 1) {
+      return this.unsupported(xor, 'XOR');
+    }
+    const and = xor.oC_AndExpression(0)!;
+    if (and.oC_NotExpression().length > 1) {
+      return this.unsupported(and, 'AND');
+    }
+    const not = and.oC_NotExpression(0)!;
+    if (not.NOT().length > 0) {
+      return this.unsupported(not, 'NOT');
+    }
+    const comparison = not.oC_ComparisonExpression();
+    if (comparison.oC_PartialComparisonExpression().length > 0) {
+      return this.unsupported(comparison, 'comparison operators');
+    }
+    const predicate = comparison.oC_StringListNullPredicateExpression();
+    if (
+      predicate.oC_StringPredicateExpression().length > 0 ||
+      predicate.oC_ListPredicateExpression().length > 0 ||
+      predicate.oC_NullPredicateExpression().length > 0
+    ) {
+      return this.unsupported(predicate, 'string, list, and null predicates');
+    }
+    const add = predicate.oC_AddOrSubtractExpression();
+    if (add.oC_MultiplyDivideModuloExpression().length > 1) {
+      return this.unsupported(add, 'arithmetic');
+    }
+    const mul = add.oC_MultiplyDivideModuloExpression(0)!;
+    if (mul.oC_PowerOfExpression().length > 1) {
+      return this.unsupported(mul, 'arithmetic');
+    }
+    const power = mul.oC_PowerOfExpression(0)!;
+    if (power.oC_UnaryAddOrSubtractExpression().length > 1) {
+      return this.unsupported(power, 'arithmetic');
+    }
+    return this.unary(power.oC_UnaryAddOrSubtractExpression(0)!);
+  }
+
+  private unary(ctx: OC_UnaryAddOrSubtractExpressionContext): ast.Expression {
+    const sign = ctx.getChild(0)?.getText();
+    const negate = sign === '-';
+    const operand = ctx.oC_NonArithmeticOperatorExpression()!;
+
+    if (operand.oC_ListOperatorExpression().length > 0) {
+      return this.unsupported(operand, 'list indexing and slicing');
+    }
+    if (operand.oC_NodeLabels()) {
+      return this.unsupported(operand, 'label predicates');
+    }
+
+    let expr = this.atom(operand.oC_Atom(), negate);
+    for (const lookup of operand.oC_PropertyLookup()) {
+      expr = {
+        type: 'PropertyAccess',
+        position: pos(lookup),
+        subject: expr,
+        key: this.schemaName(lookup.oC_PropertyKeyName()!.oC_SchemaName()),
+      };
+    }
+    if (negate && expr.type !== 'Literal') {
+      return this.unsupported(ctx, 'unary minus');
+    }
+    return expr;
+  }
+
+  /** `negate` folds a leading unary minus into a number literal. */
+  private atom(ctx: OC_AtomContext, negate: boolean): ast.Expression {
+    const literal = ctx.oC_Literal();
+    if (literal) {
+      return this.literal(literal, negate);
+    }
+    if (negate) {
+      return this.unsupported(ctx, 'unary minus');
+    }
+    const parameter = ctx.oC_Parameter();
+    if (parameter) {
+      return this.parameter(parameter);
+    }
+    const variable = ctx.oC_Variable();
+    if (variable) {
+      return {
+        type: 'Variable',
+        position: pos(ctx),
+        name: this.symbolicName(variable.oC_SymbolicName()),
+      };
+    }
+    const parenthesized = ctx.oC_ParenthesizedExpression();
+    if (parenthesized) {
+      return this.expression(parenthesized.oC_Expression());
+    }
+    let description: string;
+    if (ctx.oC_CaseExpression()) {
+      description = 'CASE expressions';
+    } else if (ctx.COUNT()) {
+      description = 'count(*)';
+    } else if (ctx.oC_ListComprehension()) {
+      description = 'list comprehensions';
+    } else if (ctx.oC_PatternComprehension()) {
+      description = 'pattern comprehensions';
+    } else if (ctx.oC_Quantifier()) {
+      description = 'list quantifiers (all, any, none, single)';
+    } else if (ctx.oC_PatternPredicate()) {
+      description = 'pattern predicates';
+    } else if (ctx.oC_FunctionInvocation()) {
+      description = 'function calls';
+    } else {
+      description = 'EXISTS subqueries';
+    }
+    return this.unsupported(ctx, description);
+  }
+
+  private literal(ctx: OC_LiteralContext, negate: boolean): ast.Expression {
+    const position = pos(ctx);
+    const number = ctx.oC_NumberLiteral();
+    if (number) {
+      const int = number.oC_IntegerLiteral();
+      if (int) {
+        let value = this.integerLiteral(int);
+        if (negate) {
+          value = -value;
+        }
+        if (value > MAX_INT64 || value < -MAX_INT64 - 1n) {
+          throw new CypherSyntaxError(`Integer literal is too large: ${this.text(int)}`, {
+            position,
+          });
+        }
+        return { type: 'Literal', position, value };
+      }
+      const value = Number(number.getText());
+      if (!Number.isFinite(value)) {
+        throw new CypherSyntaxError(`Float literal is too large: ${number.getText()}`, {
+          position,
+        });
+      }
+      return { type: 'Literal', position, value: negate ? -value : value };
+    }
+    if (negate) {
+      return this.unsupported(ctx, 'unary minus');
+    }
+    const bool = ctx.oC_BooleanLiteral();
+    if (bool) {
+      return { type: 'Literal', position, value: bool.TRUE() !== null };
+    }
+    if (ctx.NULL()) {
+      return { type: 'Literal', position, value: null };
+    }
+    const str = ctx.StringLiteral();
+    if (str) {
+      return { type: 'Literal', position, value: unescapeString(str.getText()) };
+    }
+    const list = ctx.oC_ListLiteral();
+    if (list) {
+      return {
+        type: 'List',
+        position,
+        items: list.oC_Expression().map((e) => this.expression(e)),
+      };
+    }
+    return this.mapLiteral(ctx.oC_MapLiteral()!);
+  }
+
+  private integerLiteral(ctx: OC_IntegerLiteralContext): bigint {
+    const text = ctx.getText();
+    if (ctx.HexInteger()) {
+      return BigInt(text);
+    }
+    if (ctx.OctalInteger()) {
+      return BigInt(`0o${text.slice(2)}`);
+    }
+    return BigInt(text);
+  }
+
+  private mapLiteral(ctx: OC_MapLiteralContext): ast.MapExpression {
+    const keys = ctx.oC_PropertyKeyName();
+    const values = ctx.oC_Expression();
+    return {
+      type: 'Map',
+      position: pos(ctx),
+      entries: keys.map((key, i) => ({
+        key: this.schemaName(key.oC_SchemaName()),
+        value: this.expression(values[i]!),
+      })),
+    };
+  }
+
+  private parameter(
+    ctx: {
+      oC_SymbolicName(): OC_SymbolicNameContext | null;
+      getText(): string;
+    } & ParserRuleContext,
+  ): ast.Parameter {
+    const name = ctx.oC_SymbolicName();
+    return {
+      type: 'Parameter',
+      position: pos(ctx),
+      name: name ? this.symbolicName(name) : ctx.getText().slice(1),
+    };
+  }
+
+  // ---- names ----------------------------------------------------------------
+
+  private schemaName(ctx: OC_SchemaNameContext): string {
+    const symbolic = ctx.oC_SymbolicName();
+    return symbolic ? this.symbolicName(symbolic) : ctx.getText();
+  }
+
+  private symbolicName(ctx: OC_SymbolicNameContext): string {
+    const escaped = ctx.EscapedSymbolicName();
+    if (escaped) {
+      // `a``b` -> a`b. Adjacent escaped parts (`a``b`) are one name in the grammar.
+      return escaped.getText().slice(1, -1).replaceAll('``', '`');
+    }
+    return ctx.getText();
+  }
+
+  private unsupported(ctx: ParserRuleContext, description: string): ast.UnsupportedExpression {
+    return { type: 'UnsupportedExpression', position: pos(ctx), description };
+  }
+
+  /** The original source text of a context, as written. */
+  private text(ctx: ParserRuleContext): string {
+    const start = ctx.start?.start ?? 0;
+    const stop = ctx.stop?.stop ?? start - 1;
+    return this.source.slice(start, stop + 1);
+  }
+}
+
+function unescapeString(quoted: string): string {
+  const body = quoted.slice(1, -1);
+  return body.replace(/\\(u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)/gs, (_match, esc: string): string => {
+    switch (esc[0]) {
+      case 'b':
+      case 'B':
+        return '\b';
+      case 'f':
+      case 'F':
+        return '\f';
+      case 'n':
+      case 'N':
+        return '\n';
+      case 'r':
+      case 'R':
+        return '\r';
+      case 't':
+      case 'T':
+        return '\t';
+      case 'u':
+      case 'U':
+        return esc.length > 1 ? String.fromCodePoint(parseInt(esc.slice(1), 16)) : esc;
+      default:
+        return esc;
+    }
+  });
+}

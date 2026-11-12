@@ -17,3 +17,6 @@ examples/**/api.validated.gen.ts
 !examples/**/__snapshots__/contract.json
 !examples/**/__snapshots__/api.gen.ts
 !examples/**/__snapshots__/api.validated.gen.ts
+
+# generated code
+src/parser/generated/

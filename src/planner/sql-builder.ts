@@ -1,0 +1,88 @@
+import type { Dialect } from '../dialect/dialect.js';
+import type * as ast from '../ast.js';
+import type { BindValue, PlanStep, ValueSource } from '../plan.js';
+import type { GraphMapping } from '../mapping.js';
+import type { CypherMap, CypherValue } from '../values.js';
+
+// Bind markers. SQL is assembled from fragments in any order; `finish` replaces
+// the markers with the dialect's placeholders in textual order, so the bind values
+// always line up with `?` (SQLite) or `$n` (PostgreSQL). No query text ever enters
+// the SQL, so these control characters cannot occur in it otherwise.
+const MARK = '\u0001';
+const MARKER = new RegExp(`${MARK}(\\d+)${MARK}`, 'g');
+
+export class SqlBuilder {
+  private readonly binds: BindValue[] = [];
+
+  public constructor(
+    public readonly dialect: Dialect,
+    public readonly mapping: GraphMapping,
+  ) {}
+
+  /** Returns a marker for a bind value. Use the returned text in the SQL. */
+  public bind(value: BindValue): string {
+    this.binds.push(value);
+    return `${MARK}${this.binds.length - 1}${MARK}`;
+  }
+
+  public ident(name: string): string {
+    return this.dialect.quoteIdent(name);
+  }
+
+  public table(kind: 'nodes' | 'edges'): string {
+    const table = this.ident(this.mapping[kind].table);
+    return this.mapping.schema ? `${this.ident(this.mapping.schema)}.${table}` : table;
+  }
+
+  public finish(sql: string, extra: Omit<PlanStep, 'sql' | 'values'> = {}): PlanStep {
+    const values: BindValue[] = [];
+    const text = sql.replace(MARKER, (_m, index: string): string => {
+      values.push(this.binds[Number(index)]!);
+      return this.dialect.placeholder(values.length);
+    });
+    return { sql: text, values, ...extra };
+  }
+}
+
+/**
+ * The value of an expression that needs no database access (literals, lists and
+ * maps of those, and parameters), or `undefined` for anything else.
+ */
+export function constantValue(expr: ast.Expression): ValueSource | undefined {
+  if (expr.type === 'Parameter') {
+    return { kind: 'parameter', name: expr.name, position: expr.position };
+  }
+  const value = literalValue(expr);
+  return value === undefined ? undefined : { kind: 'constant', value };
+}
+
+function literalValue(expr: ast.Expression): CypherValue | undefined {
+  switch (expr.type) {
+    case 'Literal':
+      return expr.value;
+    case 'List': {
+      const items: CypherValue[] = [];
+      for (const item of expr.items) {
+        const value = literalValue(item);
+        if (value === undefined) {
+          return undefined;
+        }
+        items.push(value);
+      }
+      return items;
+    }
+    case 'Map': {
+      const map: CypherMap = {};
+      for (const entry of expr.entries) {
+        const value = literalValue(entry.value);
+        if (value === undefined) {
+          return undefined;
+        }
+        map[entry.key] = value;
+      }
+      return map;
+    }
+    default:
+      return undefined;
+  }
+}

@@ -25,20 +25,31 @@
     "dist"
   ],
   "scripts": {
+    "generate:parser": "antlr-ng -Dlanguage=TypeScript --generate-listener false --generate-visitor true -o src/parser/generated grammar/Cypher.g4 && rm -f src/parser/generated/*.interp src/parser/generated/*.tokens",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "prepare": "npm run build",
     "test": "vitest run",
+    "test:tck:all": "npm run generate:parser && TCK_ALL=1 vitest run test/tck",
     "test:watch": "vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --noEmit",
-    "pre-commit": "npm run format && npm run lint && npm run typecheck && npm test"
+    "pre-commit": "npm run format && npm run lint && npm run typecheck && npm test",
+    "prebuild": "npm run generate:parser",
+    "pretest": "npm run generate:parser",
+    "pretypecheck": "npm run generate:parser",
+    "prelint": "npm run generate:parser"
   },
   "devDependencies": {
+    "@cucumber/gherkin": "35.0.0",
+    "@cucumber/messages": "29.0.1",
     "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "9.6.0",
     "@types/node": "^26.6.6",
+    "antlr-ng": "1.0.10",
+    "better-sqlite3": "12.4.1",
     "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-unused-imports": "^4.4.1",
@@ -46,5 +57,8 @@
     "typescript": "6.x",
     "typescript-eslint": "^8.72.2",
     "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "antlr4ng": "3.0.16"
   }
 }
