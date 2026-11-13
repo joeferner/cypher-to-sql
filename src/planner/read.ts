@@ -86,6 +86,11 @@ export class ReadScope {
    */
   public ordered = false;
   public readonly expressions: ExprCompiler;
+  /**
+   * True when the rows include a variable-length search that starts at every
+   * node (see `startNodes`), here or in an earlier stage.
+   */
+  private searchesEverything = false;
 
   private aliasCount = 0;
 
@@ -207,6 +212,7 @@ export class ReadScope {
     }
     const stage = planProjection(this.b, this, w, 'with');
     const next = new ReadScope(this.b, this.outer);
+    next.searchesEverything = this.searchesEverything;
     const alias = next.alias('w');
     next.addFrom(`(${stage.sql}) AS ${alias}`);
     if (stage.ordered) {
@@ -329,12 +335,14 @@ export class ReadScope {
       /** The segments of this part, for a named path. */
       const segments: { rel: Matched; node: string }[] = [];
       for (let i = 1; i < part.elements.length; i += 2) {
+        // The rows before the right node joins: where a variable-length search starts.
+        const start = this.startNodes(left);
         const right = this.matchNode(part.elements[i + 1] as ast.NodePattern);
         const rel = part.elements[i] as ast.RelationshipPattern;
         const matched: Matched = part.shortest
           ? this.matchShortestPath(rel, left, right, boundHere, part.shortest)
           : rel.range
-            ? this.matchVariableLength(rel, left, right, boundHere, named)
+            ? this.matchVariableLength(rel, left, right, boundHere, named, start)
             : { kind: 'one', alias: this.matchRelationship(rel, left, right, boundHere) };
         relationships.push(matched);
         segments.push({ rel: matched, node: right });
@@ -533,25 +541,6 @@ export class ReadScope {
   }
 
   /**
-   * Matches a variable-length relationship pattern `[r:T*min..max {k: v}]`
-   * between the nodes `left` and `right` and returns the SQL of its id list.
-   *
-   * Every path is found by a recursive CTE, which starts with a path of length
-   * zero at every node and adds one relationship per step, never one already on
-   * the path:
-   *
-   *     (WITH RECURSIVE p(s, t, d, path) AS (
-   *        SELECT n.id, n.id, 0, <empty list> FROM nodes AS n
-   *        UNION ALL
-   *        SELECT p.s, e.end_id, p.d + 1, <path + e.id> FROM p JOIN edges AS e ON e.start_id = p.t
-   *        WHERE p.d < <max> AND <e.id not on path> AND <type and property filters>
-   *      ) SELECT s, t, path FROM p WHERE d >= <min>) AS v
-   *
-   * The CTE cannot refer to the outer query (SQLite has no LATERAL), so it
-   * explores from every node; the outer query joins its start and end to
-   * `left` and `right`.
-   */
-  /**
    * The JSON value of a named path that starts at the node alias `first`: its
    * nodes and relationships in order, with those of variable-length segments
    * loaded from their id lists. Null when any part is null (OPTIONAL MATCH).
@@ -596,12 +585,53 @@ export class ReadScope {
     );
   }
 
+  /**
+   * A query of the node ids that `left` (a node alias) can be in the rows so
+   * far, or undefined when that is every node or cannot be known here. Called
+   * before the pattern's next node joins, so the query has only the earlier
+   * tables and conditions: it is self-contained and fits in a recursive CTE.
+   */
+  private startNodes(left: string): string | undefined {
+    const b = this.b;
+    if (this.outer || this.where.length === 0 || this.searchesEverything) {
+      // In a subquery the rows refer to the enclosing query; with no condition
+      // at all, every node can start; and repeating a search that starts at
+      // every node would cost more than it saves.
+      return undefined;
+    }
+    let sql = `SELECT ${left}.${b.ident(b.mapping.nodes.id)} FROM ${this.fromClause()}`;
+    sql += ` WHERE ${this.where.join(' AND ')}`;
+    return sql;
+  }
+
+  /**
+   * Matches a variable-length relationship pattern `[r:T*min..max {k: v}]`
+   * between the nodes `left` and `right` and returns the SQL of its id list.
+   *
+   * Every path is found by a recursive CTE, which starts with a path of length
+   * zero at each possible start node and adds one relationship per step, never
+   * one already on the path:
+   *
+   *     (WITH RECURSIVE p(s, t, d, path) AS (
+   *        SELECT n.id, n.id, 0, <empty list> FROM nodes AS n WHERE n.id IN (<start>)
+   *        UNION ALL
+   *        SELECT p.s, e.end_id, p.d + 1, <path + e.id> FROM p JOIN edges AS e ON e.start_id = p.t
+   *        WHERE p.d < <max> AND <e.id not on path> AND <type and property filters>
+   *      ) SELECT s, t, path FROM p WHERE d >= <min>) AS v
+   *
+   * The CTE cannot refer to the outer query (SQLite has no LATERAL). So the
+   * start nodes come from `start` (see `startNodes`): the same rows as the
+   * outer query has before the pattern's end node joins, as a self-contained
+   * query. Without one, the search starts at every node. The outer query joins
+   * the CTE's start and end to `left` and `right`.
+   */
   private matchVariableLength(
     rel: ast.RelationshipPattern,
     left: string,
     right: string,
     boundHere: Set<string>,
     withNodes: boolean,
+    startNodes: string | undefined,
   ): Matched & { kind: 'list' } {
     const b = this.b;
     const d = b.dialect;
@@ -609,6 +639,9 @@ export class ReadScope {
     const min = rel.range!.min ?? 1;
     const max = rel.range!.max;
     const depth = b.bind({ kind: 'pathDepth', min, max, position: rel.position });
+    if (!startNodes) {
+      this.searchesEverything = true;
+    }
 
     const v = this.alias('v');
     const p = `${v}p`;
@@ -648,6 +681,7 @@ export class ReadScope {
       `WITH RECURSIVE ${p}(s, t, d, path${nodes.column}) AS (` +
       `SELECT ${n}.${nodeId}, ${n}.${nodeId}, 0, ${d.idListEmpty(edges.table, edges.id)}${nodes.empty} ` +
       `FROM ${b.table('nodes')} AS ${n}` +
+      (startNodes ? ` WHERE ${n}.${nodeId} IN (${startNodes})` : '') +
       ` UNION ALL SELECT ${p}.s, ${next}, ${p}.d + 1, ${d.idListAppend(`${p}.path`, `${e}.${edges.id}`)}` +
       `${nodes.append} FROM ${p} JOIN ${edges.table} AS ${e} ON ${adjacent} WHERE ${step.join(' AND ')})` +
       ` SELECT s, t, path${nodes.column} FROM ${p} WHERE d >= ${min}`;

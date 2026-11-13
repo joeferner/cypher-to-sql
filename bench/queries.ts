@@ -82,12 +82,18 @@ export const QUERIES: BenchQuery[] = [
     cypher: 'MATCH (p:Person {name: $a})-[:KNOWS*1..3]->(f) RETURN count(DISTINCT f) AS n',
     params: people,
     declared: true,
-    skip: ['dense', 'large'],
   },
   {
     name: 'var-length *1..3 between two nodes',
     cypher:
       'MATCH (a:Person {name: $a}), (b:Person {name: $near}) MATCH (a)-[:KNOWS*1..3]-(b) RETURN count(*) AS n',
+    params: people,
+    declared: true,
+  },
+  {
+    // The filter is on the end node, so the search starts at every node.
+    name: 'var-length *1..2 into one node',
+    cypher: 'MATCH (f)-[:KNOWS*1..2]->(p:Person {name: $a}) RETURN count(DISTINCT f) AS n',
     params: people,
     declared: true,
     skip: ['dense', 'large'],
@@ -122,7 +128,6 @@ export const QUERIES: BenchQuery[] = [
       'MATCH (a:Person {name: $a}), (b:Person {name: $near}) MATCH p = (a)-[:KNOWS*..3]-(b) RETURN length(p) AS l ORDER BY l LIMIT 1',
     params: people,
     declared: true,
-    skip: ['dense', 'large'],
   },
 
   // Other composition features.

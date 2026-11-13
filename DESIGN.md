@@ -175,11 +175,11 @@ FROM "nodes" AS n0 LEFT JOIN ("nodes" AS n1 JOIN "edges" AS e2 ON TRUE)
 
 ### Variable-length patterns
 
-`(a)-[r:T*min..max {k: v}]->(b)` is a derived table over a recursive CTE that starts a zero-length path at every node and adds one edge per step:
+`(a)-[r:T*min..max {k: v}]->(b)` is a derived table over a recursive CTE that starts a zero-length path at each node `a` can be and adds one edge per step:
 
 ```sql
 (WITH RECURSIVE vp(s, t, d, path) AS (
-   SELECT n.id, n.id, 0, <empty id list> FROM nodes AS n
+   SELECT n.id, n.id, 0, <empty id list> FROM nodes AS n WHERE n.id IN (<start nodes>)
    UNION ALL
    SELECT vp.s, e.end_id, vp.d + 1, <path + e.id> FROM vp JOIN edges AS e ON e.start_id = vp.t
    WHERE vp.d < <max> AND <e.id not in path> AND <type and property filters>
@@ -191,7 +191,8 @@ joined with `v.s = a.id AND v.t = b.id`.
 - The path is a list of edge ids: an array of the id column's type on PostgreSQL (`||`, `= ANY`, `&&`), JSON text on SQLite (`json_insert`, `json_each`). It enforces relationship uniqueness along the path, which also ends cycles, and against the MATCH's other relationship patterns.
 - `<max>` is bound at run time: the explicit upper bound, or `maxPathDepth` when there is none. A bound (or a lower bound with no upper bound) above `maxPathDepth` raises `LimitExceededError`. The default lower bound is 1.
 - Undirected patterns follow an edge from either end (`CASE` picks the other end); a self-loop is followed once.
-- The CTE cannot refer to the outer query (SQLite has no `LATERAL`), so it explores from every node, and inline property values must not use variables. Seeding it from bound nodes is part of multi-step plans (#14).
+- The CTE cannot refer to the outer query (SQLite has no `LATERAL`), and inline property values must not use variables. `<start nodes>` makes up for it: `SELECT a.id FROM ... WHERE ...` over the scope's tables and conditions before `b` joins, a self-contained query of every node `a` can be (`ReadScope.startNodes`). It covers a filtered start node and one bound by earlier clauses, so the search grows with the start's neighborhood, not the graph (benchmarks: `*1..3` between two given nodes from 10 seconds to 30–40 ms on 10,000 nodes).
+- The search still starts at every node when nothing restricts `a` (a filter only on `b` does not), inside a subquery (EXISTS, pattern comprehensions), and when the rows so far already include a search that starts at every node, which the start-node query would repeat. Starting from the end node instead, or seeding with ids found in a separate step, would cover more of these.
 - `r` in `[r*]` binds the id list. WITH carries the list itself; `count(r)`, `size(r)`, and `r IS NULL` use it directly; any other use loads it as a JSON list of tagged relationships, in path order (see "Entities as values"). A pattern whose list variable is already bound is unsupported for now.
 - For a named path, the CTE also keeps the ids of the nodes it reaches.
 
