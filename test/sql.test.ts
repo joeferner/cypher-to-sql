@@ -31,6 +31,7 @@ const readQueries = [
   'OPTIONAL MATCH (x:Missing) RETURN x',
   'MATCH (a:A)-[r:T*1..3 {k: 1}]->(b)-[s]-(c) RETURN r, b',
   'MATCH (a)-[*]-(b), (b)<-[*0..2]-(c) RETURN count(*)',
+  'MATCH p = (a)-[r]->(b)-[*1..2]->(c) RETURN p, length(p), nodes(p)',
 ];
 
 const writeQueries = [

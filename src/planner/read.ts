@@ -1,5 +1,4 @@
 import type * as ast from '../ast.js';
-import type { EdgeColumns } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError } from '../errors.js';
 import type { ColumnSpec, PlanStep, ValueSource } from '../plan.js';
 import { containsAggregate, isAggregateCall } from './aggregates.js';
@@ -51,21 +50,13 @@ function finishSelect(
   return sql;
 }
 
-/** The edge table and columns, quoted. */
-function edgeColumns(b: SqlBuilder): EdgeColumns {
-  const e = b.mapping.edges;
-  return {
-    table: b.table('edges'),
-    id: b.ident(e.id),
-    type: b.ident(e.type),
-    startId: b.ident(e.startId),
-    endId: b.ident(e.endId),
-    properties: b.ident(e.properties),
-  };
-}
-
-/** A relationship pattern of a MATCH: one edge (an alias), or a variable-length id list. */
-type Matched = { kind: 'one'; alias: string } | { kind: 'list'; path: string };
+/**
+ * A relationship pattern of a MATCH: one edge (an alias), or a variable-length
+ * match (its edge-id list, and for named paths the ids of the nodes after the
+ * start node).
+ */
+type Matched =
+  { kind: 'one'; alias: string } | { kind: 'list'; path: string; nodes: string | undefined };
 
 /**
  * What a variable refers to in SQL: a node (an alias of the node table), a
@@ -225,22 +216,44 @@ export class ReadScope {
     const relationships: Matched[] = [];
     /** Relationship variables bound by this clause. */
     const boundHere = new Set<string>();
+    // A path variable names only its path: no node or relationship of the MATCH may use it.
+    const elementVariables = new Set(
+      match.pattern.flatMap((part) => part.elements.map((e) => e.variable)),
+    );
     for (const part of match.pattern) {
-      if (part.variable !== undefined) {
-        throw new UnsupportedFeatureError('Named paths are not supported yet', {
+      if (part.variable !== undefined && elementVariables.has(part.variable)) {
+        throw new SemanticError(`Variable \`${part.variable}\` already declared`, {
           position: part.position,
         });
       }
-      let left = this.matchNode(part.elements[0] as ast.NodePattern);
+    }
+    for (const part of match.pattern) {
+      const named = part.variable !== undefined;
+      if (named && this.bindings.has(part.variable!)) {
+        throw new SemanticError(`Variable \`${part.variable}\` already declared`, {
+          position: part.position,
+        });
+      }
+      const first = this.matchNode(part.elements[0] as ast.NodePattern);
+      let left = first;
+      /** The segments of this part, for a named path. */
+      const segments: { rel: Matched; node: string }[] = [];
       for (let i = 1; i < part.elements.length; i += 2) {
         const right = this.matchNode(part.elements[i + 1] as ast.NodePattern);
         const rel = part.elements[i] as ast.RelationshipPattern;
-        relationships.push(
-          rel.range
-            ? { kind: 'list', path: this.matchVariableLength(rel, left, right, boundHere) }
-            : { kind: 'one', alias: this.matchRelationship(rel, left, right, boundHere) },
-        );
+        const matched: Matched = rel.range
+          ? this.matchVariableLength(rel, left, right, boundHere, named)
+          : { kind: 'one', alias: this.matchRelationship(rel, left, right, boundHere) };
+        relationships.push(matched);
+        segments.push({ rel: matched, node: right });
         left = right;
+      }
+      if (named) {
+        this.bindings.set(part.variable!, {
+          kind: 'value',
+          sql: this.pathValue(first, segments),
+          shape: 'path',
+        });
       }
     }
     // Within one MATCH, two relationship patterns never bind the same relationship.
@@ -290,7 +303,38 @@ export class ReadScope {
     const b = this.b;
     let alias: string;
     const existing = node.variable !== undefined ? this.bindings.get(node.variable) : undefined;
-    if (existing) {
+    if (existing?.kind === 'value' || existing?.kind === 'column') {
+      // A value that may hold a node (from a list, a path, or collect()): join
+      // the node it holds, and refer to that from now on.
+      const value = this.expressions.compile({
+        type: 'Variable',
+        position: node.position,
+        name: node.variable!,
+      });
+      if ((value.type !== 'json' && value.type !== 'null') || value.shape !== undefined) {
+        throw new SemanticError(`Variable \`${node.variable}\` is not a node`, {
+          position: node.position,
+        });
+      }
+      alias = this.alias('n');
+      this.addFrom(`${b.table('nodes')} AS ${alias}`);
+      this.order.push(`${alias}.${b.ident(b.mapping.nodes.id)}`);
+      const id = `${alias}.${b.ident(b.mapping.nodes.id)}`;
+      this.where.push(
+        value.type === 'null'
+          ? b.dialect.booleanLiteral(false)
+          : this.expressions.share(
+              [value],
+              ([v]) =>
+                `(${v!.jsonType} = 'node' AND ${b.dialect.jsonIdEquals(
+                  id,
+                  b.dialect.jsonMember(v!.sql, b.bind({ kind: 'sql', value: '~id' }), '~id'),
+                )})`,
+            ),
+      );
+      this.bindings.set(node.variable!, { kind: 'node', alias });
+      this.expressions.forget();
+    } else if (existing) {
       if (existing.kind !== 'node') {
         throw new SemanticError(`Variable \`${node.variable}\` is not a node`, {
           position: node.position,
@@ -410,12 +454,58 @@ export class ReadScope {
    * explores from every node; the outer query joins its start and end to
    * `left` and `right`.
    */
+  /**
+   * The JSON value of a named path that starts at the node alias `first`: its
+   * nodes and relationships in order, with those of variable-length segments
+   * loaded from their id lists. Null when any part is null (OPTIONAL MATCH).
+   */
+  private pathValue(first: string, segments: { rel: Matched; node: string }[]): string {
+    const b = this.b;
+    const d = b.dialect;
+    const nodeId = b.ident(b.mapping.nodes.id);
+    const edgeId = b.ident(b.mapping.edges.id);
+    /** Each list as JSON lists to concatenate; consecutive single entities share one list. */
+    const nodes: (string | string[])[] = [[d.entityJson('node', first, b.columns('nodes'))]];
+    const rels: (string | string[])[] = [];
+    const nulls = [`${first}.${nodeId} IS NULL`];
+    const add = (list: (string | string[])[], item: string): void => {
+      const last = list[list.length - 1];
+      if (Array.isArray(last)) {
+        last.push(item);
+      } else {
+        list.push([item]);
+      }
+    };
+    for (const { rel, node } of segments) {
+      if (rel.kind === 'one') {
+        add(rels, d.entityJson('relationship', rel.alias, b.columns('edges')));
+        add(nodes, d.entityJson('node', node, b.columns('nodes')));
+        nulls.push(`${rel.alias}.${edgeId} IS NULL`, `${node}.${nodeId} IS NULL`);
+      } else {
+        rels.push(d.entityList('relationship', rel.path, b.columns('edges')));
+        nodes.push(d.entityList('node', rel.nodes!, b.columns('nodes')));
+        nulls.push(`${rel.path} IS NULL`);
+      }
+    }
+    const concat = (list: (string | string[])[]): string => {
+      const parts = list.map((item) => (Array.isArray(item) ? d.jsonArray(item) : item));
+      return parts.length === 0
+        ? d.jsonArray([])
+        : parts.reduce((all, item) => d.concatLists(all, item));
+    };
+    return (
+      `(CASE WHEN ${nulls.join(' OR ')} THEN ${d.jsonInput('NULL')} ` +
+      `ELSE ${d.pathJson(concat(nodes), concat(rels))} END)`
+    );
+  }
+
   private matchVariableLength(
     rel: ast.RelationshipPattern,
     left: string,
     right: string,
     boundHere: Set<string>,
-  ): string {
+    withNodes: boolean,
+  ): Matched & { kind: 'list' } {
     const b = this.b;
     const d = b.dialect;
     const existing = rel.variable !== undefined ? this.bindings.get(rel.variable) : undefined;
@@ -455,7 +545,7 @@ export class ReadScope {
     const n = this.alias('n');
     const e = this.alias('e');
     const nodeId = b.ident(b.mapping.nodes.id);
-    const edges = edgeColumns(b);
+    const edges = b.columns('edges');
     const start = `${e}.${edges.startId}`;
     const end = `${e}.${edges.endId}`;
     let adjacent: string;
@@ -476,12 +566,21 @@ export class ReadScope {
       `NOT ${d.idListHas(`${p}.path`, `${e}.${edges.id}`)}`,
       ...this.relationshipFilters(rel, e),
     ];
+    // A named path also needs the nodes along the way.
+    const nodes = withNodes
+      ? {
+          column: ', nodes',
+          empty: `, ${d.idListEmpty(b.table('nodes'), nodeId)}`,
+          append: `, ${d.idListAppend(`${p}.nodes`, next)}`,
+        }
+      : { column: '', empty: '', append: '' };
     const cte =
-      `WITH RECURSIVE ${p}(s, t, d, path) AS (` +
-      `SELECT ${n}.${nodeId}, ${n}.${nodeId}, 0, ${d.idListEmpty(edges)} FROM ${b.table('nodes')} AS ${n}` +
+      `WITH RECURSIVE ${p}(s, t, d, path${nodes.column}) AS (` +
+      `SELECT ${n}.${nodeId}, ${n}.${nodeId}, 0, ${d.idListEmpty(edges.table, edges.id)}${nodes.empty} ` +
+      `FROM ${b.table('nodes')} AS ${n}` +
       ` UNION ALL SELECT ${p}.s, ${next}, ${p}.d + 1, ${d.idListAppend(`${p}.path`, `${e}.${edges.id}`)}` +
-      ` FROM ${p} JOIN ${edges.table} AS ${e} ON ${adjacent} WHERE ${step.join(' AND ')})` +
-      ` SELECT s, t, path FROM ${p} WHERE d >= ${min}`;
+      `${nodes.append} FROM ${p} JOIN ${edges.table} AS ${e} ON ${adjacent} WHERE ${step.join(' AND ')})` +
+      ` SELECT s, t, path${nodes.column} FROM ${p} WHERE d >= ${min}`;
     this.addFrom(`(${cte}) AS ${v}`);
     this.order.push(`${v}.path`);
     this.where.push(`${v}.s = ${left}.${nodeId}`, `${v}.t = ${right}.${nodeId}`);
@@ -490,7 +589,7 @@ export class ReadScope {
       this.bindings.set(rel.variable, { kind: 'relationships', path });
       boundHere.add(rel.variable);
     }
-    return path;
+    return { kind: 'list', path, nodes: withNodes ? `${v}.nodes` : undefined };
   }
 
   /** Condition: two relationship patterns of one MATCH bind different relationships. */
@@ -866,9 +965,9 @@ function projectItems(
         properties: `${c}_props`,
       });
     } else if (v.kind === 'relationships') {
-      const tuples = d.relationshipTuples(v.path, edgeColumns(b));
-      select.push(`${d.jsonText(tuples)} AS ${c}`);
-      columns.push({ name: item.name, kind: 'relationships', column: c });
+      const list = d.entityList('relationship', v.path, b.columns('edges'));
+      select.push(`${d.jsonText(list)} AS ${c}`);
+      columns.push({ name: item.name, kind: 'json', column: c });
     } else if (v.expr.type === 'node' || v.expr.type === 'relationship') {
       throw new UnsupportedFeatureError(
         `Returning this ${v.expr.type} expression is not supported yet`,

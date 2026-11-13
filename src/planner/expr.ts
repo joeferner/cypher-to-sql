@@ -1,5 +1,5 @@
 import type * as ast from '../ast.js';
-import type { ScalarType } from '../dialect/dialect.js';
+import { ENTITY_TAG, type ScalarType } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError, type SourcePosition } from '../errors.js';
 import { compileAggregate, isAggregateCall } from './aggregates.js';
 import { compileFunction } from './functions.js';
@@ -15,13 +15,16 @@ import { constantValue, type SqlBuilder } from './sql-builder.js';
  */
 export type ExprType = ScalarType | 'json' | 'null' | 'node' | 'relationship';
 
+/** What a JSON value is known to be at compile time. */
+export type Shape = 'list' | 'map' | 'path';
+
 export interface Expr {
   sql: string;
   type: ExprType;
   /** Cheap to repeat in SQL (a column, a bind value, a literal). */
   atomic: boolean;
-  /** For `json`: the value is known to be a list or a map (a literal). */
-  shape?: 'list' | 'map' | undefined;
+  /** For `json`: the value is known to be a list, a map, or a path (or null). */
+  shape?: Shape | undefined;
 }
 
 /**
@@ -50,7 +53,7 @@ export interface Shared extends Expr {
 export type VariableBinding =
   | { kind: 'node'; alias: string }
   | { kind: 'relationship'; alias: string }
-  | { kind: 'value'; sql: string }
+  | { kind: 'value'; sql: string; shape?: Shape | undefined }
   /**
    * The relationships of a variable-length pattern (`[r*]`): `path` is the
    * dialect's id list of them (see `Dialect.idListEmpty`).
@@ -113,6 +116,13 @@ export class ExprCompiler {
       case 'Map':
       case 'Parameter': {
         const shape = expr.type === 'List' ? 'list' : expr.type === 'Map' ? 'map' : undefined;
+        const reserved =
+          expr.type === 'Map' ? expr.entries.find((e) => e.key === ENTITY_TAG) : undefined;
+        if (reserved) {
+          throw new SemanticError(`The map key ${JSON.stringify(ENTITY_TAG)} is reserved`, {
+            position: reserved.value.position,
+          });
+        }
         const constant = constantValue(expr);
         if (constant) {
           const sql = b.dialect.jsonInput(b.bind({ kind: 'json', value: constant }));
@@ -134,19 +144,14 @@ export class ExprCompiler {
       case 'Variable': {
         const binding = this.lookup(expr);
         if (binding.kind === 'value') {
-          return json(binding.sql, /^[\w."]+$/.test(binding.sql));
+          return { ...json(binding.sql, /^[\w."]+$/.test(binding.sql)), shape: binding.shape };
         }
         if (binding.kind === 'column') {
           return binding.expr;
         }
         if (binding.kind === 'relationships') {
-          throw new UnsupportedFeatureError(
-            `Using the relationship list \`${expr.name}\` of a variable-length pattern in this expression is not supported yet`,
-            {
-              position: expr.position,
-              hint: 'It can be returned, carried by WITH, counted, and used with size() and IS NULL.',
-            },
-          );
+          const sql = b.dialect.entityList('relationship', binding.path, b.columns('edges'));
+          return { sql, type: 'json', atomic: false, shape: 'list' };
         }
         return { sql: binding.alias, type: binding.kind, atomic: true };
       }
@@ -168,7 +173,7 @@ export class ExprCompiler {
         }
         const name = expr.name.toLowerCase();
         const path = expr.args.length === 1 ? this.relationshipList(expr.args[0]!) : undefined;
-        if (path !== undefined && (name === 'size' || name === 'length')) {
+        if (path !== undefined && name === 'size') {
           return { sql: b.dialect.idListLength(path), type: 'integer', atomic: false };
         }
         return compileFunction(this, expr);
@@ -182,6 +187,11 @@ export class ExprCompiler {
     }
   }
 
+  /** Drops compiled expressions, after a variable is bound to something else. */
+  public forget(): void {
+    this.compiled.clear();
+  }
+
   /** The id list, when the expression is a variable bound to the relationships of a variable-length pattern. */
   public relationshipList(expr: ast.Expression): string | undefined {
     if (expr.type !== 'Variable') {
@@ -193,7 +203,7 @@ export class ExprCompiler {
 
   /** The expression as a value of the dialect's JSON type. */
   public json(expr: ast.Expression): string {
-    return this.toJson(this.compile(expr), expr.position);
+    return this.toJson(this.compile(expr));
   }
 
   /** The expression as a WHERE condition. */
@@ -250,14 +260,15 @@ export class ExprCompiler {
           {
             // Null (and a missing property) ranks last.
             sql:
-              `(CASE ${t} WHEN 'map' THEN 1 WHEN 'list' THEN 4 WHEN 'string' THEN 12 ` +
+              `(CASE ${t} WHEN 'map' THEN 1 WHEN 'node' THEN 2 WHEN 'relationship' THEN 3 ` +
+              `WHEN 'list' THEN 4 WHEN 'path' THEN 5 WHEN 'string' THEN 12 ` +
               `WHEN 'boolean' THEN 13 WHEN 'integer' THEN 14 WHEN 'float' THEN 14 ELSE 99 END)`,
             nulls: false,
           },
           when(NUMBER_TYPES, d.fromJson(e.sql, 'number')),
           when(`('string')`, d.orderString(d.fromJson(e.sql, 'string'))),
           when(`('boolean')`, d.fromJson(e.sql, 'boolean')),
-          when(`('list', 'map')`, d.jsonText(e.sql)),
+          when(`('list', 'map', 'node', 'relationship', 'path')`, d.jsonText(e.sql)),
         ];
       }
       default:
@@ -291,8 +302,8 @@ export class ExprCompiler {
       case 'relationship':
         return this.member({ kind: subject.type, alias: subject.sql }, expr.key);
       case 'json':
-        if (subject.shape === 'list') {
-          throw typeError('a map, node, or relationship', 'list', expr.subject.position);
+        if (subject.shape === 'list' || subject.shape === 'path') {
+          throw typeError('a map, node, or relationship', subject.shape, expr.subject.position);
         }
         return json(
           this.b.dialect.jsonMember(
@@ -310,7 +321,7 @@ export class ExprCompiler {
   }
 
   /** The value as the dialect's JSON type. */
-  public toJson(e: Expr, position: SourcePosition): string {
+  public toJson(e: Expr): string {
     switch (e.type) {
       case 'json':
         return e.sql;
@@ -319,16 +330,20 @@ export class ExprCompiler {
         return this.b.dialect.jsonInput('NULL');
       case 'node':
       case 'relationship':
-        throw new UnsupportedFeatureError(`A ${e.type} cannot be used as a value here yet`, {
-          position,
-        });
+        return this.b.entityJson(e.type, e.sql);
       default:
         return this.b.dialect.toJson(e.sql, e.type);
     }
   }
 
-  private asJson(e: Expr, position: SourcePosition): Expr {
-    return e.type === 'json' ? e : { ...json(this.toJson(e, position), e.atomic) };
+  /** The value as a JSON expression. */
+  public asJson(e: Expr): Expr {
+    if (e.type === 'json') {
+      return e;
+    }
+    // An entity's object is built from several columns: not cheap to repeat.
+    const entity = e.type === 'node' || e.type === 'relationship';
+    return json(this.toJson(e), e.atomic && !entity);
   }
 
   /**
@@ -396,12 +411,28 @@ export class ExprCompiler {
     if (subject.type === 'null') {
       return boolean(this.b.dialect.booleanLiteral(null));
     }
+    const b = this.b;
+    if (subject.type === 'json' && subject.shape === undefined) {
+      // A node held in a JSON value: check its `~labels`; anything else gives null.
+      return boolean(
+        this.share([subject], ([s]) => {
+          const labels = b.dialect.jsonMember(
+            s!.sql,
+            b.bind({ kind: 'sql', value: '~labels' }),
+            '~labels',
+          );
+          const checks = expr.labels
+            .map((l) => b.dialect.hasLabel(labels, b.bind({ kind: 'sql', value: l })))
+            .join(' AND ');
+          return `(CASE WHEN ${s!.jsonType} = 'node' THEN (${checks}) END)`;
+        }),
+      );
+    }
     if (subject.type !== 'node') {
       throw new UnsupportedFeatureError('Label predicates are supported on nodes only', {
         position: expr.position,
       });
     }
-    const b = this.b;
     const labels = `${subject.sql}.${b.ident(b.mapping.nodes.labels)}`;
     const checks = expr.labels
       .map((l) => b.dialect.hasLabel(labels, b.bind({ kind: 'sql', value: l })))
@@ -462,7 +493,7 @@ export class ExprCompiler {
       case 'STARTS WITH':
       case 'ENDS WITH':
       case 'CONTAINS':
-        return this.stringPredicate(expr.operator, left, right, expr.position);
+        return this.stringPredicate(expr.operator, left, right);
       case 'IN':
         return this.inList(left, right, expr);
       default:
@@ -490,12 +521,21 @@ export class ExprCompiler {
 
     const entities = ['node', 'relationship'];
     if (entities.includes(left.type) || entities.includes(right.type)) {
+      if (left.type === 'json' || right.type === 'json') {
+        // Compared as values: entities in JSON are equal when their objects are.
+        return this.compare(op, this.asJson(left), this.asJson(right), depth);
+      }
       if (left.type !== right.type) {
         if (entities.includes(left.type) && entities.includes(right.type)) {
           return boolean(mismatch);
         }
-        throw new UnsupportedFeatureError(
-          'Comparing a node or relationship with another value is not supported yet',
+        return boolean(
+          this.share([left, right], ([l, r]) => {
+            const [entity, other] = entities.includes(left.type) ? [l!, r!] : [r!, l!];
+            const table = this.b.mapping[entity.type === 'node' ? 'nodes' : 'edges'];
+            const id = `${entity.sql}.${this.b.ident(table.id)}`;
+            return `(CASE WHEN ${id} IS NULL OR ${other.sql} IS NULL THEN NULL ELSE ${mismatch} END)`;
+          }),
         );
       }
       if (op !== '=' && op !== '<>') {
@@ -639,12 +679,7 @@ export class ExprCompiler {
     );
   }
 
-  private stringPredicate(
-    op: ast.StringOperator,
-    left: Expr,
-    right: Expr,
-    position: SourcePosition,
-  ): Expr {
+  private stringPredicate(op: ast.StringOperator, left: Expr, right: Expr): Expr {
     const d = this.b.dialect;
     const apply = (s: string, p: string): string =>
       op === 'STARTS WITH'
@@ -661,7 +696,7 @@ export class ExprCompiler {
     }
     return boolean(
       this.share(
-        [this.asJson(left, position), this.asJson(right, position)],
+        [this.asJson(left), this.asJson(right)],
         ([l, r]) =>
           `(CASE WHEN ${l!.jsonType} = 'string' AND ${r!.jsonType} = 'string' ` +
           `THEN ${apply(d.fromJson(l!.sql, 'string'), d.fromJson(r!.sql, 'string'))} END)`,
@@ -726,9 +761,8 @@ export class ExprCompiler {
     const listResult = op === '+' && (left.shape === 'list' || right.shape === 'list');
     return {
       ...json(
-        this.share(
-          [this.asJson(left, expr.left.position), this.asJson(right, expr.right.position)],
-          ([l, r]) => this.jsonArithmetic(op, l!, r!),
+        this.share([this.asJson(left), this.asJson(right)], ([l, r]) =>
+          this.jsonArithmetic(op, l!, r!),
         ),
         false,
       ),

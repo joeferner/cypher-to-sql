@@ -99,9 +99,29 @@ Rules:
 - **Type errors:** a type error the compiler can see (`1 AND true`, `'a' - 1`, `[] OR x`) is a `SemanticError` at compile time. A type error that depends on data is null at run time instead of an error (#30).
 - **PostgreSQL constant folding:** PostgreSQL may evaluate a CASE branch early when its input is a constant (a bound parameter), even if the branch is not taken. Casts out of JSON are therefore guarded so that they never fail.
 
+### Entities as values
+
+A node or relationship bound by MATCH is a table alias. Inside a JSON value (a list, a map, a path, `collect()`, a WITH column holding those) it is its properties plus reserved keys, tagged with `~cypher`:
+
+```json
+{"~cypher": "node", "~id": 1, "~labels": ["N"], "name": "a"}
+{"~cypher": "relationship", "~id": 7, "~type": "R", "~start": 1, "~end": 2, "w": 1}
+{"~cypher": "path", "~nodes": [<node>, ...], "~relationships": [<relationship>, ...]}
+```
+
+- `Dialect.jsonType` reports these as `node`, `relationship`, and `path`, so comparisons, sorting (map < node < relationship < list < path < string ...), and `IS NULL` treat them as Cypher does. Equality compares the whole object; within one query, equal ids have equal objects.
+- Properties are at the top level, so `x.name` on an entity in JSON is a plain member access. `id()`, `labels()`, `type()`, `keys()`, `properties()`, and label predicates read the reserved keys at run time.
+- `MATCH (x)` where `x` holds a node in JSON (for example after `UNWIND collect(n) AS x`) joins the node table on its `~id` and binds `x` to that row.
+- The assembler turns tagged objects in any JSON result back into `CypherNode`, `CypherRelationship`, and `CypherPath`.
+- The reserved keys (`~cypher`, `~id`, `~labels`, `~type`, `~start`, `~end`, `~nodes`, `~relationships`) cannot be property keys, and `~cypher` cannot be a key of a map in a query or parameter: both are a `SemanticError`.
+
+### Named paths
+
+`p = (a)-[r]->(b)-[*]->(c)` binds `p` to a path value built from the pattern's aliases: the tagged nodes and relationships of each fixed hop, and for each variable-length hop its relationships and the nodes after its start, loaded from the CTE's id lists (`Dialect.entityList`, in path order). A path is null when any of its parts is (OPTIONAL MATCH). Its static shape is `path`, so `p.x`, `labels(p)`, or `size(p)` are compile-time type errors. `nodes(p)`, `relationships(p)`, and `length(p)` read the path's lists. A path variable may not also name a node or relationship of the same MATCH.
+
 ### Aggregation
 
-`count(*)`, `count`, `sum`, `avg`, `min`, `max`, and `collect` (each with `DISTINCT`) are in `src/planner/aggregates.ts`. They skip nulls. `sum` of integers is an integer and becomes a float when any value is a float; no values sum to `0`. `avg` is always a float. `min`/`max` of JSON values of different types use Cypher's order across types. `collect` gives a list in no particular order. `stDev`, the percentiles, and `collect`/`min`/`max` of nodes or relationships are not supported yet.
+`count(*)`, `count`, `sum`, `avg`, `min`, `max`, and `collect` (each with `DISTINCT`) are in `src/planner/aggregates.ts`. They skip nulls. `sum` of integers is an integer and becomes a float when any value is a float; no values sum to `0`. `avg` is always a float. `min`/`max` of JSON values of different types use Cypher's order across types. `collect` gives a list in no particular order; of nodes or relationships, a list of them as entity values (see "Entities as values"). `stDev`, the percentiles, and `min`/`max` of nodes or relationships are not supported yet.
 
 A RETURN with an aggregate is planned as two levels:
 
@@ -164,7 +184,8 @@ joined with `v.s = a.id AND v.t = b.id`.
 - `<max>` is bound at run time: the explicit upper bound, or `maxPathDepth` when there is none. A bound (or a lower bound with no upper bound) above `maxPathDepth` raises `LimitExceededError`. The default lower bound is 1.
 - Undirected patterns follow an edge from either end (`CASE` picks the other end); a self-loop is followed once.
 - The CTE cannot refer to the outer query (SQLite has no `LATERAL`), so it explores from every node, and inline property values must not use variables. Seeding it from bound nodes is part of multi-step plans (#14).
-- `r` in `[r*]` binds the id list. It can be returned (the edges are loaded as `[id, type, start, end, properties]` tuples in path order and built into relationships), carried by WITH, counted, tested with `IS NULL`, and measured with `size()`. Other uses, and a pattern whose list variable is already bound, are unsupported for now.
+- `r` in `[r*]` binds the id list. WITH carries the list itself; `count(r)`, `size(r)`, and `r IS NULL` use it directly; any other use loads it as a JSON list of tagged relationships, in path order (see "Entities as values"). A pattern whose list variable is already bound is unsupported for now.
+- For a named path, the CTE also keeps the ids of the nodes it reaches.
 
 ### Functions
 
@@ -204,26 +225,26 @@ The defaults are starting values, not measured ones (#16).
 
 ## Translation rules
 
-| Cypher                                                      | SQL                                                                                                                             |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Node pattern `(a:Label {k: v})`                             | Scan of the node table with label and property filters                                                                          |
-| Fixed relationship `-[r:T]->`                               | Join to the edge table on start and end ids                                                                                     |
-| Undirected `-[r]-`                                          | Join on either direction with `OR`. As in Cypher, a relationship matches once per orientation that fits (a self-loop once)      |
-| Several relationship patterns in one `MATCH`                | `r1.id <> r2.id` for each pair (relationship uniqueness), including anonymous ones and ones bound by an earlier clause          |
-| Inline property map `{k: v}` in `MATCH`                     | `n.k = v` per entry with Cypher equality: a missing property or a null never matches. A parameter map is an error               |
-| `WHERE`                                                     | The expression compiler (see "Expressions"), with Cypher null semantics                                                         |
-| `RETURN`, `SKIP`, `LIMIT`                                   | Direct equivalents; `SKIP`/`LIMIT` are bound values checked to be non-negative integers                                         |
-| `ORDER BY`                                                  | Sort keys from `ExprCompiler.sortKeys`: aliases are substituted, then a JSON value sorts by type rank and then value            |
-| `DISTINCT` with `ORDER BY`                                  | `SELECT * FROM (SELECT DISTINCT ..., <sort keys>) AS d ORDER BY d.k0, ...`; the keys may use only projected values              |
-| Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`) | Two levels: SQL aggregates grouped by the non-aggregated items, then the items over those columns (see "Aggregation")           |
-| Variable length `[*1..n]`                                   | Recursive CTE with an edge-id list per path, capped by `maxPathDepth` (see "Variable-length patterns")                          |
-| `shortestPath` / `allShortestPaths`                         | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                     |
-| `nodes(p)`, `relationships(p)`, `length(p)`                 | Path id arrays, hydrated by the assembler                                                                                       |
-| `OPTIONAL MATCH`                                            | `LEFT JOIN (<new tables>) ON <pattern conditions and WHERE>` on both dialects (see "OPTIONAL MATCH")                            |
-| `WITH`                                                      | A derived table per stage (see "WITH stages"); a separate step for large stages later (#14)                                     |
-| `UNWIND`                                                    | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position. |
-| Pattern predicates, `EXISTS { }`                            | `EXISTS (SELECT ...)`                                                                                                           |
-| `CREATE` (write mode)                                       | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`                                               |
+| Cypher                                                            | SQL                                                                                                                             |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Node pattern `(a:Label {k: v})`                                   | Scan of the node table with label and property filters                                                                          |
+| Fixed relationship `-[r:T]->`                                     | Join to the edge table on start and end ids                                                                                     |
+| Undirected `-[r]-`                                                | Join on either direction with `OR`. As in Cypher, a relationship matches once per orientation that fits (a self-loop once)      |
+| Several relationship patterns in one `MATCH`                      | `r1.id <> r2.id` for each pair (relationship uniqueness), including anonymous ones and ones bound by an earlier clause          |
+| Inline property map `{k: v}` in `MATCH`                           | `n.k = v` per entry with Cypher equality: a missing property or a null never matches. A parameter map is an error               |
+| `WHERE`                                                           | The expression compiler (see "Expressions"), with Cypher null semantics                                                         |
+| `RETURN`, `SKIP`, `LIMIT`                                         | Direct equivalents; `SKIP`/`LIMIT` are bound values checked to be non-negative integers                                         |
+| `ORDER BY`                                                        | Sort keys from `ExprCompiler.sortKeys`: aliases are substituted, then a JSON value sorts by type rank and then value            |
+| `DISTINCT` with `ORDER BY`                                        | `SELECT * FROM (SELECT DISTINCT ..., <sort keys>) AS d ORDER BY d.k0, ...`; the keys may use only projected values              |
+| Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`)       | Two levels: SQL aggregates grouped by the non-aggregated items, then the items over those columns (see "Aggregation")           |
+| Variable length `[*1..n]`                                         | Recursive CTE with an edge-id list per path, capped by `maxPathDepth` (see "Variable-length patterns")                          |
+| `shortestPath` / `allShortestPaths`                               | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                     |
+| Named path `p = ...`, `nodes(p)`, `relationships(p)`, `length(p)` | A JSON path value of tagged entities (see "Named paths")                                                                        |
+| `OPTIONAL MATCH`                                                  | `LEFT JOIN (<new tables>) ON <pattern conditions and WHERE>` on both dialects (see "OPTIONAL MATCH")                            |
+| `WITH`                                                            | A derived table per stage (see "WITH stages"); a separate step for large stages later (#14)                                     |
+| `UNWIND`                                                          | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position. |
+| Pattern predicates, `EXISTS { }`                                  | `EXISTS (SELECT ...)`                                                                                                           |
+| `CREATE` (write mode)                                             | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`                                               |
 
 ## Dialect differences
 

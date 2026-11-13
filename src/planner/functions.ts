@@ -1,5 +1,5 @@
 import type * as ast from '../ast.js';
-import type { ScalarType } from '../dialect/dialect.js';
+import { RESERVED_KEYS, type ScalarType } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError } from '../errors.js';
 import { typeError, type Expr, type ExprCompiler, type ExprType, type Shared } from './expr.js';
 
@@ -188,6 +188,77 @@ function entity(call: Call, kinds: ('node' | 'relationship')[]): Expr | undefine
   return arg;
 }
 
+/**
+ * A function of a JSON argument that holds a node, relationship, or path (a
+ * tagged object, see ENTITY_TAG): `body` when its run-time type is one of
+ * `types`, otherwise null.
+ */
+function tagged(
+  call: Call,
+  types: ('node' | 'relationship' | 'path')[],
+  type: ExprType,
+  body: (json: string) => string,
+  shape?: 'list' | 'map',
+): Expr {
+  const arg = call.args[0]!;
+  if (arg.type === 'null') {
+    return NULL;
+  }
+  const known = arg.shape === 'path' && types.includes('path');
+  if (arg.type !== 'json' || (arg.shape !== undefined && !known)) {
+    throw typeError(types.join(' or '), arg.shape ?? arg.type, call.node.args[0]!.position);
+  }
+  if (known) {
+    // Known to be a path (or null): no run-time check needed.
+    return result(
+      call.c.share([arg], ([a]) => body(a!.sql)),
+      type,
+      shape,
+    );
+  }
+  const accepted = types.map((t) => `'${t}'`).join(', ');
+  const sql = call.c.share(
+    [arg],
+    ([a]) => `(CASE WHEN ${a!.jsonType} IN (${accepted}) THEN ${body(a!.sql)} END)`,
+  );
+  return result(sql, type, shape);
+}
+
+/** The member `key` (a reserved key of tagged objects) of a JSON object. */
+function member(call: Call, json: string, key: string): string {
+  const b = call.c.b;
+  return b.dialect.jsonMember(json, b.bind({ kind: 'sql', value: key }), key);
+}
+
+/** The properties of a tagged node or relationship: the object without its reserved keys. */
+function taggedProperties(call: Call, json: string): string {
+  return call.c.b.dialect.jsonRemoveKeys(json, [...RESERVED_KEYS]);
+}
+
+const isJson = (call: Call): boolean => call.args[0]!.type === 'json';
+
+/** `body` of a JSON map, or of the properties of a node or relationship held in JSON. */
+function entityOrMap(call: Call, body: (map: string) => string, shape: 'list' | 'map'): Expr {
+  const arg = call.args[0]!;
+  if (arg.type === 'null') {
+    return NULL;
+  }
+  if (arg.type !== 'json' || arg.shape === 'list' || arg.shape === 'path') {
+    throw typeError(
+      'a map, node, or relationship',
+      arg.shape ?? arg.type,
+      call.node.args[0]!.position,
+    );
+  }
+  const sql = call.c.share([arg], ([a]) =>
+    arg.shape === 'map'
+      ? body(a!.sql)
+      : `(CASE WHEN ${a!.jsonType} = 'map' THEN ${body(a!.sql)} ` +
+        `WHEN ${a!.jsonType} IN ('node', 'relationship') THEN ${body(taggedProperties(call, a!.sql))} END)`,
+  );
+  return result(sql, 'json', shape);
+}
+
 /** A column of an entity's table (`labels` only for nodes, `type` only for relationships). */
 function column(call: Call, e: Expr, name: 'id' | 'labels' | 'properties' | 'type'): string {
   const b = call.c.b;
@@ -219,14 +290,26 @@ function stringFunction(arity: number, sql: (values: string[]) => string): Funct
 const FUNCTIONS: Record<string, FunctionDef> = {
   // Entities
   id: fn(1, 1, (call) => {
+    if (isJson(call)) {
+      return tagged(call, ['node', 'relationship'], 'json', (j) => member(call, j, '~id'));
+    }
     const e = entity(call, ['node', 'relationship']);
     return e ? result(column(call, e, 'id'), 'integer') : NULL;
   }),
   labels: fn(1, 1, (call) => {
+    if (isJson(call)) {
+      return tagged(call, ['node'], 'json', (j) => member(call, j, '~labels'), 'list');
+    }
     const e = entity(call, ['node']);
     return e ? result(column(call, e, 'labels'), 'json', 'list') : NULL;
   }),
   type: fn(1, 1, (call) => {
+    if (isJson(call)) {
+      const d = call.c.b.dialect;
+      return tagged(call, ['relationship'], 'string', (j) =>
+        d.fromJson(member(call, j, '~type'), 'string'),
+      );
+    }
     const e = entity(call, ['relationship']);
     return e ? result(column(call, e, 'type'), 'string') : NULL;
   }),
@@ -235,7 +318,7 @@ const FUNCTIONS: Record<string, FunctionDef> = {
     if (arg.type === 'node' || arg.type === 'relationship') {
       return result(column(call, arg, 'properties'), 'json', 'map');
     }
-    return dispatch(call, 'json', { map: (m) => m }, 'map');
+    return entityOrMap(call, (m) => m, 'map');
   }),
   keys: fn(1, 1, (call) => {
     const d = call.c.b.dialect;
@@ -243,8 +326,21 @@ const FUNCTIONS: Record<string, FunctionDef> = {
     if (arg.type === 'node' || arg.type === 'relationship') {
       return result(d.jsonKeys(column(call, arg, 'properties')), 'json', 'list');
     }
-    return dispatch(call, 'json', { map: (m) => d.jsonKeys(m) }, 'list');
+    return entityOrMap(call, (m) => d.jsonKeys(m), 'list');
   }),
+
+  // Paths
+  nodes: fn(1, 1, (call) =>
+    tagged(call, ['path'], 'json', (j) => member(call, j, '~nodes'), 'list'),
+  ),
+  relationships: fn(1, 1, (call) =>
+    tagged(call, ['path'], 'json', (j) => member(call, j, '~relationships'), 'list'),
+  ),
+  length: fn(1, 1, (call) =>
+    tagged(call, ['path'], 'integer', (j) =>
+      call.c.b.dialect.listLength(member(call, j, '~relationships')),
+    ),
+  ),
 
   // Conversions
   coalesce: fn(1, Infinity, coalesce),
@@ -387,11 +483,7 @@ function coalesce(call: Call): Expr {
       ? first
       : result(`COALESCE(${args.map((a) => a.sql).join(', ')})`, first.type);
   }
-  const jsons = args.map((a, i): Expr => ({
-    sql: c.toJson(a, node.args[i]!.position),
-    type: 'json',
-    atomic: a.atomic,
-  }));
+  const jsons = args.map((a) => c.asJson(a));
   // JSON null counts as null.
   const sql = c.share(jsons, (refs: Shared[]) => {
     const values = refs.map((r) => `CASE WHEN ${r.jsonType} <> 'null' THEN ${r.sql} END`);

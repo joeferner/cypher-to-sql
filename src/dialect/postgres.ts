@@ -1,4 +1,11 @@
-import { sqlStringLiteral, type Dialect, type ScalarType } from './dialect.js';
+import {
+  ENTITY_TAG,
+  entityFields,
+  sqlStringLiteral,
+  type Dialect,
+  type EntityColumns,
+  type ScalarType,
+} from './dialect.js';
 
 const SQL_TYPES: Record<ScalarType, string> = {
   boolean: 'boolean',
@@ -18,6 +25,15 @@ function floatToJsonb(value: string): string {
     `(SELECT CASE WHEN f IN ('NaN'::float8, 'Infinity'::float8, '-Infinity'::float8) THEN NULL ` +
     `WHEN f::text::numeric = trunc(f::text::numeric) THEN to_jsonb(round(f::text::numeric, 1)) ` +
     `ELSE to_jsonb(f::text::numeric) END FROM (SELECT (${value})::double precision AS f) AS ft)`
+  );
+}
+
+/** An entity's tagged object: its properties with the reserved keys added. */
+function entityObject(kind: 'node' | 'relationship', alias: string, table: EntityColumns): string {
+  const fields = entityFields(kind, alias, table, (c) => c);
+  return (
+    `(${alias}.${table.properties} || jsonb_build_object(` +
+    `${fields.map(([k, v]) => `${k}::text, ${v}`).join(', ')}))`
   );
 }
 
@@ -54,7 +70,8 @@ export function postgres(): Dialect {
       `(CASE jsonb_typeof(${json}) WHEN 'number' THEN CASE WHEN (${json})::text ~ '^-?[0-9]+$' ` +
       `AND (${json})::numeric BETWEEN -9223372036854775808 AND 9223372036854775807 ` +
       `THEN 'integer' ELSE 'float' END WHEN 'string' THEN 'string' WHEN 'boolean' THEN 'boolean' ` +
-      `WHEN 'array' THEN 'list' WHEN 'object' THEN 'map' WHEN 'null' THEN 'null' END)`,
+      `WHEN 'array' THEN 'list' WHEN 'object' THEN COALESCE((${json}) ->> '${ENTITY_TAG}', 'map') ` +
+      `WHEN 'null' THEN 'null' END)`,
     jsonIsNull: (json) => `(COALESCE(jsonb_typeof(${json}), 'null') = 'null')`,
     // The casts are guarded so that they never fail: PostgreSQL may evaluate a
     // CASE branch early when its input is a constant (a bound parameter), even
@@ -96,6 +113,7 @@ export function postgres(): Dialect {
     booleanAggregate: (kind, value) => `${kind === 'min' ? 'bool_and' : 'bool_or'}(${value})`,
     // Set-returning JSON functions fail on the wrong type, so their inputs are
     // guarded (see fromJson).
+    jsonRemoveKeys: (map, keys) => `(${map} - ARRAY[${keys.map(sqlStringLiteral).join(', ')}])`,
     jsonKeys: (map) =>
       `(SELECT COALESCE(jsonb_agg(k ORDER BY k), '[]'::jsonb) FROM jsonb_object_keys(` +
       `CASE WHEN jsonb_typeof(${map}) = 'object' THEN ${map} END) AS k)`,
@@ -172,19 +190,24 @@ export function postgres(): Dialect {
         `FROM (SELECT ${pair} AS r FROM w) AS t)`
       );
     },
+    entityJson: entityObject,
+    // The id column's type is not known here, so compare as text.
+    jsonIdEquals: (column, json) => `((${column})::text = (${json} #>> '{}'))`,
+    pathJson: (nodes, relationships) =>
+      `jsonb_build_object('${ENTITY_TAG}'::text, 'path'::text, '~nodes'::text, ${nodes}, ` +
+      `'~relationships'::text, ${relationships})`,
+    entityList: (kind, list, table) =>
+      `(CASE WHEN ${list} IS NULL THEN NULL ELSE COALESCE((SELECT jsonb_agg(` +
+      `${entityObject(kind, 've', table)} ORDER BY vu.i) FROM unnest(${list}) WITH ORDINALITY AS vu(id, i) ` +
+      `JOIN ${table.table} AS ve ON ve.${table.id} = vu.id), '[]'::jsonb) END)`,
     // Arrays of the id column's type. The empty array gets that type from an
     // aggregate over no rows, so the planner needs no knowledge of column types.
-    idListEmpty: (edges) =>
-      `COALESCE((SELECT array_agg(ve.${edges.id}) FROM ${edges.table} AS ve WHERE FALSE), '{}')`,
+    idListEmpty: (table, id) =>
+      `COALESCE((SELECT array_agg(ve.${id}) FROM ${table} AS ve WHERE FALSE), '{}')`,
     idListAppend: (list, id) => `(${list} || ${id})`,
     idListHas: (list, id) => `(${id} = ANY(${list}))`,
     idListsOverlap: (left, right) => `(${left} && ${right})`,
     idListLength: (list) => `cardinality(${list})::bigint`,
-    relationshipTuples: (list, edges) =>
-      `(CASE WHEN ${list} IS NULL THEN NULL ELSE COALESCE((SELECT jsonb_agg(jsonb_build_array(` +
-      `ve.${edges.id}, ve.${edges.type}, ve.${edges.startId}, ve.${edges.endId}, ve.${edges.properties}) ` +
-      `ORDER BY vu.i) FROM unnest(${list}) WITH ORDINALITY AS vu(id, i) ` +
-      `JOIN ${edges.table} AS ve ON ve.${edges.id} = vu.id), '[]'::jsonb) END)`,
     noFlatten: ' OFFSET 0',
     limitAll: 'ALL',
     unwind: (listExpr, alias) => ({

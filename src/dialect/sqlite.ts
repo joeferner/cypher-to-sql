@@ -1,5 +1,18 @@
 import { UnsupportedFeatureError } from '../errors.js';
-import { sqlStringLiteral, type Dialect, type ScalarType } from './dialect.js';
+import {
+  ENTITY_TAG,
+  entityFields,
+  sqlStringLiteral,
+  type Dialect,
+  type EntityColumns,
+  type ScalarType,
+} from './dialect.js';
+
+/** An entity's tagged object: its properties with the reserved keys added. */
+function entityObject(kind: 'node' | 'relationship', alias: string, table: EntityColumns): string {
+  const fields = entityFields(kind, alias, table, (c) => `json(${c})`);
+  return `json_patch(${alias}.${table.properties}, json_object(${fields.flat().join(', ')}))`;
+}
 
 /**
  * SQLite dialect. Requires SQLite 3.38 or newer for the `->` JSON operator, and
@@ -38,7 +51,8 @@ export function sqlite(): Dialect {
     jsonType: (json) =>
       `(CASE json_type(${json}) WHEN 'integer' THEN 'integer' WHEN 'real' THEN 'float' ` +
       `WHEN 'text' THEN 'string' WHEN 'true' THEN 'boolean' WHEN 'false' THEN 'boolean' ` +
-      `WHEN 'array' THEN 'list' WHEN 'object' THEN 'map' WHEN 'null' THEN 'null' END)`,
+      `WHEN 'array' THEN 'list' WHEN 'object' THEN ` +
+      `COALESCE(json_extract(${json}, '$."${ENTITY_TAG}"'), 'map') WHEN 'null' THEN 'null' END)`,
     jsonIsNull: (json) => `(COALESCE(json_type(${json}), 'null') = 'null')`,
     fromJson: (json) => `(${json} ->> '$')`,
     toJson,
@@ -62,6 +76,8 @@ export function sqlite(): Dialect {
       `json_group_array(${distinct ? 'DISTINCT ' : ''}json(${value})` +
       `${orderBy.length > 0 ? ` ORDER BY ${orderBy.join(', ')}` : ''}) FILTER (WHERE ${filter})`,
     booleanAggregate: (kind, value) => `${kind}(${value})`,
+    jsonRemoveKeys: (map, keys) =>
+      `json_remove(${map}, ${keys.map((k) => sqlStringLiteral(`$."${k}"`)).join(', ')})`,
     jsonKeys: (map) =>
       `(SELECT json_group_array(key) FROM (SELECT key FROM json_each(${map}) ORDER BY key))`,
     // `$[#-1]` is the last element.
@@ -152,7 +168,14 @@ export function sqlite(): Dialect {
         `FROM (SELECT ${pair} AS r FROM w))`
       );
     },
-    // SQLite does not flatten a subquery that has an OFFSET.
+    entityJson: entityObject,
+    jsonIdEquals: (column, json) => `(${column} = (${json} ->> '$'))`,
+    pathJson: (nodes, relationships) =>
+      `json_object('${ENTITY_TAG}', 'path', '~nodes', json(${nodes}), '~relationships', json(${relationships}))`,
+    entityList: (kind, list, table) =>
+      `(CASE WHEN ${list} IS NULL THEN NULL ELSE (SELECT json_group_array(json(` +
+      `${entityObject(kind, 've', table)}) ORDER BY vj.key) FROM json_each(${list}) AS vj ` +
+      `JOIN ${table.table} AS ve ON ve.${table.id} = vj.value) END)`,
     // JSON arrays of ids.
     idListEmpty: () => 'json_array()',
     idListAppend: (list, id) => `json_insert(${list}, '$[#]', ${id})`,
@@ -161,10 +184,7 @@ export function sqlite(): Dialect {
     idListsOverlap: (left, right) =>
       `EXISTS (SELECT 1 FROM json_each(${left}) AS vl JOIN json_each(${right}) AS vr ON vl.value = vr.value)`,
     idListLength: (list) => `json_array_length(${list})`,
-    relationshipTuples: (list, edges) =>
-      `(CASE WHEN ${list} IS NULL THEN NULL ELSE (SELECT json_group_array(json_array(` +
-      `ve.${edges.id}, ve.${edges.type}, ve.${edges.startId}, ve.${edges.endId}, json(ve.${edges.properties})) ` +
-      `ORDER BY vj.key) FROM json_each(${list}) AS vj JOIN ${edges.table} AS ve ON ve.${edges.id} = vj.value) END)`,
+    // SQLite does not flatten a subquery that has an OFFSET.
     noFlatten: ' LIMIT -1 OFFSET 0',
     limitAll: '-1',
     // 9e999 is infinity in SQLite. NaN becomes NULL in SQLite.

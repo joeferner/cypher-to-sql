@@ -1,4 +1,4 @@
-import type { Dialect } from '../dialect/dialect.js';
+import type { Dialect, EntityColumns } from '../dialect/dialect.js';
 import type * as ast from '../ast.js';
 import type { BindValue, PlanStep, ValueSource } from '../plan.js';
 import type { GraphMapping } from '../mapping.js';
@@ -32,6 +32,37 @@ export class SqlBuilder {
   public table(kind: 'nodes' | 'edges'): string {
     const table = this.ident(this.mapping[kind].table);
     return this.mapping.schema ? `${this.ident(this.mapping.schema)}.${table}` : table;
+  }
+
+  /** The node or edge table and its columns, quoted. */
+  public columns(kind: 'nodes' | 'edges'): EntityColumns {
+    const m = this.mapping;
+    const table = this.table(kind);
+    if (kind === 'nodes') {
+      return {
+        table,
+        id: this.ident(m.nodes.id),
+        labels: this.ident(m.nodes.labels),
+        properties: this.ident(m.nodes.properties),
+      };
+    }
+    return {
+      table,
+      id: this.ident(m.edges.id),
+      type: this.ident(m.edges.type),
+      startId: this.ident(m.edges.startId),
+      endId: this.ident(m.edges.endId),
+      properties: this.ident(m.edges.properties),
+    };
+  }
+
+  /** The tagged JSON object of the entity in table alias `alias`; JSON null when the alias's row is null. */
+  public entityJson(kind: 'node' | 'relationship', alias: string): string {
+    const columns = this.columns(kind === 'node' ? 'nodes' : 'edges');
+    return (
+      `(CASE WHEN ${alias}.${columns.id} IS NULL THEN ${this.dialect.jsonInput('NULL')} ` +
+      `ELSE ${this.dialect.entityJson(kind, alias, columns)} END)`
+    );
   }
 
   /**

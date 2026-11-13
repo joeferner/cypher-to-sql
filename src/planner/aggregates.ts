@@ -224,19 +224,32 @@ function minMax({ c, node, arg }: Aggregate, fn: 'min' | 'max'): Expr {
 }
 
 /** A list of the non-null values (in no particular order). */
-function collect({ c, node, arg, distinct }: Aggregate): Expr {
+function collect({ c, arg, distinct }: Aggregate): Expr {
   const d = c.b.dialect;
   switch (arg.type) {
     case 'null':
       return result(d.jsonArray([]), 'json', 'list');
     case 'node':
-    case 'relationship':
-      throw new UnsupportedFeatureError(
-        `collect() of nodes or relationships is not supported yet`,
-        {
-          position: node.position,
-        },
+    case 'relationship': {
+      // As tagged objects; a null entity (OPTIONAL MATCH) is skipped.
+      const table = c.b.mapping[arg.type === 'node' ? 'nodes' : 'edges'];
+      return result(
+        d.jsonAggregate(
+          c.b.dialect.entityJson(
+            arg.type,
+            arg.sql,
+            c.b.columns(arg.type === 'node' ? 'nodes' : 'edges'),
+          ),
+          {
+            distinct: distinct !== '',
+            orderBy: [],
+            filter: `${arg.sql}.${c.b.ident(table.id)} IS NOT NULL`,
+          },
+        ),
+        'json',
+        'list',
       );
+    }
     case 'json':
       return result(
         d.jsonAggregate(arg.sql, {

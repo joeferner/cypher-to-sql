@@ -3,6 +3,8 @@
 // types, so integers are written without a decimal point (`1`) and floats always
 // with one (`1.0`), and parsing turns integer literals back into `bigint`.
 
+import { ENTITY_TAG } from './dialect/dialect.js';
+import { SemanticError } from './errors.js';
 import { isCypherMap, type CypherValue } from './values.js';
 
 // `JSON.rawJSON` and the reviver's `source` context (ES2025, Node 21+) are not in
@@ -60,6 +62,9 @@ function toJsonable(value: CypherValue): unknown {
   if (value !== null && typeof value === 'object') {
     if (!isCypherMap(value)) {
       throw new TypeError('Nodes, relationships, and paths cannot be stored as property values');
+    }
+    if (Object.hasOwn(value, ENTITY_TAG)) {
+      throw new SemanticError(`The map key ${JSON.stringify(ENTITY_TAG)} is reserved`);
     }
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {

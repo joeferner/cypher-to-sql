@@ -5,8 +5,10 @@ import type { Limits } from './limits.js';
 import { LimitExceededError, SemanticError } from './errors.js';
 import { parseCypherJson, stringifyCypherJson } from './json.js';
 import { checkDeclaredType, type PropertyTypes } from './property-types.js';
+import { ENTITY_TAG, RESERVED_KEYS } from './dialect/dialect.js';
 import {
   CypherNode,
+  CypherPath,
   CypherRelationship,
   isCypherMap,
   type CypherMap,
@@ -87,9 +89,8 @@ export type ColumnSpec =
       endId: string;
       properties: string;
     }
+  /** A JSON value; nodes, relationships, and paths in it are tagged objects (see ENTITY_TAG). */
   | { name: string; kind: 'json'; column: string }
-  /** A list of relationships, as JSON text of `[id, type, startId, endId, properties]` lists. */
-  | { name: string; kind: 'relationships'; column: string }
   /** A native SQL value of a known type. */
   | { name: string; kind: 'scalar'; type: ScalarType; column: string };
 
@@ -327,6 +328,9 @@ function checkPropertyValue(
   value: CypherValue,
   types: PropertyTypes | undefined,
 ): void {
+  if (RESERVED_KEYS.has(key)) {
+    throw new SemanticError(`The property key ${JSON.stringify(key)} is reserved`);
+  }
   const declared = types && Object.hasOwn(types, key) ? types[key] : undefined;
   if (declared) {
     checkDeclaredType(key, value, declared);
@@ -368,25 +372,10 @@ function assembleRecord(row: Row, columns: readonly ColumnSpec[]): Record<string
               idToString(row[column.endId]),
               parseJsonColumn(row[column.properties]) as CypherMap,
             );
-    } else if (column.kind === 'relationships') {
-      const tuples = parseJsonColumn(row[column.column]) as CypherValue[][] | null;
-      record[column.name] =
-        tuples === null
-          ? null
-          : tuples.map(
-              ([id, type, startId, endId, properties]) =>
-                new CypherRelationship(
-                  idToString(id),
-                  type as string,
-                  idToString(startId),
-                  idToString(endId),
-                  properties as CypherMap,
-                ),
-            );
     } else if (column.kind === 'scalar') {
       record[column.name] = scalarValue(row[column.column], column.type);
     } else {
-      record[column.name] = parseJsonColumn(row[column.column]);
+      record[column.name] = decodeEntities(parseJsonColumn(row[column.column]));
     }
   }
   return record;
@@ -421,6 +410,42 @@ function idToString(id: unknown): string {
     return String(id);
   }
   throw new Error(`Internal error: unexpected id value of type ${typeof id} from the database`);
+}
+
+/** Turns the tagged objects in a JSON result value into nodes, relationships, and paths. */
+function decodeEntities(value: CypherValue): CypherValue {
+  if (Array.isArray(value)) {
+    return value.map(decodeEntities);
+  }
+  if (!isCypherMap(value)) {
+    return value;
+  }
+  const tag = value[ENTITY_TAG];
+  if (tag === 'path') {
+    return new CypherPath(
+      (value['~nodes'] as CypherValue[]).map(decodeEntities) as CypherNode[],
+      (value['~relationships'] as CypherValue[]).map(decodeEntities) as CypherRelationship[],
+    );
+  }
+  const out: CypherMap = {};
+  for (const [key, v] of Object.entries(value)) {
+    if (tag === undefined || !RESERVED_KEYS.has(key)) {
+      out[key] = decodeEntities(v);
+    }
+  }
+  if (tag === 'node') {
+    return new CypherNode(idToString(value['~id']), value['~labels'] as string[], out);
+  }
+  if (tag === 'relationship') {
+    return new CypherRelationship(
+      idToString(value['~id']),
+      value['~type'] as string,
+      idToString(value['~start']),
+      idToString(value['~end']),
+      out,
+    );
+  }
+  return out;
 }
 
 function parseJsonColumn(raw: unknown): CypherValue {

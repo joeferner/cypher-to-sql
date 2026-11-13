@@ -118,6 +118,8 @@ export interface Dialect {
 
   /** JSON list of the keys of a JSON map, sorted. */
   jsonKeys(map: string): string;
+  /** A JSON map without the given keys (constants from the library, written as literals). */
+  jsonRemoveKeys(map: string, keys: string[]): string;
   /** Element of a JSON list at an integer index (negative counts from the end); NULL if out of range. */
   jsonElement(list: string, index: string): string;
   /** A JSON list without its first element. */
@@ -175,14 +177,37 @@ export interface Dialect {
    */
   readonly noFlatten: string;
 
-  // ---- relationship id lists (variable-length patterns) ---------------------------
+  // ---- entities as JSON values ------------------------------------------------------
   //
-  // The relationships of a variable-length match are an ordered list of edge
+  // Inside JSON values (lists, maps, paths) a node or relationship is its
+  // properties plus reserved keys, tagged with `~cypher` (see ENTITY_TAG), which
+  // `jsonType` reports as `node`, `relationship`, or `path`. Properties are at the
+  // top level, so property access works as on a map:
+  //
+  //   {"~cypher": "node", "~id": ..., "~labels": [...], <properties>}
+  //   {"~cypher": "relationship", "~id": ..., "~type": ..., "~start": ..., "~end": ..., <properties>}
+  //   {"~cypher": "path", "~nodes": [<node>, ...], "~relationships": [<relationship>, ...]}
+
+  /** The tagged object of the node or relationship in the table alias `alias`. */
+  entityJson(kind: 'node' | 'relationship', alias: string, table: EntityColumns): string;
+  /** Condition: the id column equals the id held in a JSON value (a tagged object's `~id`). */
+  jsonIdEquals(column: string, json: string): string;
+  /** A tagged path from JSON lists of tagged nodes and relationships. */
+  pathJson(nodes: string, relationships: string): string;
+  /**
+   * A JSON list of the tagged entities whose ids are in the id list, in list
+   * order; NULL when the list is NULL.
+   */
+  entityList(kind: 'node' | 'relationship', list: string, table: EntityColumns): string;
+
+  // ---- id lists (variable-length patterns) --------------------------------------
+  //
+  // The relationships and nodes of a variable-length match are ordered lists of
   // ids, in whatever representation suits the database (an array of the id
   // column's type on PostgreSQL, JSON text on SQLite).
 
-  /** An empty id list. */
-  idListEmpty(edges: EdgeColumns): string;
+  /** An empty list of ids of the column `id` of `table`. */
+  idListEmpty(table: string, id: string): string;
   /** The list with `id` appended. */
   idListAppend(list: string, id: string): string;
   /** Condition: the list contains `id`. */
@@ -191,11 +216,6 @@ export interface Dialect {
   idListsOverlap(left: string, right: string): string;
   /** Number of ids in the list, as an integer. */
   idListLength(list: string): string;
-  /**
-   * A JSON list with one `[id, type, startId, endId, properties]` list per
-   * relationship of the id list, in list order; NULL when the list is NULL.
-   */
-  relationshipTuples(list: string, edges: EdgeColumns): string;
 
   /** A LIMIT value meaning no limit (an OFFSET without LIMIT needs it on SQLite). */
   readonly limitAll: string;
@@ -220,14 +240,61 @@ export interface Dialect {
   };
 }
 
-/** The edge table and its columns, as quoted SQL names. */
-export interface EdgeColumns {
+/** The node or edge table and its columns, as quoted SQL names. */
+export interface EntityColumns {
   table: string;
   id: string;
-  type: string;
-  startId: string;
-  endId: string;
   properties: string;
+  /** Nodes only. */
+  labels?: string;
+  /** Relationships only. */
+  type?: string;
+  startId?: string;
+  endId?: string;
+}
+
+/** Reserved key that tags nodes, relationships, and paths inside JSON values. */
+export const ENTITY_TAG = '~cypher';
+
+/**
+ * Keys of tagged objects besides the entity's properties. They cannot be used
+ * as property keys or as keys of maps in queries and parameters.
+ */
+export const RESERVED_KEYS = new Set([
+  ENTITY_TAG,
+  '~id',
+  '~labels',
+  '~type',
+  '~start',
+  '~end',
+  '~nodes',
+  '~relationships',
+]);
+
+/**
+ * The reserved key/value pairs of an entity's tagged object, as SQL string
+ * literals and column references; the properties are merged in by the dialect.
+ */
+export function entityFields(
+  kind: 'node' | 'relationship',
+  alias: string,
+  t: EntityColumns,
+  json: (column: string) => string,
+): [string, string][] {
+  const col = (name: string | undefined): string => `${alias}.${name!}`;
+  const head: [string, string][] = [
+    [`'${ENTITY_TAG}'`, `'${kind}'`],
+    [`'~id'`, col(t.id)],
+  ];
+  if (kind === 'node') {
+    return [...head, [`'~labels'`, json(col(t.labels))]];
+  }
+  return [
+    ...head,
+    [`'~type'`, col(t.type)],
+    [`'~start'`, col(t.startId)],
+    [`'~end'`, col(t.endId)],
+  ];
 }
 
 /** A string literal for a key from the mapping (validated not to contain `"`). */
