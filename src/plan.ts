@@ -47,7 +47,12 @@ export type BindValue =
   /** The SQL `OFFSET` of a step: the query's SKIP. */
   | { kind: 'rowOffset'; skip: ValueSource }
   /** The SQL `LIMIT` inside a WITH stage: the query's LIMIT exactly (no row cap). */
-  | { kind: 'stageLimit'; limit: ValueSource };
+  | { kind: 'stageLimit'; limit: ValueSource }
+  /**
+   * The largest number of hops of a variable-length pattern: its upper bound, or
+   * `maxPathDepth` when it has none. A bound above `maxPathDepth` is an error.
+   */
+  | { kind: 'pathDepth'; min: number; max: number | undefined; position: SourcePosition };
 
 /** A Cypher value known at compile time, a query parameter, or a JSON column of the current source row. */
 export type ValueSource =
@@ -83,6 +88,8 @@ export type ColumnSpec =
       properties: string;
     }
   | { name: string; kind: 'json'; column: string }
+  /** A list of relationships, as JSON text of `[id, type, startId, endId, properties]` lists. */
+  | { name: string; kind: 'relationships'; column: string }
   /** A native SQL value of a known type. */
   | { name: string; kind: 'scalar'; type: ScalarType; column: string };
 
@@ -257,6 +264,17 @@ function resolveBind(
       return rowCount(bind.skip, 'SKIP', options, row);
     case 'stageLimit':
       return rowCount(bind.limit, 'LIMIT', options, row);
+    case 'pathDepth': {
+      const limit = options.limits.maxPathDepth;
+      const bound = bind.max ?? bind.min;
+      if (bound > limit) {
+        throw new LimitExceededError(
+          `Variable-length pattern bound ${bound} exceeds maxPathDepth (${limit})`,
+          { position: bind.position, hint: 'Use a smaller bound, or raise maxPathDepth.' },
+        );
+      }
+      return bind.max ?? limit;
+    }
   }
 }
 
@@ -350,6 +368,21 @@ function assembleRecord(row: Row, columns: readonly ColumnSpec[]): Record<string
               idToString(row[column.endId]),
               parseJsonColumn(row[column.properties]) as CypherMap,
             );
+    } else if (column.kind === 'relationships') {
+      const tuples = parseJsonColumn(row[column.column]) as CypherValue[][] | null;
+      record[column.name] =
+        tuples === null
+          ? null
+          : tuples.map(
+              ([id, type, startId, endId, properties]) =>
+                new CypherRelationship(
+                  idToString(id),
+                  type as string,
+                  idToString(startId),
+                  idToString(endId),
+                  properties as CypherMap,
+                ),
+            );
     } else if (column.kind === 'scalar') {
       record[column.name] = scalarValue(row[column.column], column.type);
     } else {
@@ -422,6 +455,8 @@ function describeBind(bind: BindValue): string {
       return `skip(${describeSource(bind.skip)})`;
     case 'stageLimit':
       return `limit(${describeSource(bind.limit)})`;
+    case 'pathDepth':
+      return bind.max === undefined ? 'maxPathDepth' : `depth(${bind.max})`;
   }
 }
 

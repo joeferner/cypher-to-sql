@@ -77,6 +77,11 @@ export function compileAggregate(c: ExprCompiler, node: ast.FunctionCall | ast.C
       position: node.position,
     });
   }
+  const path = c.relationshipList(node.args[0]!);
+  if (path !== undefined && fn === 'count') {
+    // The relationships of a variable-length match: counted when matched.
+    return result(`COUNT(${node.distinct ? 'DISTINCT ' : ''}${path})`, 'integer');
+  }
   c.aggregation = 'inside';
   let arg: Expr;
   try {

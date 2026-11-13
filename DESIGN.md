@@ -145,6 +145,27 @@ FROM "nodes" AS n0 LEFT JOIN ("nodes" AS n1 CROSS JOIN "edges" AS e2)
 - An OPTIONAL MATCH that comes first joins to `(SELECT 1)`, so it gives one row of nulls when nothing matches. One whose variables are all bound already adds nothing.
 - Null entities propagate: properties, `labels()`, `type()`, and label predicates are null, `IS NULL` is true, aggregates skip them, WITH carries them (entities are joined back with a LEFT JOIN), and a later MATCH from a null node matches nothing.
 
+### Variable-length patterns
+
+`(a)-[r:T*min..max {k: v}]->(b)` is a derived table over a recursive CTE that starts a zero-length path at every node and adds one edge per step:
+
+```sql
+(WITH RECURSIVE vp(s, t, d, path) AS (
+   SELECT n.id, n.id, 0, <empty id list> FROM nodes AS n
+   UNION ALL
+   SELECT vp.s, e.end_id, vp.d + 1, <path + e.id> FROM vp JOIN edges AS e ON e.start_id = vp.t
+   WHERE vp.d < <max> AND <e.id not in path> AND <type and property filters>
+ ) SELECT s, t, path FROM vp WHERE d >= <min>) AS v
+```
+
+joined with `v.s = a.id AND v.t = b.id`.
+
+- The path is a list of edge ids: an array of the id column's type on PostgreSQL (`||`, `= ANY`, `&&`), JSON text on SQLite (`json_insert`, `json_each`). It enforces relationship uniqueness along the path, which also ends cycles, and against the MATCH's other relationship patterns.
+- `<max>` is bound at run time: the explicit upper bound, or `maxPathDepth` when there is none. A bound (or a lower bound with no upper bound) above `maxPathDepth` raises `LimitExceededError`. The default lower bound is 1.
+- Undirected patterns follow an edge from either end (`CASE` picks the other end); a self-loop is followed once.
+- The CTE cannot refer to the outer query (SQLite has no `LATERAL`), so it explores from every node, and inline property values must not use variables. Seeding it from bound nodes is part of multi-step plans (#14).
+- `r` in `[r*]` binds the id list. It can be returned (the edges are loaded as `[id, type, start, end, properties]` tuples in path order and built into relationships), carried by WITH, counted, tested with `IS NULL`, and measured with `size()`. Other uses, and a pattern whose list variable is already bound, are unsupported for now.
+
 ### Functions
 
 `src/planner/functions.ts` compiles function calls (names are case-insensitive). Arguments of a known wrong type are a `SemanticError` at compile time; JSON arguments of the wrong type give null at run time (#30); a null argument gives null.
@@ -195,7 +216,7 @@ The defaults are starting values, not measured ones (#16).
 | `ORDER BY`                                                  | Sort keys from `ExprCompiler.sortKeys`: aliases are substituted, then a JSON value sorts by type rank and then value            |
 | `DISTINCT` with `ORDER BY`                                  | `SELECT * FROM (SELECT DISTINCT ..., <sort keys>) AS d ORDER BY d.k0, ...`; the keys may use only projected values              |
 | Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`) | Two levels: SQL aggregates grouped by the non-aggregated items, then the items over those columns (see "Aggregation")           |
-| Variable length `[*1..n]`                                   | Recursive CTE with visited-id arrays and a required upper bound, or iterative steps                                             |
+| Variable length `[*1..n]`                                   | Recursive CTE with an edge-id list per path, capped by `maxPathDepth` (see "Variable-length patterns")                          |
 | `shortestPath` / `allShortestPaths`                         | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                     |
 | `nodes(p)`, `relationships(p)`, `length(p)`                 | Path id arrays, hydrated by the assembler                                                                                       |
 | `OPTIONAL MATCH`                                            | `LEFT JOIN (<new tables>) ON <pattern conditions and WHERE>` on both dialects (see "OPTIONAL MATCH")                            |
@@ -210,7 +231,7 @@ The defaults are starting values, not measured ones (#16).
 | --------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------- |
 | Correlated joins      | `LATERAL`                                              | No `LATERAL`. Use correlated subqueries, table-valued `json_each`, or separate steps. |
 | Arrays                | Native arrays and `jsonb`                              | JSON text only                                                                        |
-| Path cycle check      | Array containment on the path                          | `instr` or `json_each` on a JSON path string                                          |
+| Path cycle check      | `= ANY` on an array of edge ids                        | `json_each` on a JSON array of edge ids                                               |
 | Typing                | Strict; a failed cast raises an error                  | Type affinity; values can change type silently                                        |
 | `LIKE`                | Case sensitive                                         | Case-insensitive for ASCII. Use `instr` / `substr` for `CONTAINS` and `STARTS WITH`.  |
 | Read-only enforcement | `READ ONLY` transaction plus a role with only `SELECT` | Read-only connection or `PRAGMA query_only`                                           |

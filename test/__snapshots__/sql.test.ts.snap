@@ -105,6 +105,13 @@ SELECT ((e4."properties" -> $1::text))::text AS c0 FROM "nodes" AS n0 CROSS JOIN
 -- values: "w", "T", "U", limit(maxRowsPerStep + 1)"
 `;
 
+exports[`postgres > read: MATCH (a)-[*]-(b), (b)<-[*0..2]-(c) RETURN count(*) 1`] = `
+"MATCH (a)-[*]-(b), (b)<-[*0..2]-(c) RETURN count(*)
+-- step 1
+SELECT g.x0 AS c0 FROM (SELECT COUNT(*) AS x0 FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 CROSS JOIN (WITH RECURSIVE v2p(s, t, d, path) AS (SELECT n3."id", n3."id", 0, COALESCE((SELECT array_agg(ve."id") FROM "edges" AS ve WHERE FALSE), '{}') FROM "nodes" AS n3 UNION ALL SELECT v2p.s, CASE WHEN e4."start_id" = v2p.t THEN e4."end_id" ELSE e4."start_id" END, v2p.d + 1, (v2p.path || e4."id") FROM v2p JOIN "edges" AS e4 ON (e4."start_id" = v2p.t OR e4."end_id" = v2p.t) WHERE v2p.d < $1 AND NOT (e4."id" = ANY(v2p.path))) SELECT s, t, path FROM v2p WHERE d >= 1) AS v2 CROSS JOIN "nodes" AS n5 CROSS JOIN (WITH RECURSIVE v6p(s, t, d, path) AS (SELECT n7."id", n7."id", 0, COALESCE((SELECT array_agg(ve."id") FROM "edges" AS ve WHERE FALSE), '{}') FROM "nodes" AS n7 UNION ALL SELECT v6p.s, e8."start_id", v6p.d + 1, (v6p.path || e8."id") FROM v6p JOIN "edges" AS e8 ON e8."end_id" = v6p.t WHERE v6p.d < $2 AND NOT (e8."id" = ANY(v6p.path))) SELECT s, t, path FROM v6p WHERE d >= 0) AS v6 WHERE v2.s = n0."id" AND v2.t = n1."id" AND v6.s = n1."id" AND v6.t = n5."id" AND NOT (v2.path && v6.path)) AS g LIMIT $3
+-- values: maxPathDepth, depth(2), limit(maxRowsPerStep + 1)"
+`;
+
 exports[`postgres > read: MATCH (a)-[r]->(b) MATCH (b)-[r2]->(c), (c)-[r]->(a) RETURN r2 1`] = `
 "MATCH (a)-[r]->(b) MATCH (b)-[r2]->(c), (c)-[r]->(a) RETURN r2
 -- step 1
@@ -124,6 +131,13 @@ exports[`postgres > read: MATCH (a:A), (b) RETURN * 1`] = `
 -- step 1
 SELECT n0."id" AS c0_id, (n0."labels")::text AS c0_labels, (n0."properties")::text AS c0_props, n1."id" AS c1_id, (n1."labels")::text AS c1_labels, (n1."properties")::text AS c1_props FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 WHERE (n0."labels" @> jsonb_build_array($1::text)) LIMIT $2
 -- values: "A", limit(maxRowsPerStep + 1)"
+`;
+
+exports[`postgres > read: MATCH (a:A)-[r:T*1..3 {k: 1}]->(b)-[s]-(c) RETURN r, b 1`] = `
+"MATCH (a:A)-[r:T*1..3 {k: 1}]->(b)-[s]-(c) RETURN r, b
+-- step 1
+SELECT ((CASE WHEN v2.path IS NULL THEN NULL ELSE COALESCE((SELECT jsonb_agg(jsonb_build_array(ve."id", ve."type", ve."start_id", ve."end_id", ve."properties") ORDER BY vu.i) FROM unnest(v2.path) WITH ORDINALITY AS vu(id, i) JOIN "edges" AS ve ON ve."id" = vu.id), '[]'::jsonb) END))::text AS c0, n1."id" AS c1_id, (n1."labels")::text AS c1_labels, (n1."properties")::text AS c1_props FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 CROSS JOIN (WITH RECURSIVE v2p(s, t, d, path) AS (SELECT n3."id", n3."id", 0, COALESCE((SELECT array_agg(ve."id") FROM "edges" AS ve WHERE FALSE), '{}') FROM "nodes" AS n3 UNION ALL SELECT v2p.s, e4."end_id", v2p.d + 1, (v2p.path || e4."id") FROM v2p JOIN "edges" AS e4 ON e4."start_id" = v2p.t WHERE v2p.d < $1 AND NOT (e4."id" = ANY(v2p.path)) AND e4."type" = $2 AND (SELECT (CASE WHEN s0.t0 IS NULL OR s0.t0 = 'null' OR ($3::bigint) IS NULL THEN NULL WHEN s0.t0 IN ('integer', 'float') THEN ((CASE WHEN jsonb_typeof((e4."properties" -> $4::text)) = 'number' THEN (e4."properties" -> $4::text) END)::numeric = ($3::bigint)) ELSE FALSE END) FROM (SELECT (CASE jsonb_typeof((e4."properties" -> $4::text)) WHEN 'number' THEN CASE WHEN ((e4."properties" -> $4::text))::text ~ '^-?[0-9]+$' AND ((e4."properties" -> $4::text))::numeric BETWEEN -9223372036854775808 AND 9223372036854775807 THEN 'integer' ELSE 'float' END WHEN 'string' THEN 'string' WHEN 'boolean' THEN 'boolean' WHEN 'array' THEN 'list' WHEN 'object' THEN 'map' WHEN 'null' THEN 'null' END) AS t0 OFFSET 0) AS s0)) SELECT s, t, path FROM v2p WHERE d >= 1) AS v2 CROSS JOIN "nodes" AS n5 CROSS JOIN "edges" AS e6 WHERE (n0."labels" @> jsonb_build_array($5::text)) AND v2.s = n0."id" AND v2.t = n1."id" AND ((e6."start_id" = n1."id" AND e6."end_id" = n5."id") OR (e6."start_id" = n5."id" AND e6."end_id" = n1."id")) AND NOT (e6."id" = ANY(v2.path)) LIMIT $6
+-- values: depth(3), "T", "1", "k", "A", limit(maxRowsPerStep + 1)"
 `;
 
 exports[`postgres > read: MATCH (n) RETURN DISTINCT n.name AS name ORDER BY name 1`] = `
@@ -343,6 +357,13 @@ SELECT (e4."properties" -> ('$."' || ? || '"')) AS c0 FROM "nodes" AS n0 CROSS J
 -- values: "w", "T", "U", limit(maxRowsPerStep + 1)"
 `;
 
+exports[`sqlite > read: MATCH (a)-[*]-(b), (b)<-[*0..2]-(c) RETURN count(*) 1`] = `
+"MATCH (a)-[*]-(b), (b)<-[*0..2]-(c) RETURN count(*)
+-- step 1
+SELECT g.x0 AS c0 FROM (SELECT COUNT(*) AS x0 FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 CROSS JOIN (WITH RECURSIVE v2p(s, t, d, path) AS (SELECT n3."id", n3."id", 0, json_array() FROM "nodes" AS n3 UNION ALL SELECT v2p.s, CASE WHEN e4."start_id" = v2p.t THEN e4."end_id" ELSE e4."start_id" END, v2p.d + 1, json_insert(v2p.path, '$[#]', e4."id") FROM v2p JOIN "edges" AS e4 ON (e4."start_id" = v2p.t OR e4."end_id" = v2p.t) WHERE v2p.d < ? AND NOT EXISTS (SELECT 1 FROM json_each(v2p.path) AS vj WHERE vj.value = e4."id")) SELECT s, t, path FROM v2p WHERE d >= 1) AS v2 CROSS JOIN "nodes" AS n5 CROSS JOIN (WITH RECURSIVE v6p(s, t, d, path) AS (SELECT n7."id", n7."id", 0, json_array() FROM "nodes" AS n7 UNION ALL SELECT v6p.s, e8."start_id", v6p.d + 1, json_insert(v6p.path, '$[#]', e8."id") FROM v6p JOIN "edges" AS e8 ON e8."end_id" = v6p.t WHERE v6p.d < ? AND NOT EXISTS (SELECT 1 FROM json_each(v6p.path) AS vj WHERE vj.value = e8."id")) SELECT s, t, path FROM v6p WHERE d >= 0) AS v6 WHERE v2.s = n0."id" AND v2.t = n1."id" AND v6.s = n1."id" AND v6.t = n5."id" AND NOT EXISTS (SELECT 1 FROM json_each(v2.path) AS vl JOIN json_each(v6.path) AS vr ON vl.value = vr.value)) AS g LIMIT ?
+-- values: maxPathDepth, depth(2), limit(maxRowsPerStep + 1)"
+`;
+
 exports[`sqlite > read: MATCH (a)-[r]->(b) MATCH (b)-[r2]->(c), (c)-[r]->(a) RETURN r2 1`] = `
 "MATCH (a)-[r]->(b) MATCH (b)-[r2]->(c), (c)-[r]->(a) RETURN r2
 -- step 1
@@ -362,6 +383,13 @@ exports[`sqlite > read: MATCH (a:A), (b) RETURN * 1`] = `
 -- step 1
 SELECT n0."id" AS c0_id, n0."labels" AS c0_labels, n0."properties" AS c0_props, n1."id" AS c1_id, n1."labels" AS c1_labels, n1."properties" AS c1_props FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 WHERE EXISTS (SELECT 1 FROM json_each(n0."labels") WHERE json_each.value = ?) LIMIT ?
 -- values: "A", limit(maxRowsPerStep + 1)"
+`;
+
+exports[`sqlite > read: MATCH (a:A)-[r:T*1..3 {k: 1}]->(b)-[s]-(c) RETURN r, b 1`] = `
+"MATCH (a:A)-[r:T*1..3 {k: 1}]->(b)-[s]-(c) RETURN r, b
+-- step 1
+SELECT (CASE WHEN v2.path IS NULL THEN NULL ELSE (SELECT json_group_array(json_array(ve."id", ve."type", ve."start_id", ve."end_id", json(ve."properties")) ORDER BY vj.key) FROM json_each(v2.path) AS vj JOIN "edges" AS ve ON ve."id" = vj.value) END) AS c0, n1."id" AS c1_id, n1."labels" AS c1_labels, n1."properties" AS c1_props FROM "nodes" AS n0 CROSS JOIN "nodes" AS n1 CROSS JOIN (WITH RECURSIVE v2p(s, t, d, path) AS (SELECT n3."id", n3."id", 0, json_array() FROM "nodes" AS n3 UNION ALL SELECT v2p.s, e4."end_id", v2p.d + 1, json_insert(v2p.path, '$[#]', e4."id") FROM v2p JOIN "edges" AS e4 ON e4."start_id" = v2p.t WHERE v2p.d < ? AND NOT EXISTS (SELECT 1 FROM json_each(v2p.path) AS vj WHERE vj.value = e4."id") AND e4."type" = ? AND (SELECT (CASE WHEN s0.t0 IS NULL OR s0.t0 = 'null' OR ? IS NULL THEN NULL WHEN s0.t0 IN ('integer', 'float') THEN (((e4."properties" -> ('$."' || ? || '"')) ->> '$') = ?) ELSE 0 END) FROM (SELECT (CASE json_type((e4."properties" -> ('$."' || ? || '"'))) WHEN 'integer' THEN 'integer' WHEN 'real' THEN 'float' WHEN 'text' THEN 'string' WHEN 'true' THEN 'boolean' WHEN 'false' THEN 'boolean' WHEN 'array' THEN 'list' WHEN 'object' THEN 'map' WHEN 'null' THEN 'null' END) AS t0 LIMIT -1 OFFSET 0) AS s0)) SELECT s, t, path FROM v2p WHERE d >= 1) AS v2 CROSS JOIN "nodes" AS n5 CROSS JOIN "edges" AS e6 WHERE EXISTS (SELECT 1 FROM json_each(n0."labels") WHERE json_each.value = ?) AND v2.s = n0."id" AND v2.t = n1."id" AND ((e6."start_id" = n1."id" AND e6."end_id" = n5."id") OR (e6."start_id" = n5."id" AND e6."end_id" = n1."id")) AND NOT EXISTS (SELECT 1 FROM json_each(v2.path) AS vj WHERE vj.value = e6."id") LIMIT ?
+-- values: depth(3), "T", "1", "k", "1", "k", "A", limit(maxRowsPerStep + 1)"
 `;
 
 exports[`sqlite > read: MATCH (n) RETURN DISTINCT n.name AS name ORDER BY name 1`] = `

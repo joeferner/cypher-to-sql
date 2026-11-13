@@ -51,6 +51,11 @@ export type VariableBinding =
   | { kind: 'node'; alias: string }
   | { kind: 'relationship'; alias: string }
   | { kind: 'value'; sql: string }
+  /**
+   * The relationships of a variable-length pattern (`[r*]`): `path` is the
+   * dialect's id list of them (see `Dialect.idListEmpty`).
+   */
+  | { kind: 'relationships'; path: string }
   /** A column of a derived table whose type is known (the outer query of an aggregation). */
   | { kind: 'column'; expr: Expr };
 
@@ -134,6 +139,15 @@ export class ExprCompiler {
         if (binding.kind === 'column') {
           return binding.expr;
         }
+        if (binding.kind === 'relationships') {
+          throw new UnsupportedFeatureError(
+            `Using the relationship list \`${expr.name}\` of a variable-length pattern in this expression is not supported yet`,
+            {
+              position: expr.position,
+              hint: 'It can be returned, carried by WITH, counted, and used with size() and IS NULL.',
+            },
+          );
+        }
         return { sql: binding.alias, type: binding.kind, atomic: true };
       }
       case 'PropertyAccess':
@@ -148,8 +162,17 @@ export class ExprCompiler {
         return this.negate(expr);
       case 'Binary':
         return this.binary(expr);
-      case 'FunctionCall':
-        return isAggregateCall(expr) ? compileAggregate(this, expr) : compileFunction(this, expr);
+      case 'FunctionCall': {
+        if (isAggregateCall(expr)) {
+          return compileAggregate(this, expr);
+        }
+        const name = expr.name.toLowerCase();
+        const path = expr.args.length === 1 ? this.relationshipList(expr.args[0]!) : undefined;
+        if (path !== undefined && (name === 'size' || name === 'length')) {
+          return { sql: b.dialect.idListLength(path), type: 'integer', atomic: false };
+        }
+        return compileFunction(this, expr);
+      }
       case 'CountStar':
         return compileAggregate(this, expr);
       case 'UnsupportedExpression':
@@ -157,6 +180,15 @@ export class ExprCompiler {
           position: expr.position,
         });
     }
+  }
+
+  /** The id list, when the expression is a variable bound to the relationships of a variable-length pattern. */
+  public relationshipList(expr: ast.Expression): string | undefined {
+    if (expr.type !== 'Variable') {
+      return undefined;
+    }
+    const binding = this.lookup(expr);
+    return binding.kind === 'relationships' ? binding.path : undefined;
   }
 
   /** The expression as a value of the dialect's JSON type. */
@@ -380,8 +412,12 @@ export class ExprCompiler {
   }
 
   private isNull(expr: ast.IsNullExpression): Expr {
-    const e = this.compile(expr.operand);
     const d = this.b.dialect;
+    const path = this.relationshipList(expr.operand);
+    if (path !== undefined) {
+      return boolean(`(${path} IS ${expr.negated ? 'NOT ' : ''}NULL)`);
+    }
+    const e = this.compile(expr.operand);
     let sql: string;
     switch (e.type) {
       case 'null':

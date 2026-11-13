@@ -153,6 +153,18 @@ export function sqlite(): Dialect {
       );
     },
     // SQLite does not flatten a subquery that has an OFFSET.
+    // JSON arrays of ids.
+    idListEmpty: () => 'json_array()',
+    idListAppend: (list, id) => `json_insert(${list}, '$[#]', ${id})`,
+    idListHas: (list, id) =>
+      `EXISTS (SELECT 1 FROM json_each(${list}) AS vj WHERE vj.value = ${id})`,
+    idListsOverlap: (left, right) =>
+      `EXISTS (SELECT 1 FROM json_each(${left}) AS vl JOIN json_each(${right}) AS vr ON vl.value = vr.value)`,
+    idListLength: (list) => `json_array_length(${list})`,
+    relationshipTuples: (list, edges) =>
+      `(CASE WHEN ${list} IS NULL THEN NULL ELSE (SELECT json_group_array(json_array(` +
+      `ve.${edges.id}, ve.${edges.type}, ve.${edges.startId}, ve.${edges.endId}, json(ve.${edges.properties})) ` +
+      `ORDER BY vj.key) FROM json_each(${list}) AS vj JOIN ${edges.table} AS ve ON ve.${edges.id} = vj.value) END)`,
     noFlatten: ' LIMIT -1 OFFSET 0',
     limitAll: '-1',
     // 9e999 is infinity in SQLite. NaN becomes NULL in SQLite.

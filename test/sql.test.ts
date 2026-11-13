@@ -29,6 +29,8 @@ const readQueries = [
   'UNWIND $xs AS x WITH x ORDER BY x DESC LIMIT 3 RETURN x',
   'MATCH (p) OPTIONAL MATCH (p)-[r:R]->(q) WHERE r.w > 1 RETURN p, q',
   'OPTIONAL MATCH (x:Missing) RETURN x',
+  'MATCH (a:A)-[r:T*1..3 {k: 1}]->(b)-[s]-(c) RETURN r, b',
+  'MATCH (a)-[*]-(b), (b)<-[*0..2]-(c) RETURN count(*)',
 ];
 
 const writeQueries = [

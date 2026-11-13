@@ -172,6 +172,19 @@ export function postgres(): Dialect {
         `FROM (SELECT ${pair} AS r FROM w) AS t)`
       );
     },
+    // Arrays of the id column's type. The empty array gets that type from an
+    // aggregate over no rows, so the planner needs no knowledge of column types.
+    idListEmpty: (edges) =>
+      `COALESCE((SELECT array_agg(ve.${edges.id}) FROM ${edges.table} AS ve WHERE FALSE), '{}')`,
+    idListAppend: (list, id) => `(${list} || ${id})`,
+    idListHas: (list, id) => `(${id} = ANY(${list}))`,
+    idListsOverlap: (left, right) => `(${left} && ${right})`,
+    idListLength: (list) => `cardinality(${list})::bigint`,
+    relationshipTuples: (list, edges) =>
+      `(CASE WHEN ${list} IS NULL THEN NULL ELSE COALESCE((SELECT jsonb_agg(jsonb_build_array(` +
+      `ve.${edges.id}, ve.${edges.type}, ve.${edges.startId}, ve.${edges.endId}, ve.${edges.properties}) ` +
+      `ORDER BY vu.i) FROM unnest(${list}) WITH ORDINALITY AS vu(id, i) ` +
+      `JOIN ${edges.table} AS ve ON ve.${edges.id} = vu.id), '[]'::jsonb) END)`,
     noFlatten: ' OFFSET 0',
     limitAll: 'ALL',
     unwind: (listExpr, alias) => ({

@@ -118,9 +118,7 @@ for (const backend of testBackends()) {
       expect(() => read.compile('MATCH (r)-->() MATCH ()-[r]->() RETURN r')).toThrow(SemanticError);
       expect(() => read.compile('MATCH ()-[r]->() MATCH (r) RETURN r')).toThrow(SemanticError);
       expect(() => read.compile('MATCH (a $props) RETURN a')).toThrow(SemanticError);
-      expect(() => read.compile('MATCH (a)-[*1..2]->(b) RETURN a')).toThrow(
-        UnsupportedFeatureError,
-      );
+      expect(() => read.compile('MATCH p = (a)-->(b) RETURN a')).toThrow(UnsupportedFeatureError);
     });
   });
 }

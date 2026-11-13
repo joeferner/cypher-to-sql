@@ -1,4 +1,5 @@
 import type * as ast from '../ast.js';
+import type { EdgeColumns } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError } from '../errors.js';
 import type { ColumnSpec, PlanStep, ValueSource } from '../plan.js';
 import { containsAggregate, isAggregateCall } from './aggregates.js';
@@ -49,6 +50,22 @@ function finishSelect(
   }
   return sql;
 }
+
+/** The edge table and columns, quoted. */
+function edgeColumns(b: SqlBuilder): EdgeColumns {
+  const e = b.mapping.edges;
+  return {
+    table: b.table('edges'),
+    id: b.ident(e.id),
+    type: b.ident(e.type),
+    startId: b.ident(e.startId),
+    endId: b.ident(e.endId),
+    properties: b.ident(e.properties),
+  };
+}
+
+/** A relationship pattern of a MATCH: one edge (an alias), or a variable-length id list. */
+type Matched = { kind: 'one'; alias: string } | { kind: 'list'; path: string };
 
 /**
  * What a variable refers to in SQL: a node (an alias of the node table), a
@@ -133,6 +150,13 @@ export class ReadScope {
         });
         continue;
       }
+      if (output.kind === 'relationships') {
+        next.bindings.set(output.name, {
+          kind: 'relationships',
+          path: `${alias}.${output.column}`,
+        });
+        continue;
+      }
       // An entity is carried as its id and joined back to its table, so that
       // everything that works on entities works on it. A LEFT JOIN keeps rows
       // where it is null (from OPTIONAL MATCH).
@@ -195,11 +219,10 @@ export class ReadScope {
   }
 
   private addMatch(match: ast.MatchClause): void {
-    const b = this.b;
     const fromStart = this.from.length;
     const whereStart = this.where.length;
-    /** Edge aliases of this clause's relationships, for relationship uniqueness. */
-    const relationships: string[] = [];
+    /** This clause's relationships, for relationship uniqueness. */
+    const relationships: Matched[] = [];
     /** Relationship variables bound by this clause. */
     const boundHere = new Set<string>();
     for (const part of match.pattern) {
@@ -212,15 +235,18 @@ export class ReadScope {
       for (let i = 1; i < part.elements.length; i += 2) {
         const right = this.matchNode(part.elements[i + 1] as ast.NodePattern);
         const rel = part.elements[i] as ast.RelationshipPattern;
-        relationships.push(this.matchRelationship(rel, left, right, boundHere));
+        relationships.push(
+          rel.range
+            ? { kind: 'list', path: this.matchVariableLength(rel, left, right, boundHere) }
+            : { kind: 'one', alias: this.matchRelationship(rel, left, right, boundHere) },
+        );
         left = right;
       }
     }
     // Within one MATCH, two relationship patterns never bind the same relationship.
-    const id = b.ident(b.mapping.edges.id);
     for (let i = 0; i < relationships.length; i++) {
       for (let j = i + 1; j < relationships.length; j++) {
-        this.where.push(`${relationships[i]}.${id} <> ${relationships[j]}.${id}`);
+        this.where.push(this.distinctRelationships(relationships[i]!, relationships[j]!));
       }
     }
     if (match.where) {
@@ -303,11 +329,6 @@ export class ReadScope {
   ): string {
     const b = this.b;
     const edges = b.mapping.edges;
-    if (rel.range) {
-      throw new UnsupportedFeatureError('Variable-length relationships are not supported yet', {
-        position: rel.position,
-      });
-    }
     let alias: string;
     const existing = rel.variable !== undefined ? this.bindings.get(rel.variable) : undefined;
     if (existing) {
@@ -350,16 +371,145 @@ export class ReadScope {
       this.where.push(`((${outgoing}) OR (${incoming}))`);
     }
 
+    this.where.push(...this.relationshipFilters(rel, alias));
+    return alias;
+  }
+
+  /** Conditions on the edge `alias` from the types and properties of a relationship pattern. */
+  private relationshipFilters(rel: ast.RelationshipPattern, alias: string): string[] {
+    const b = this.b;
+    const conditions: string[] = [];
     const types = [...new Set(rel.types)];
     if (types.length > 0) {
       const binds = types.map((type) => b.bind({ kind: 'sql', value: type }));
-      const type = `${alias}.${b.ident(edges.type)}`;
-      this.where.push(
+      const type = `${alias}.${b.ident(b.mapping.edges.type)}`;
+      conditions.push(
         binds.length === 1 ? `${type} = ${binds[0]}` : `${type} IN (${binds.join(', ')})`,
       );
     }
-    this.matchProperties({ kind: 'relationship', alias }, rel.properties);
-    return alias;
+    conditions.push(...this.propertyFilters({ kind: 'relationship', alias }, rel.properties));
+    return conditions;
+  }
+
+  /**
+   * Matches a variable-length relationship pattern `[r:T*min..max {k: v}]`
+   * between the nodes `left` and `right` and returns the SQL of its id list.
+   *
+   * Every path is found by a recursive CTE, which starts with a path of length
+   * zero at every node and adds one relationship per step, never one already on
+   * the path:
+   *
+   *     (WITH RECURSIVE p(s, t, d, path) AS (
+   *        SELECT n.id, n.id, 0, <empty list> FROM nodes AS n
+   *        UNION ALL
+   *        SELECT p.s, e.end_id, p.d + 1, <path + e.id> FROM p JOIN edges AS e ON e.start_id = p.t
+   *        WHERE p.d < <max> AND <e.id not on path> AND <type and property filters>
+   *      ) SELECT s, t, path FROM p WHERE d >= <min>) AS v
+   *
+   * The CTE cannot refer to the outer query (SQLite has no LATERAL), so it
+   * explores from every node; the outer query joins its start and end to
+   * `left` and `right`.
+   */
+  private matchVariableLength(
+    rel: ast.RelationshipPattern,
+    left: string,
+    right: string,
+    boundHere: Set<string>,
+  ): string {
+    const b = this.b;
+    const d = b.dialect;
+    const existing = rel.variable !== undefined ? this.bindings.get(rel.variable) : undefined;
+    if (existing?.kind === 'node' || existing?.kind === 'relationship') {
+      throw new SemanticError(`Variable \`${rel.variable}\` is not a list of relationships`, {
+        position: rel.position,
+      });
+    }
+    if (existing && boundHere.has(rel.variable!)) {
+      throw new SemanticError(
+        `Relationship variable \`${rel.variable}\` is used for more than one relationship in the same MATCH`,
+        { position: rel.position },
+      );
+    }
+    if (existing) {
+      throw new UnsupportedFeatureError(
+        `A variable-length pattern with the bound variable \`${rel.variable}\` is not supported yet`,
+        { position: rel.position },
+      );
+    }
+    if (rel.properties?.type === 'Map') {
+      for (const { value } of rel.properties.entries) {
+        if (freeVariables(value).length > 0) {
+          throw new UnsupportedFeatureError(
+            'Property values that use variables in a variable-length pattern are not supported yet',
+            { position: value.position },
+          );
+        }
+      }
+    }
+    const min = rel.range!.min ?? 1;
+    const max = rel.range!.max;
+    const depth = b.bind({ kind: 'pathDepth', min, max, position: rel.position });
+
+    const v = this.alias('v');
+    const p = `${v}p`;
+    const n = this.alias('n');
+    const e = this.alias('e');
+    const nodeId = b.ident(b.mapping.nodes.id);
+    const edges = edgeColumns(b);
+    const start = `${e}.${edges.startId}`;
+    const end = `${e}.${edges.endId}`;
+    let adjacent: string;
+    let next: string;
+    if (rel.direction === 'right') {
+      adjacent = `${start} = ${p}.t`;
+      next = end;
+    } else if (rel.direction === 'left') {
+      adjacent = `${end} = ${p}.t`;
+      next = start;
+    } else {
+      // Either direction; a self-loop is followed once.
+      adjacent = `(${start} = ${p}.t OR ${end} = ${p}.t)`;
+      next = `CASE WHEN ${start} = ${p}.t THEN ${end} ELSE ${start} END`;
+    }
+    const step = [
+      `${p}.d < ${depth}`,
+      `NOT ${d.idListHas(`${p}.path`, `${e}.${edges.id}`)}`,
+      ...this.relationshipFilters(rel, e),
+    ];
+    const cte =
+      `WITH RECURSIVE ${p}(s, t, d, path) AS (` +
+      `SELECT ${n}.${nodeId}, ${n}.${nodeId}, 0, ${d.idListEmpty(edges)} FROM ${b.table('nodes')} AS ${n}` +
+      ` UNION ALL SELECT ${p}.s, ${next}, ${p}.d + 1, ${d.idListAppend(`${p}.path`, `${e}.${edges.id}`)}` +
+      ` FROM ${p} JOIN ${edges.table} AS ${e} ON ${adjacent} WHERE ${step.join(' AND ')})` +
+      ` SELECT s, t, path FROM ${p} WHERE d >= ${min}`;
+    this.addFrom(`(${cte}) AS ${v}`);
+    this.order.push(`${v}.path`);
+    this.where.push(`${v}.s = ${left}.${nodeId}`, `${v}.t = ${right}.${nodeId}`);
+    const path = `${v}.path`;
+    if (rel.variable !== undefined) {
+      this.bindings.set(rel.variable, { kind: 'relationships', path });
+      boundHere.add(rel.variable);
+    }
+    return path;
+  }
+
+  /** Condition: two relationship patterns of one MATCH bind different relationships. */
+  private distinctRelationships(a: Matched, c: Matched): string {
+    const d = this.b.dialect;
+    const id = this.b.ident(this.b.mapping.edges.id);
+    if (a.kind === 'one' && c.kind === 'one') {
+      return `${a.alias}.${id} <> ${c.alias}.${id}`;
+    }
+    if (a.kind === 'list' && c.kind === 'list') {
+      return `NOT ${d.idListsOverlap(a.path, c.path)}`;
+    }
+    if (a.kind === 'one' && c.kind === 'list') {
+      return `NOT ${d.idListHas(c.path, `${a.alias}.${id}`)}`;
+    }
+    if (a.kind === 'list' && c.kind === 'one') {
+      return `NOT ${d.idListHas(a.path, `${c.alias}.${id}`)}`;
+    }
+    throw new Error('Internal error: unexpected relationship kinds');
   }
 
   /**
@@ -370,8 +520,15 @@ export class ReadScope {
     entity: { kind: 'node' | 'relationship'; alias: string },
     properties: ast.Expression | undefined,
   ): void {
+    this.where.push(...this.propertyFilters(entity, properties));
+  }
+
+  private propertyFilters(
+    entity: { kind: 'node' | 'relationship'; alias: string },
+    properties: ast.Expression | undefined,
+  ): string[] {
     if (!properties) {
-      return;
+      return [];
     }
     if (properties.type !== 'Map') {
       throw new SemanticError('A parameter cannot be used as a property map in MATCH', {
@@ -380,9 +537,9 @@ export class ReadScope {
       });
     }
     const e = this.expressions;
-    for (const { key, value } of properties.entries) {
-      this.where.push(e.comparison('=', e.member(entity, key), e.compile(value)).sql);
-    }
+    return properties.entries.map(
+      ({ key, value }) => e.comparison('=', e.member(entity, key), e.compile(value)).sql,
+    );
   }
 
   private addUnwind(unwind: ast.UnwindClause): void {
@@ -477,7 +634,7 @@ export function planRead(
 
 /** A projected value of a WITH stage: a column of the stage's derived table. */
 type StageOutput =
-  | { name: string; kind: 'node' | 'relationship'; column: string }
+  | { name: string; kind: 'node' | 'relationship' | 'relationships'; column: string }
   | { name: string; kind: 'value'; column: string; expr: Expr };
 
 interface ProjectionResult {
@@ -539,6 +696,9 @@ function planProjection(
     const binding = expr.type === 'Variable' ? scope.lookup(expr) : undefined;
     if (binding?.kind === 'node' || binding?.kind === 'relationship') {
       return entityColumns(b, binding.kind, (name) => `${binding.alias}.${b.ident(name)}`);
+    }
+    if (binding?.kind === 'relationships') {
+      return { kind: 'relationships', path: binding.path };
     }
     return { kind: 'value', expr: scope.expressions.compile(expr) };
   };
@@ -612,6 +772,8 @@ type ItemValue =
       endId: string;
       properties: string;
     }
+  /** The relationships of a variable-length pattern, as an id list. */
+  | { kind: 'relationships'; path: string }
   | { kind: 'value'; expr: Expr };
 
 /** The columns of an entity, given how to refer to a column by its mapped name. */
@@ -659,6 +821,9 @@ function projectItems(
       if (v.kind === 'node' || v.kind === 'relationship') {
         select.push(`${v.id} AS ${c}`);
         outputs.push({ name: item.name, kind: v.kind, column: c });
+      } else if (v.kind === 'relationships') {
+        select.push(`${v.path} AS ${c}`);
+        outputs.push({ name: item.name, kind: v.kind, column: c });
       } else if (v.expr.type === 'node' || v.expr.type === 'relationship') {
         throw new UnsupportedFeatureError(
           `Projecting this ${v.expr.type} expression is not supported yet`,
@@ -700,6 +865,10 @@ function projectItems(
         endId: `${c}_end`,
         properties: `${c}_props`,
       });
+    } else if (v.kind === 'relationships') {
+      const tuples = d.relationshipTuples(v.path, edgeColumns(b));
+      select.push(`${d.jsonText(tuples)} AS ${c}`);
+      columns.push({ name: item.name, kind: 'relationships', column: c });
     } else if (v.expr.type === 'node' || v.expr.type === 'relationship') {
       throw new UnsupportedFeatureError(
         `Returning this ${v.expr.type} expression is not supported yet`,
@@ -799,6 +968,12 @@ function planAggregation(
       column(`g${i}_id`, { sql: '', type: 'integer', atomic: true });
       outer.set(keyName(i), outer.get(`g${i}_id`)!);
       return;
+    }
+    if (binding?.kind === 'relationships') {
+      throw new UnsupportedFeatureError(
+        `Grouping by the relationship list \`${item.name}\` of a variable-length pattern is not supported yet`,
+        { position: expr.position },
+      );
     }
     const e = scope.expressions.compile(expr);
     if (e.type === 'null') {

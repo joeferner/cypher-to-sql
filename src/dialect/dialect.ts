@@ -175,6 +175,28 @@ export interface Dialect {
    */
   readonly noFlatten: string;
 
+  // ---- relationship id lists (variable-length patterns) ---------------------------
+  //
+  // The relationships of a variable-length match are an ordered list of edge
+  // ids, in whatever representation suits the database (an array of the id
+  // column's type on PostgreSQL, JSON text on SQLite).
+
+  /** An empty id list. */
+  idListEmpty(edges: EdgeColumns): string;
+  /** The list with `id` appended. */
+  idListAppend(list: string, id: string): string;
+  /** Condition: the list contains `id`. */
+  idListHas(list: string, id: string): string;
+  /** Condition: the two lists have an id in common. */
+  idListsOverlap(left: string, right: string): string;
+  /** Number of ids in the list, as an integer. */
+  idListLength(list: string): string;
+  /**
+   * A JSON list with one `[id, type, startId, endId, properties]` list per
+   * relationship of the id list, in list order; NULL when the list is NULL.
+   */
+  relationshipTuples(list: string, edges: EdgeColumns): string;
+
   /** A LIMIT value meaning no limit (an OFFSET without LIMIT needs it on SQLite). */
   readonly limitAll: string;
 
@@ -196,6 +218,16 @@ export interface Dialect {
     /** Expression that orders the rows in list order. */
     order: string;
   };
+}
+
+/** The edge table and its columns, as quoted SQL names. */
+export interface EdgeColumns {
+  table: string;
+  id: string;
+  type: string;
+  startId: string;
+  endId: string;
+  properties: string;
 }
 
 /** A string literal for a key from the mapping (validated not to contain `"`). */
