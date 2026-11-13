@@ -7,6 +7,7 @@ import {
   type EntityColumns,
   type ScalarType,
 } from './dialect.js';
+import { postgresTemporalCall } from './postgres-temporal.js';
 
 const SQL_TYPES: Record<ScalarType, string> = {
   boolean: 'boolean',
@@ -179,7 +180,7 @@ export function postgres(): Dialect {
     endsWith: (string, suffix) => `(right(${string}, length(${suffix})) = ${suffix})`,
     contains: (string, part) => `(strpos(${string}, ${part}) > 0)`,
     regexMatch,
-    temporalCall: undefined,
+    temporalCall: postgresTemporalCall,
     power: (base, exponent) =>
       `power((${base})::double precision, (${exponent})::double precision)`,
     jsonAggregate: (value, { distinct, orderBy, filter }) =>

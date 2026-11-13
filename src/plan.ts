@@ -444,10 +444,14 @@ function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
   if (code === '22012') {
     return new CypherArgumentError('Division by zero', { code: 'DivisionByZero' });
   }
-  // SQLite: an invalid argument to cypher_temporal().
-  const temporal = /cypher temporal error: (.*)/.exec(message);
-  if (temporal) {
-    return new CypherArgumentError(temporal[1]!, { code: 'InvalidArgumentValue' });
+  // An invalid argument to a temporal function: SQLite's cypher_temporal(), or
+  // the PostgreSQL SQL (its own message, a date field out of range, or an
+  // unknown time zone).
+  const temporal = /cypher temporal error: ([^"]*)/.exec(message);
+  if (temporal || code === '22008' || /time zone ".*" not recognized/.test(message)) {
+    return new CypherArgumentError(temporal ? temporal[1]! : message, {
+      code: 'InvalidArgumentValue',
+    });
   }
   // PostgreSQL: invalid_regular_expression. SQLite: the RegExp of cypher_regex().
   if (code === '2201B' || /^invalid regular expression/i.test(message)) {
