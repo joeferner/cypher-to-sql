@@ -503,7 +503,17 @@ export function temporalFromMap(
       if (present('microsecond')) {
         check(ns < 1000, 'nanosecond');
       }
-      nanos = BigInt(ms) * 1_000_000n + BigInt(us) * 1000n + BigInt(ns);
+      if (from !== undefined && ms < 1000 && us < 1000 && ns < 1000) {
+        // Over a base, each field replaces its own three digits of the fraction.
+        const part = (key: string, scale: bigint, value: number): bigint =>
+          present(key) ? BigInt(value) : ((from % NANOS_PER_SECOND) / scale) % 1000n;
+        nanos =
+          part('millisecond', 1_000_000n, ms) * 1_000_000n +
+          part('microsecond', 1000n, us) * 1000n +
+          part('nanosecond', 1n, ns);
+      } else {
+        nanos = BigInt(ms) * 1_000_000n + BigInt(us) * 1000n + BigInt(ns);
+      }
     } else {
       nanos = from === undefined ? 0n : from % NANOS_PER_SECOND;
     }
@@ -582,6 +592,98 @@ export function project(kind: TemporalKind, from: Temporal): Temporal {
     offsetSeconds,
     ...(from.zone ? { zone: from.zone } : {}),
   };
+}
+
+/** The units of `*.truncate()`, largest first; those before `hour` need a date. */
+export const TRUNCATE_UNITS = [
+  'millennium',
+  'century',
+  'decade',
+  'year',
+  'weekYear',
+  'quarter',
+  'month',
+  'week',
+  'day',
+  'hour',
+  'minute',
+  'second',
+  'millisecond',
+  'microsecond',
+] as const;
+
+/**
+ * The fields of `input` truncated to `unit`, as a map for temporalFromMap:
+ * the date fields (when `withDate`) and the time fields down to the unit.
+ */
+export function truncatedFields(
+  unit: string,
+  input: Temporal,
+  withDate: boolean,
+): Record<string, TemporalArgument> {
+  const index = (TRUNCATE_UNITS as readonly string[]).indexOf(unit);
+  check(index >= 0, `unit ${unit}`);
+  const c = temporalComponents(input);
+  const n = (key: string): number => Number(c[key] ?? 0);
+  const dateUnit = index < TRUNCATE_UNITS.indexOf('hour');
+  check(!dateUnit || unit === 'day' || (withDate && input.epochDay !== undefined), `unit ${unit}`);
+  if (withDate) {
+    check(input.epochDay !== undefined, 'input');
+  }
+  const year = n('year');
+  const dates: Record<string, Record<string, TemporalArgument>> = {
+    millennium: { year: Math.floor(year / 1000) * 1000 },
+    century: { year: Math.floor(year / 100) * 100 },
+    decade: { year: Math.floor(year / 10) * 10 },
+    year: { year },
+    weekYear: { year: n('weekYear'), week: 1, dayOfWeek: 1 },
+    quarter: { year, quarter: n('quarter') },
+    month: { year, month: n('month') },
+    week: { year: n('weekYear'), week: n('week'), dayOfWeek: 1 },
+  };
+  const fields: Record<string, TemporalArgument> = withDate
+    ? (dates[unit] ?? { year, month: n('month'), day: n('day') })
+    : {};
+  // Time fields down to the unit (`day` and larger: midnight); the fraction as
+  // whole milliseconds or microseconds.
+  const times = ['hour', 'minute', 'second'];
+  const kept = dateUnit ? 0 : Math.min(times.indexOf(unit) + 1 || 3, 3);
+  fields['hour'] = 0;
+  for (const key of times.slice(0, kept)) {
+    fields[key] = n(key);
+  }
+  if (unit === 'millisecond' || unit === 'microsecond') {
+    fields[unit] = n(unit);
+  }
+  return fields;
+}
+
+/**
+ * `<kind>.truncate(unit, input, map)`: `input` truncated to `unit`, then the
+ * map's fields set over it. A `timezone` in the map replaces the zone (the
+ * local time stays); otherwise the input's zone is kept.
+ */
+export function truncateTemporal(
+  kind: TemporalKind,
+  unit: string,
+  input: Temporal,
+  overrides: Record<string, TemporalArgument>,
+  now: () => Temporal,
+): Temporal {
+  const local = temporalFromMap(
+    hasDate(kind) ? 'localdatetime' : 'localtime',
+    truncatedFields(unit, input, hasDate(kind)),
+    now,
+  );
+  const map: Record<string, TemporalArgument> = {
+    ...(hasDate(kind) ? { date: local } : {}),
+    ...(hasTime(kind) ? { time: local } : {}),
+    ...overrides,
+  };
+  if (hasOffset(kind) && map['timezone'] === undefined && input.offsetSeconds !== undefined) {
+    map['timezone'] = input.zone ?? renderOffset(input.offsetSeconds);
+  }
+  return temporalFromMap(kind, map, now);
 }
 
 /** The current time as a datetime in UTC. */

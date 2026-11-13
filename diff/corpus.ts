@@ -205,6 +205,13 @@ export const CORPUS: DiffGroup[] = [
         'RETURN datetime.fromepoch(416779, 999999999) AS a, datetime.fromepochmillis(237821673987) AS b',
       ),
       q("RETURN date('2015-13-01') AS bad"),
+      q(
+        "WITH datetime('1984-10-11T12:31:14.645876123+01:00') AS x UNWIND [1] AS one " +
+          "RETURN date.truncate('weekYear', x) AS a, datetime.truncate('quarter', x) AS b, " +
+          "datetime.truncate('year', x, {timezone: 'Europe/Stockholm'}) AS c, " +
+          "localdatetime.truncate('millisecond', x, {nanosecond: 2}) AS d, " +
+          "time.truncate('minute', x) AS e, date.truncate('week', x, {dayOfWeek: 2}) AS f",
+      ),
 
       // Regular expressions (Java syntax, whole-string match)
       q(

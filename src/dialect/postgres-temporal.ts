@@ -9,7 +9,7 @@
 // (a PostgreSQL date) and time (nanoseconds of the day), the zone, and the
 // tagged JSON with the components and text that src/json.ts temporalJson writes.
 
-import { TEMPORAL_KINDS, type TemporalKind } from '../temporal.js';
+import { TEMPORAL_KINDS, TRUNCATE_UNITS, type TemporalKind } from '../temporal.js';
 
 /** An error with this text prefix becomes a CypherArgumentError (see plan.ts). */
 const ERROR = 'cypher temporal error: ';
@@ -128,11 +128,20 @@ function local(kind: TemporalKind): string {
       `ELSE make_date(${year}, ${pick('month', 'bd', 'month', '1')}, ${pick('day', 'bd', 'day', '1')}) END)`
     : EPOCH;
   const subsecond = `${has('millisecond')} OR ${has('microsecond')} OR ${has('nanosecond')}`;
+  const ms = `(f.m ->> 'millisecond')::bigint`;
+  const us = `(f.m ->> 'microsecond')::bigint`;
+  const ns = `(f.m ->> 'nanosecond')::bigint`;
+  const baseNanos = `(i.bt ->> 'nanosecond')::bigint`;
+  // Over a base, each field replaces its own three digits of the fraction.
+  const fraction =
+    `(CASE WHEN i.bt IS NOT NULL AND coalesce(${ms}, 0) < 1000 AND coalesce(${us}, 0) < 1000 ` +
+    `AND coalesce(${ns}, 0) < 1000 THEN coalesce(${ms}, ${baseNanos} / 1000000 % 1000) * 1000000 + ` +
+    `coalesce(${us}, ${baseNanos} / 1000 % 1000) * 1000 + coalesce(${ns}, ${baseNanos} % 1000) ` +
+    `ELSE coalesce(${ms}, 0) * 1000000 + coalesce(${us}, 0) * 1000 + coalesce(${ns}, 0) END)`;
   const time = hasTime(kind)
     ? `((${pick('hour', 'bt', 'hour', '0')} * 3600 + ${pick('minute', 'bt', 'minute', '0')} * 60 + ` +
       `${pick('second', 'bt', 'second', '0')})::bigint * 1000000000 + (CASE WHEN ${subsecond} THEN ` +
-      `coalesce(${num('millisecond')}, 0)::bigint * 1000000 + coalesce(${num('microsecond')}, 0)::bigint * 1000 + ` +
-      `coalesce((f.m ->> 'nanosecond')::bigint, 0) ELSE coalesce((i.bt ->> 'nanosecond')::bigint, 0) END))`
+      `${fraction} ELSE coalesce(${baseNanos}, 0) END))`
     : '0::bigint';
   const now = `(extract(epoch FROM now()) * 1000000)::bigint`;
   const onlyZone = `NOT EXISTS (SELECT 1 FROM jsonb_each(f.m) e WHERE e.key <> 'timezone' AND jsonb_typeof(e.value) <> 'null')`;
@@ -289,6 +298,9 @@ export function postgresTemporalCall(name: string, args: string): string {
   }
   const [kindName, clock] = name.split('.');
   const kind = kindName as TemporalKind;
+  if (clock === 'truncate') {
+    return truncate(kind, args);
+  }
   const x = `(a.a -> 0)`;
   // The map of fields: a parsed string, a temporal value to start from, a map,
   // or (for .statement() and the like) a time zone.
@@ -321,6 +333,78 @@ export function postgresTemporalCall(name: string, args: string): string {
       stage(hasDate(kind) ? CALENDAR : 'SELECT 0 AS y', 'c'),
     ].join(', ') +
     ` WHERE coalesce(jsonb_typeof(${x}), 'null') <> 'null')`
+  );
+}
+
+/**
+ * `<kind>.truncate(unit, input, map)` (see truncateTemporal): the input's
+ * fields truncated to the unit build a local value, and the result is built
+ * from `{date: local, time: local}` with the map's fields and `timezone` (the
+ * input's zone when the map has none) over it.
+ */
+function truncate(kind: TemporalKind, args: string): string {
+  const x = `(tr.a -> 1)`;
+  const n = (key: string): string => `(${x} ->> '${key}')::int`;
+  const year = n('year');
+  const day = `'year', ${year}, 'month', ${n('month')}, 'day', ${n('day')}`;
+  const datePart = (unit: string): string => {
+    switch (unit) {
+      case 'millennium':
+      case 'century':
+      case 'decade': {
+        const size = { millennium: 1000, century: 100, decade: 10 }[unit];
+        return `'year', floor(${year} / ${size}.0)::int * ${size}`;
+      }
+      case 'year':
+        return `'year', ${year}`;
+      case 'weekYear':
+        return `'year', ${n('weekYear')}, 'week', 1, 'dayOfWeek', 1`;
+      case 'quarter':
+        return `'year', ${year}, 'quarter', ${n('quarter')}`;
+      case 'month':
+        return `'year', ${year}, 'month', ${n('month')}`;
+      case 'week':
+        return `'year', ${n('weekYear')}, 'week', ${n('week')}, 'dayOfWeek', 1`;
+      default:
+        return day;
+    }
+  };
+  const timePart = (unit: string): string => {
+    const units = ['hour', 'minute', 'second'];
+    const kept = units.indexOf(unit) < 0 ? 3 : units.indexOf(unit) + 1;
+    const fields = units.slice(0, kept).map((u) => `'${u}', ${n(u)}`);
+    if (unit === 'millisecond' || unit === 'microsecond') {
+      fields.push(`'${unit}', ${n(unit)}`);
+    }
+    return fields.join(', ');
+  };
+  const withDate = hasDate(kind);
+  const arms = TRUNCATE_UNITS.map((unit) => {
+    const dateUnit = TRUNCATE_UNITS.indexOf(unit) < TRUNCATE_UNITS.indexOf('hour');
+    if (!withDate && dateUnit && unit !== 'day') {
+      return '';
+    }
+    const fields = [...(withDate ? [datePart(unit)] : []), dateUnit ? `'hour', 0` : timePart(unit)];
+    return `WHEN '${unit}' THEN jsonb_build_object(${fields.join(', ')})`;
+  }).join(' ');
+  const truncated = `(CASE tr.a ->> 0 ${arms} ELSE ${fail(`'Invalid unit: ' || (tr.a ->> 0)`)}::text::jsonb END)`;
+  const local = postgresTemporalCall(
+    withDate ? 'localdatetime' : 'localtime',
+    `jsonb_build_array(${truncated})`,
+  );
+  const bases = [...(withDate ? [`'date', t.l`] : []), ...(hasTime(kind) ? [`'time', t.l`] : [])];
+  const zone = hasOffset(kind)
+    ? ` || (CASE WHEN coalesce(jsonb_typeof(tr.a -> 2 -> 'timezone'), 'null') = 'null' ` +
+      `AND (${x} -> 'offsetSeconds') IS NOT NULL THEN jsonb_build_object('timezone', ${x} -> 'timezone') ` +
+      `ELSE '{}'::jsonb END)`
+    : '';
+  const map =
+    `jsonb_build_object(${bases.join(', ')}) || ` +
+    `(CASE WHEN jsonb_typeof(tr.a -> 2) = 'object' THEN tr.a -> 2 ELSE '{}'::jsonb END)${zone}`;
+  return (
+    `(SELECT ${postgresTemporalCall(kind, `jsonb_build_array(${map})`)} ` +
+    `FROM ${stage(`SELECT (${args}) AS a`, 'tr')}, ${stage(`SELECT ${local} AS l`, 't')} ` +
+    `WHERE coalesce(jsonb_typeof(${x}), 'null') <> 'null' AND coalesce(jsonb_typeof(tr.a -> 0), 'null') <> 'null')`
   );
 }
 

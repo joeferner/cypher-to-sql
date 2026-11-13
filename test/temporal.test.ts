@@ -238,6 +238,27 @@ for (const backend of testBackends()) {
       ]);
     });
 
+    it('truncates row values, with fields and time zones over the result', async () => {
+      const x = "datetime('1984-10-11T12:31:14.645876123+01:00')";
+      const run = async (expr: string): Promise<CypherValue> =>
+        (await graph.query(`WITH ${x} AS x UNWIND [1] AS one RETURN toString(${expr}) AS v`))[0]![
+          'v'
+        ]!;
+      expect(await run(`date.truncate('millennium', x, {day: 2})`)).toBe('1000-01-02');
+      expect(await run(`date.truncate('weekYear', x)`)).toBe('1984-01-02');
+      expect(await run(`date.truncate('week', x, {dayOfWeek: 2})`)).toBe('1984-10-09');
+      expect(await run(`datetime.truncate('quarter', x)`)).toBe('1984-10-01T00:00+01:00');
+      expect(await run(`datetime.truncate('year', x, {timezone: 'Europe/Stockholm'})`)).toBe(
+        '1984-01-01T00:00+01:00[Europe/Stockholm]',
+      );
+      expect(await run(`localdatetime.truncate('millisecond', x, {nanosecond: 2})`)).toBe(
+        '1984-10-11T12:31:14.645000002',
+      );
+      expect(await run(`time.truncate('minute', x)`)).toBe('12:31+01:00');
+      expect(await run(`localtime.truncate('microsecond', x)`)).toBe('12:31:14.645876');
+      expect(await run(`localtime.truncate('day', x)`)).toBe('00:00');
+    });
+
     it('gives components that match values built in the library', async () => {
       const [row] = await graph.query(
         `UNWIND ['1984-10-11T12:31:14.645876123+01:00'] AS s

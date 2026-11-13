@@ -13,6 +13,7 @@ import {
   renderTemporal,
   temporalFromMap,
   TemporalError,
+  truncateTemporal,
   type Temporal,
   type TemporalArgument,
 } from './temporal.js';
@@ -28,6 +29,30 @@ for (const kind of ['date', 'localtime', 'time', 'localdatetime', 'datetime']) {
   for (const clock of ['statement', 'transaction', 'realtime']) {
     TEMPORAL_FUNCTIONS[`${kind}.${clock}`] = { min: 0, max: 1 };
   }
+  TEMPORAL_FUNCTIONS[`${kind}.truncate`] = { min: 2, max: 3 };
+}
+
+/** A map argument as temporal map fields (temporal values parsed). */
+function fields(arg: CypherValue): Record<string, TemporalArgument> {
+  if (!isCypherMap(arg)) {
+    throw new TemporalError('Expected a map');
+  }
+  const map: Record<string, TemporalArgument> = {};
+  for (const [key, v] of Object.entries(arg)) {
+    if (v instanceof CypherTemporal) {
+      map[key] = temporalOf(v);
+    } else if (
+      v === null ||
+      typeof v === 'string' ||
+      typeof v === 'number' ||
+      typeof v === 'bigint'
+    ) {
+      map[key] = v;
+    } else {
+      throw new TemporalError(`Invalid value for ${key}`);
+    }
+  }
+  return map;
 }
 
 export function isTemporalFunction(name: string): boolean {
@@ -71,6 +96,17 @@ export function callTemporal(name: string, args: CypherValue[]): CypherValue {
     throw new TemporalError(`Unknown temporal function ${name}`);
   }
   const arg = args[0];
+  if (clock === 'truncate') {
+    const input = args[1];
+    if (arg === null || input === null || input === undefined) {
+      return null;
+    }
+    if (typeof arg !== 'string' || !(input instanceof CypherTemporal)) {
+      throw new TemporalError(`Invalid argument for ${name}()`);
+    }
+    const overrides = args[2] === undefined || args[2] === null ? {} : fields(args[2]);
+    return value(truncateTemporal(kind, arg, temporalOf(input), overrides, nowUtc));
+  }
   if (arg === undefined || clock !== undefined) {
     // The current time, in UTC or in the given zone.
     if (arg === null) {
