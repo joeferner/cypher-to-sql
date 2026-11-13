@@ -122,8 +122,9 @@ export const CORPUS: DiffGroup[] = [
       q('MATCH (n) WHERE NOT (n)<--() RETURN n.name AS name'),
       {
         cypher: 'MATCH (n) WHERE EXISTS { MATCH (n)-[:S]->(:A) } RETURN n.name AS name',
-        known: 'EXISTS with a MATCH clause is not in openCypher 9 (EXISTS { pattern } is)',
+        known: 'in the openCypher 9 grammar, a query in EXISTS { } ends with RETURN',
       },
+      q('MATCH (n) WHERE EXISTS { MATCH (n)-[:S]->(m:A) RETURN m } RETURN n.name AS name'),
       q('MATCH (n) WHERE EXISTS { (n)-[:S]->(:A) } RETURN n.name AS name'),
       q('MATCH (n) RETURN n.name AS name, size([(n)--() | 1]) AS degree'),
       q("MATCH (n {name: 'b'}) RETURN [(n)-[:R]->(m) | m.name] AS out"),
@@ -180,10 +181,19 @@ export const CORPUS: DiffGroup[] = [
       q('WITH 1 AS x, 2 AS y RETURN x + y AS z'),
       q('RETURN 9223372036854775807 + 1 AS overflow'),
       q('RETURN 1 / 0 AS a'),
-      {
-        cypher: "RETURN 1 + 'a' AS a, 'a' + 1.5 AS b",
-        known: 'a number and a string do not concatenate here; they raise a type error (#39)',
-      },
+      q(
+        "RETURN 1 + 'a' AS a, 'a' + 1.5 AS b, 'a' + 2.0 AS c, 'a' + (0.1 + 0.2) AS d, " +
+          "-3 + 'a' AS e, 'a' + 1e20 AS f, 'a' + 1e-7 AS g, 'a' + 123456789.0 AS h",
+      ),
+      q('MATCH (n) RETURN n.name + n.n AS a, n.f + n.s AS b, n.n + n.f AS c'),
+      q("MATCH (n) RETURN n.name + 1 AS a, 2.5 + n.name AS b, n.l + 'x' AS c"),
+      q("RETURN 'a' + true AS a, false + 'a' AS b"),
+      q(
+        'RETURN toString(0.001) AS a, toString(0.0009) AS b, toString(9999999.0) AS c, ' +
+          'toString(10000000.0) AS d, toString(-1.5e-10) AS e, toString(1.7976931348623157e308) AS f, ' +
+          'toString(2.5e-300) AS g, toString(100.0) AS h, toString(0.1) AS i, toString(-2.0) AS j, ' +
+          'toString(123.456) AS k, toString(1.0 / 3) AS l',
+      ),
       q('RETURN toUpper(1) AS a'),
     ],
   },

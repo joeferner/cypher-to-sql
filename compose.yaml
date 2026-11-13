@@ -44,7 +44,9 @@ services:
     image: arcadedata/arcadedb:${ARCADEDB_VERSION:-26.11.1}
     profiles: [reference]
     environment:
+      # Without -Xmx the JVM sizes its heap from the host's memory.
       JAVA_OPTS: >-
+        -Xms256m -Xmx1g
         -Darcadedb.server.rootPassword=cypherpass
         -Darcadedb.server.defaultDatabases=graph[root]
     ports:

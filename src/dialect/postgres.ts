@@ -1,6 +1,7 @@
 import {
   ENTITY_TAG,
   entityFields,
+  javaFloatText,
   sqlStringLiteral,
   type Dialect,
   type EntityColumns,
@@ -25,6 +26,28 @@ function floatToJsonb(value: string): string {
     `(SELECT CASE WHEN f IN ('NaN'::float8, 'Infinity'::float8, '-Infinity'::float8) THEN NULL ` +
     `WHEN f::text::numeric = trunc(f::text::numeric) THEN to_jsonb(round(f::text::numeric, 1)) ` +
     `ELSE to_jsonb(f::text::numeric) END FROM (SELECT (${value})::double precision AS f) AS ft)`
+  );
+}
+
+/**
+ * A float as toString() writes it (see `javaFloatText`). float8 text is the
+ * shortest exact form; as numeric text it has no exponent, so the digits and
+ * the exponent follow from the parts before and after the point.
+ */
+function floatToString(value: string): string {
+  return (
+    `(SELECT CASE WHEN f IS NULL THEN NULL WHEN f = 'NaN' THEN 'NaN' ` +
+    `WHEN f = 'Infinity' THEN 'Infinity' WHEN f = '-Infinity' THEN '-Infinity' ` +
+    `ELSE ${javaFloatText('sign', 'digits', 'exponent')} END FROM (` +
+    `SELECT f, sign, ` +
+    `CASE WHEN ip <> '0' THEN rtrim(ip || fp, '0') ELSE rtrim(ltrim(fp, '0'), '0') END AS digits, ` +
+    `CASE WHEN ip <> '0' THEN length(ip) - 1 ELSE -(length(fp) - length(ltrim(fp, '0')) + 1) END ` +
+    `AS exponent FROM (` +
+    `SELECT f, CASE WHEN f::text LIKE '-%' THEN '-' ELSE '' END AS sign, ` +
+    `split_part(t, '.', 1) AS ip, split_part(t, '.', 2) AS fp FROM (` +
+    `SELECT f, CASE WHEN f IN ('NaN', 'Infinity', '-Infinity') THEN '0' ` +
+    `ELSE abs(f)::text::numeric::text END AS t ` +
+    `FROM (SELECT (${value})::double precision AS f) AS fa) AS fb) AS fc) AS fd)`
   );
 }
 
@@ -95,11 +118,18 @@ export function postgres(): Dialect {
           return `(CASE WHEN jsonb_typeof(${json}) = 'boolean' THEN ${json} END)::boolean`;
         case 'number':
           return `(CASE WHEN jsonb_typeof(${json}) = 'number' THEN ${json} END)::numeric`;
+        case 'integer':
+          // Also guarded by range: a constant float such as 1e21 must not fail the cast.
+          return (
+            `(CASE WHEN jsonb_typeof(${json}) = 'number' THEN CASE WHEN (${json})::numeric ` +
+            `BETWEEN -9223372036854775808 AND 9223372036854775807 THEN ${json} END END)::bigint`
+          );
         default:
           return `(CASE WHEN jsonb_typeof(${json}) = 'number' THEN ${json} END)::${SQL_TYPES[type]}`;
       }
     },
     toJson: (value, type) => (type === 'float' ? floatToJsonb(value) : `to_jsonb(${value})`),
+    floatToString,
     jsonArray: (items) => `jsonb_build_array(${items.join(', ')})`,
     jsonObject: (entries) =>
       `jsonb_build_object(${entries.map((e) => `${e.keyPlaceholder}::text, ${e.value}`).join(', ')})`,

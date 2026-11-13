@@ -125,6 +125,32 @@ for (const backend of testBackends()) {
       expect(await v('0.1 + 0.2')).toBe(0.30000000000000004);
       expect(await v("'a' + 'b'")).toBe('ab');
       expect(await v('1 + null')).toBe(null);
+      expect(await v("null + 'a'")).toBe(null);
+    });
+
+    it('concatenates a string with a number or boolean, as toString() writes them', async () => {
+      expect(await v("1 + 'a'")).toBe('1a');
+      expect(await v("'a' + -3")).toBe('a-3');
+      expect(await v("'a' + 2.0")).toBe('a2.0');
+      expect(await v("'a' + (0.1 + 0.2)")).toBe('a0.30000000000000004');
+      expect(await v("'a' + 1e20")).toBe('a1.0E20');
+      expect(await v("'a' + true")).toBe('atrue');
+      expect(await v("false + 'a'")).toBe('falsea');
+      // Types known only at run time: parameters and undeclared properties.
+      expect(await v("$x + 'a'", { x: 1.5 })).toBe('1.5a');
+      expect(await v("'a' + $x", { x: 12n })).toBe('a12');
+      expect(await v("'a' + $x", { x: false })).toBe('afalse');
+      expect(
+        (await graph.query("MATCH (n:P) RETURN n.name + ':' + n.score AS s ORDER BY s")).map(
+          (r) => r['s'],
+        ),
+      ).toEqual(['Ada:1.5', 'bob:2']);
+      await expect(v('true + 1')).rejects.toThrow(/Type mismatch/);
+      await expect(v("$x + 'a'", { x: [1n] })).resolves.toEqual([1n, 'a']);
+      await expect(v("$x + 'a'", { x: { k: 1n } })).rejects.toThrow(/cannot apply/);
+    });
+
+    it('keeps number types in arithmetic', async () => {
       expect(await v('1.0 / 0')).toBe(Infinity);
       expect(await v('$x + 1', { x: 2n })).toBe(3n);
       expect(await v('$x + 1', { x: 2.5 })).toBe(3.5);

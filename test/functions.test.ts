@@ -44,6 +44,17 @@ for (const backend of testBackends()) {
       expect(await v('toString(a.f)')).toBe('2.5');
       expect(await v('toString(1.0)')).toBe('1.0');
       expect(await v('toString(true)')).toBe('true');
+      // Floats as Java's Double.toString writes them, like Neo4j.
+      expect(await v('toString(0.1 + 0.2)')).toBe('0.30000000000000004');
+      expect(await v('toString(0.001)')).toBe('0.001');
+      expect(await v('toString(0.0009)')).toBe('9.0E-4');
+      expect(await v('toString(9999999.0)')).toBe('9999999.0');
+      expect(await v('toString(10000000.0)')).toBe('1.0E7');
+      expect(await v('toString(-1.5e-10)')).toBe('-1.5E-10');
+      expect(await v('toString(1.7976931348623157e308)')).toBe('1.7976931348623157E308');
+      expect(await v('toString(-123.456)')).toBe('-123.456');
+      expect(await v('toString(0.0)')).toBe('0.0');
+      expect(await v('toString($f)', { f: 1e21 })).toBe('1.0E21');
       expect(await v("toInteger(' 42 ')")).toBe(42n);
       expect(await v("toInteger('4.7')")).toBe(4n);
       expect(await v('toInteger(-4.7)')).toBe(-4n);

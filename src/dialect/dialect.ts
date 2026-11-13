@@ -74,6 +74,13 @@ export interface Dialect {
   /** The JSON value of a native value of `type`. Floats keep a fraction (`2.0`). */
   toJson(value: string, type: ScalarType): string;
 
+  /**
+   * A float as text, as toString() writes it in Neo4j (Java's
+   * `Double.toString`): the shortest digits that read back as the same
+   * double, `1.5`, `2.0`, `1.0E20`, `1.0E-7`, `NaN`, `Infinity`.
+   */
+  floatToString(value: string): string;
+
   /** A JSON list of JSON values. */
   jsonArray(items: string[]): string;
 
@@ -359,6 +366,27 @@ export function entityFields(
     [`'~start'`, col(t.startId)],
     [`'~end'`, col(t.endId)],
   ];
+}
+
+/**
+ * Java's `Double.toString` layout of a finite float, in SQL that runs on both
+ * dialects. The arguments are cheap SQL expressions: `sign` is `''` or `'-'`,
+ * `digits` the significant digits without trailing zeros (`''` for zero), and
+ * `exponent` the integer power of ten of the first digit. From 10^-3 up to
+ * 10^7 the number is written as a decimal (`123.45`, `0.001`), otherwise in
+ * scientific notation (`1.2345E7`, `1.0E-4`); there is always a digit after
+ * the point.
+ */
+export function javaFloatText(sign: string, digits: string, exponent: string): string {
+  const rest = `(CASE WHEN length(${digits}) > 1 THEN substr(${digits}, 2) ELSE '0' END)`;
+  return (
+    `(CASE WHEN ${digits} = '' THEN ${sign} || '0.0' ` +
+    `WHEN ${exponent} >= 7 OR ${exponent} < -3 THEN ` +
+    `${sign} || substr(${digits}, 1, 1) || '.' || ${rest} || 'E' || ${exponent} ` +
+    `WHEN ${exponent} >= 0 THEN ${sign} || substr(${digits} || '0000000', 1, ${exponent} + 1) || '.' || ` +
+    `(CASE WHEN length(${digits}) > ${exponent} + 1 THEN substr(${digits}, ${exponent} + 2) ELSE '0' END) ` +
+    `ELSE ${sign} || '0.' || substr('00', 1, -${exponent} - 1) || ${digits} END)`
+  );
 }
 
 /** A string literal for a key from the mapping (validated not to contain `"`). */

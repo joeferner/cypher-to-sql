@@ -1278,6 +1278,19 @@ export class ExprCompiler {
       if (op === '+' && left.type === 'string' && right.type === 'string') {
         return { sql: `(${left.sql} || ${right.sql})`, type: 'string', atomic: false };
       }
+      // A string and a number or boolean concatenate, as toString() writes it.
+      const concatenates = (t: ExprType): boolean => numeric(t) || t === 'boolean';
+      if (
+        op === '+' &&
+        ((left.type === 'string' && concatenates(right.type)) ||
+          (concatenates(left.type) && right.type === 'string'))
+      ) {
+        const text = (e: Expr): string =>
+          e.type === 'string'
+            ? e.sql
+            : this.scalarText(e.sql, e.type as 'integer' | 'float' | 'boolean');
+        return { sql: `(${text(left)} || ${text(right)})`, type: 'string', atomic: false };
+      }
       if (!numeric(left.type) || !numeric(right.type)) {
         const bad = numeric(left.type) ? expr.right : expr.left;
         throw typeError('a number', numeric(left.type) ? right.type : left.type, bad.position);
@@ -1340,6 +1353,19 @@ export class ExprCompiler {
     if (op === '+') {
       const strings = `(${d.fromJson(l.sql, 'string')} || ${d.fromJson(r.sql, 'string')})`;
       arms.push(`WHEN ${lt} = 'string' AND ${rt} = 'string' THEN ${d.toJson(strings, 'string')}`);
+      // A string and a number or boolean concatenate, as toString() writes it.
+      const text = (e: Shared, t: string): string =>
+        `(CASE ${t} WHEN 'string' THEN ${d.fromJson(e.sql, 'string')} ` +
+        (['integer', 'float', 'boolean'] as const)
+          .map((type) => `WHEN '${type}' THEN ${this.scalarText(d.fromJson(e.sql, type), type)} `)
+          .join('') +
+        'END)';
+      const scalars = `('integer', 'float', 'boolean')`;
+      arms.push(
+        `WHEN (${lt} = 'string' AND ${rt} IN ${scalars}) OR ` +
+          `(${lt} IN ${scalars} AND ${rt} = 'string') ` +
+          `THEN ${d.toJson(`(${text(l, lt)} || ${text(r, rt)})`, 'string')}`,
+      );
       // List + list concatenates; list + value appends; value + list prepends.
       const asList = (e: Shared, t: string): string =>
         `(CASE WHEN ${t} = 'list' THEN ${e.sql} ELSE ${d.jsonArray([e.sql])} END)`;
@@ -1356,6 +1382,18 @@ export class ExprCompiler {
       `(CASE WHEN ${isNullType(lt)} OR ${isNullType(rt)} THEN NULL ${arms.join(' ')} ` +
       `ELSE ${mismatch} END)`
     );
+  }
+
+  /** A number or boolean as text, as toString() writes it (`1`, `1.0`, `1.0E20`, `true`). */
+  private scalarText(sql: string, type: 'integer' | 'float' | 'boolean'): string {
+    switch (type) {
+      case 'integer':
+        return `CAST(${sql} AS TEXT)`;
+      case 'float':
+        return this.b.dialect.floatToString(sql);
+      case 'boolean':
+        return `(CASE WHEN ${sql} THEN 'true' WHEN NOT ${sql} THEN 'false' END)`;
+    }
   }
 
   /**

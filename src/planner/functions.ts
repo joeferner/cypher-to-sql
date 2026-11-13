@@ -553,8 +553,7 @@ function toStringFunction(call: Call): Expr {
   return dispatch(call, 'string', {
     string: (s) => s,
     integer: (i) => `CAST(${i} AS TEXT)`,
-    // The JSON text of a float is Cypher's form (`1.0`, `0.30000000000000004`).
-    float: (f) => d.jsonText(d.toJson(f, 'float')),
+    float: (f) => d.floatToString(f),
     boolean: (b) => `(CASE WHEN ${b} THEN 'true' WHEN NOT ${b} THEN 'false' END)`,
   });
 }

@@ -2,6 +2,7 @@ import { UnsupportedFeatureError } from '../errors.js';
 import {
   ENTITY_TAG,
   entityFields,
+  javaFloatText,
   sqlStringLiteral,
   type Dialect,
   type EntityColumns,
@@ -56,6 +57,7 @@ export function sqlite(): Dialect {
     jsonIsNull: (json) => `(COALESCE(json_type(${json}), 'null') = 'null')`,
     fromJson: (json) => `(${json} ->> '$')`,
     toJson,
+    floatToString,
     // json() marks JSON text as JSON, so that it is nested rather than quoted.
     jsonArray: (items) => `json_array(${items.map((item) => `json(${item})`).join(', ')})`,
     jsonObject: (entries) =>
@@ -267,8 +269,9 @@ function toJson(value: string, type: ScalarType): string {
  * add `.0` to integral values so they stay floats. Infinity has no JSON form.
  */
 function floatToJson(value: string): string {
-  // A subquery computes the value once (it is used many times).
-  const digits = (n: number): string => `printf('%.${n}g', f)`;
+  // A subquery computes the value once (it is used many times). Without the
+  // `!` flag, printf stops at 16 significant digits.
+  const digits = (n: number): string => `printf('%!.${n}g', f)`;
   const shortest =
     `CASE WHEN CAST(${digits(15)} AS REAL) = f THEN ${digits(15)} ` +
     `WHEN CAST(${digits(16)} AS REAL) = f THEN ${digits(16)} ELSE ${digits(17)} END`;
@@ -276,5 +279,27 @@ function floatToJson(value: string): string {
     `(SELECT CASE WHEN s IS NULL THEN NULL WHEN s GLOB '*[^0-9-]*' THEN s ELSE s || '.0' END ` +
     `FROM (SELECT CASE WHEN f IS NULL OR abs(f) > 1.7976931348623157e308 THEN NULL ` +
     `ELSE ${shortest} END AS s FROM (SELECT ${value} AS f)))`
+  );
+}
+
+/**
+ * A REAL as toString() writes it (see `javaFloatText`). The shortest of 15, 16,
+ * or 17 significant digits that reads back as the same double, in printf's
+ * `%e` form, gives the digits and the exponent; `!` keeps printf from stopping
+ * at 16 digits and drops trailing zeros. SQLite has no NaN.
+ */
+function floatToString(value: string): string {
+  const e = (n: number): string => `printf('%!.${n}e', abs(f))`;
+  const scientific =
+    `CASE WHEN CAST(${e(14)} AS REAL) = abs(f) THEN ${e(14)} ` +
+    `WHEN CAST(${e(15)} AS REAL) = abs(f) THEN ${e(15)} ELSE ${e(16)} END`;
+  return (
+    `(SELECT CASE WHEN f IS NULL THEN NULL ` +
+    `WHEN abs(f) > 1.7976931348623157e308 THEN (CASE WHEN f > 0 THEN 'Infinity' ELSE '-Infinity' END) ` +
+    `ELSE ${javaFloatText('sign', 'digits', 'exponent')} END ` +
+    `FROM (SELECT f, CASE WHEN substr(printf('%e', f), 1, 1) = '-' THEN '-' ELSE '' END AS sign, ` +
+    `rtrim(replace(substr(x, 1, instr(x, 'e') - 1), '.', ''), '0') AS digits, ` +
+    `CAST(substr(x, instr(x, 'e') + 1) AS INTEGER) AS exponent ` +
+    `FROM (SELECT f, ${scientific} AS x FROM (SELECT ${value} AS f))))`
   );
 }

@@ -48,7 +48,8 @@ for (const backend of testBackends()) {
       expect(e).toMatchObject({ code: 'InvalidArgumentType', position: { line: 1, column: 19 } });
       expect(e.message).toMatch(/expected a boolean/);
       for (const query of [
-        'MATCH (n:N) RETURN n.name + n.n',
+        'MATCH (n:N) RETURN n.name * n.n',
+        'MATCH (n:N) RETURN n.b + n.n',
         'MATCH (n:N) RETURN -n.name',
         'MATCH (n:N) RETURN n.n:Label',
         'MATCH (n:N) RETURN n.name[0]',

@@ -226,6 +226,8 @@ joined with `v.s = a.id AND v.t = b.id`.
 | Strings    | `size`, `substring`, `left`, `right`, `toUpper`/`upper`, `toLower`/`lower`, `trim`, `ltrim`, `rtrim`, `replace`, `split`, `reverse`             |
 | Numbers    | `abs`, `sign`, `round`, `ceil`, `floor`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pi`, `e`, `rand` |
 
+`toString` of a float writes it as Neo4j does (Java's `Double.toString`): the shortest digits that read back as the same double, as a decimal from 10^-3 up to 10^7 and in scientific notation otherwise (`0.001`, `1.0E7`, `1.5E-10`), with `Dialect.floatToString`. `+` with a string and a number or boolean concatenates them, written as `toString` would (`'a' + 1.5` is `'a1.5'`).
+
 Any other function is an `UnsupportedFeatureError` whose hint lists the supported ones. Path functions (`nodes`, `relationships`, `length`) are described in "Named paths". Temporal functions, `startNode`/`endNode`, and `round` with a precision are not supported yet. Known differences: string parsing in `toInteger`/`toFloat` accepts JSON number syntax on SQLite (so not `+1` or `.5`) and a slightly wider syntax on PostgreSQL; `toUpper`/`toLower` follow the database (SQLite changes ASCII letters only); `trim` removes spaces only.
 
 ### Patterns in expressions

@@ -54,7 +54,10 @@ function toJsonable(value: CypherValue): unknown {
     if (!Number.isFinite(value)) {
       throw new TypeError(`Cannot store ${value} as a property value`);
     }
-    return Number.isInteger(value) ? JSON.rawJSON(value.toFixed(1)) : value;
+    // An integral float keeps a fraction. toFixed() writes 1e21 and above in
+    // exponent form, which PostgreSQL's jsonb would store as an integer; the
+    // value is an exact integer, so write all its digits.
+    return Number.isInteger(value) ? JSON.rawJSON(`${BigInt(value)}.0`) : value;
   }
   if (Array.isArray(value)) {
     return value.map(toJsonable);
