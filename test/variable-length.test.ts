@@ -118,9 +118,6 @@ for (const backend of testBackends()) {
     });
 
     it('rejects what it does not support yet', async () => {
-      await expect(graph.query(`MATCH ()-[r*]->() RETURN r[0]`)).rejects.toThrow(
-        /not supported yet/,
-      );
       await expect(
         graph.query(`MATCH ()-[r*]->() WITH r MATCH ()-[r*]->() RETURN r`),
       ).rejects.toThrow(/not supported yet/);

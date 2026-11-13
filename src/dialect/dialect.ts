@@ -120,6 +120,11 @@ export interface Dialect {
   jsonKeys(map: string): string;
   /** A JSON map without the given keys (constants from the library, written as literals). */
   jsonRemoveKeys(map: string, keys: string[]): string;
+  /**
+   * Member of a JSON object by a key computed at run time (a SQL string, never
+   * SQL text); NULL when missing or when the value is not an object.
+   */
+  jsonMemberAt(object: string, key: string): string;
   /** Element of a JSON list at an integer index (negative counts from the end); NULL if out of range. */
   jsonElement(list: string, index: string): string;
   /** A JSON list without its first element. */
@@ -256,6 +261,8 @@ export interface Dialect {
     value: string;
     /** Expression that orders the rows in list order. */
     order: string;
+    /** Position of the element in the list, from 0 (for lists only). */
+    index: string;
   };
 }
 

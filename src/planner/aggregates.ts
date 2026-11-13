@@ -1,6 +1,7 @@
 import type * as ast from '../ast.js';
 import { SemanticError, UnsupportedFeatureError } from '../errors.js';
 import { orderTerm, typeError, type Expr, type ExprCompiler } from './expr.js';
+import { children } from './walk.js';
 
 // Aggregate functions. They skip null values, as in Cypher, and are compiled
 // to SQL aggregates over the groups of the RETURN's grouping keys.
@@ -20,21 +21,8 @@ export function containsAggregate(expr: ast.Expression): boolean {
       return true;
     case 'FunctionCall':
       return isAggregateCall(expr) || expr.args.some(containsAggregate);
-    case 'List':
-      return expr.items.some(containsAggregate);
-    case 'Map':
-      return expr.entries.some((e) => containsAggregate(e.value));
-    case 'PropertyAccess':
-    case 'HasLabels':
-      return containsAggregate(expr.subject);
-    case 'Binary':
-      return containsAggregate(expr.left) || containsAggregate(expr.right);
-    case 'Not':
-    case 'Negate':
-    case 'IsNull':
-      return containsAggregate(expr.operand);
     default:
-      return false;
+      return children(expr).some(({ child }) => containsAggregate(child));
   }
 }
 

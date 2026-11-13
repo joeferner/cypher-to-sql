@@ -80,6 +80,11 @@ export function sqlite(): Dialect {
       `json_remove(${map}, ${keys.map((k) => sqlStringLiteral(`$."${k}"`)).join(', ')})`,
     jsonKeys: (map) =>
       `(SELECT json_group_array(key) FROM (SELECT key FROM json_each(${map}) ORDER BY key))`,
+    // A JSON path built from the key could address another member (SQLite paths
+    // have no escape for `"`), so the key is compared as data instead.
+    jsonMemberAt: (object, key) =>
+      `(SELECT ${elementJson('jm')} FROM json_each(${object}) AS jm ` +
+      `WHERE json_type(${object}) = 'object' AND jm.key = ${key})`,
     // `$[#-1]` is the last element.
     jsonElement: (list, index) =>
       `(${list} -> ('$[' || CASE WHEN ${index} < 0 THEN '#' || ${index} ELSE ${index} END || ']'))`,
@@ -207,6 +212,7 @@ export function sqlite(): Dialect {
       where: `NOT (${alias}.key IS NULL AND ${alias}.type = 'null')`,
       value: elementJson(alias),
       order: `${alias}.key`,
+      index: `${alias}.key`,
     }),
   };
 }

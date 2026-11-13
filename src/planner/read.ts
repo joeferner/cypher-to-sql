@@ -4,6 +4,7 @@ import type { ColumnSpec, PlanStep, ValueSource } from '../plan.js';
 import { containsAggregate, isAggregateCall } from './aggregates.js';
 import { ExprCompiler, orderTerm, type Expr, type VariableBinding } from './expr.js';
 import { constantValue, type SqlBuilder } from './sql-builder.js';
+import { children, mapChildren } from './walk.js';
 
 interface SelectOptions {
   distinct?: boolean;
@@ -1195,12 +1196,20 @@ function planAggregation(
   // Aggregates and properties of key variables become inner columns, referred
   // to by synthetic variables in the outer expressions.
   const extra = new Map<string, string>();
-  const rewrite = (expr: ast.Expression): ast.Expression => {
+  const rewrite = (
+    expr: ast.Expression,
+    locals: ReadonlySet<string> = new Set(),
+  ): ast.Expression => {
     const ref = (name: string): ast.Expression => ({
       type: 'Variable',
       position: expr.position,
       name,
     });
+    if (freeVariables(expr).some((name) => locals.has(name))) {
+      // Uses the element of an enclosing list comprehension or quantifier: not a
+      // key or a value of the group. Its parts may still be.
+      return mapChildren(expr, (child, local) => rewrite(child, withLocal(locals, local)));
+    }
     const keyIndex = keys.findIndex(
       (key) =>
         sameExpression(key.expression, expr) ||
@@ -1227,7 +1236,7 @@ function planAggregation(
       }
       return ref(name);
     }
-    return mapChildren(expr, rewrite);
+    return mapChildren(expr, (child, local) => rewrite(child, withLocal(locals, local)));
   };
 
   const outerCompiler = new ExprCompiler(b, (variable) => {
@@ -1297,12 +1306,7 @@ function aggregatesIn(expr: ast.Expression): ast.Expression[] {
   if (expr.type === 'CountStar' || (expr.type === 'FunctionCall' && isAggregateCall(expr))) {
     return [expr];
   }
-  const found: ast.Expression[] = [];
-  mapChildren(expr, (child) => {
-    found.push(...aggregatesIn(child));
-    return child;
-  });
-  return found;
+  return children(expr).flatMap(({ child }) => aggregatesIn(child));
 }
 
 /** Replaces subexpressions equal to a projection item's expression with the item's name. */
@@ -1313,10 +1317,18 @@ function replaceProjected(expr: ast.Expression, items: ast.ProjectionItem[]): as
   if (item) {
     return { type: 'Variable', position: expr.position, name: item.name };
   }
-  return mapChildren(expr, (child) => replaceProjected(child, items));
+  return mapChildren(expr, (child, local) =>
+    replaceProjected(
+      child,
+      // Inside a comprehension, `local` is the element: not a projected name, and
+      // an item's expression that uses it means something else there.
+      local === undefined
+        ? items
+        : items.filter((i) => i.name !== local && !freeVariables(i.expression).includes(local)),
+    ),
+  );
 }
 
-/** The names of the variables an expression uses. */
 /**
  * Checks a `shortestPath(...)` or `allShortestPaths(...)` pattern part: one
  * variable-length relationship with a lower bound of 0 or 1. Conditions of the
@@ -1357,16 +1369,14 @@ function checkShortestPath(part: ast.PatternPart, where: ast.Expression | undefi
   }
 }
 
+/** The names of the variables an expression uses from outside it. */
 function freeVariables(expr: ast.Expression): string[] {
   if (expr.type === 'Variable') {
     return [expr.name];
   }
-  const names: string[] = [];
-  mapChildren(expr, (child) => {
-    names.push(...freeVariables(child));
-    return child;
-  });
-  return names;
+  return children(expr).flatMap(({ child, local }) =>
+    freeVariables(child).filter((name) => name !== local),
+  );
 }
 
 /** The synthetic variable for grouping key `i` in the outer query of an aggregation. */
@@ -1421,11 +1431,20 @@ function rowCount(expr: ast.Expression, clause: 'SKIP' | 'LIMIT'): ValueSource {
  * even when `n.x + n.y` is itself returned (as in Cypher). With `n` as a key,
  * its properties are fixed within a group and may be used.
  */
-function checkGroupedOnly(expr: ast.Expression, keys: ast.ProjectionItem[]): void {
+function checkGroupedOnly(
+  expr: ast.Expression,
+  keys: ast.ProjectionItem[],
+  locals: ReadonlySet<string> = new Set(),
+): void {
   if (expr.type === 'CountStar' || (expr.type === 'FunctionCall' && isAggregateCall(expr))) {
     return;
   }
   const simple = expr.type === 'Variable' || expr.type === 'PropertyAccess';
+  const root = rootVariable(expr);
+  if (simple && root !== undefined && locals.has(root)) {
+    // The element of a list comprehension or quantifier.
+    return;
+  }
   const isKey = (e: ast.Expression): boolean =>
     keys.some(
       (key) => sameExpression(key.expression, e) || (e.type === 'Variable' && key.alias === e.name),
@@ -1444,10 +1463,9 @@ function checkGroupedOnly(expr: ast.Expression, keys: ast.ProjectionItem[]): voi
       },
     );
   }
-  mapChildren(expr, (child) => {
-    checkGroupedOnly(child, keys);
-    return child;
-  });
+  for (const { child, local } of children(expr)) {
+    checkGroupedOnly(child, keys, withLocal(locals, local));
+  }
 }
 
 /** Replaces variables that name a projection item with the item's expression. */
@@ -1458,19 +1476,30 @@ function substituteAliases(
   if (expr.type === 'Variable') {
     return projected.get(expr.name) ?? expr;
   }
-  return mapChildren(expr, (child) => substituteAliases(child, projected));
+  return mapChildren(expr, (child, local) => {
+    if (local === undefined || !projected.has(local)) {
+      return substituteAliases(child, projected);
+    }
+    const inner = new Map(projected);
+    inner.delete(local);
+    return substituteAliases(child, inner);
+  });
 }
 
 /**
  * After `RETURN DISTINCT`, ORDER BY may only use projected values: the names of
  * projection items, and expressions equal to a projected expression.
  */
-function checkProjectedOnly(expr: ast.Expression, items: ast.ProjectionItem[]): void {
+function checkProjectedOnly(
+  expr: ast.Expression,
+  items: ast.ProjectionItem[],
+  locals: ReadonlySet<string> = new Set(),
+): void {
   if (items.some((item) => sameExpression(item.expression, expr))) {
     return;
   }
   if (expr.type === 'Variable') {
-    if (!items.some((item) => item.name === expr.name)) {
+    if (!locals.has(expr.name) && !items.some((item) => item.name === expr.name)) {
       throw new SemanticError(
         `Variable \`${expr.name}\` is not available after RETURN DISTINCT; ORDER BY can only use projected values`,
         { position: expr.position },
@@ -1478,10 +1507,9 @@ function checkProjectedOnly(expr: ast.Expression, items: ast.ProjectionItem[]): 
     }
     return;
   }
-  mapChildren(expr, (child) => {
-    checkProjectedOnly(child, items);
-    return child;
-  });
+  for (const { child, local } of children(expr)) {
+    checkProjectedOnly(child, items, withLocal(locals, local));
+  }
 }
 
 function sameExpression(a: ast.Expression, b: ast.Expression): boolean {
@@ -1492,28 +1520,15 @@ function sameExpression(a: ast.Expression, b: ast.Expression): boolean {
   return text(a) === text(b);
 }
 
-/** A copy of `expr` with each direct child expression replaced by `f(child)`. */
-function mapChildren(
-  expr: ast.Expression,
-  f: (child: ast.Expression) => ast.Expression,
-): ast.Expression {
-  switch (expr.type) {
-    case 'List':
-      return { ...expr, items: expr.items.map(f) };
-    case 'Map':
-      return { ...expr, entries: expr.entries.map((e) => ({ key: e.key, value: f(e.value) })) };
-    case 'PropertyAccess':
-    case 'HasLabels':
-      return { ...expr, subject: f(expr.subject) };
-    case 'Binary':
-      return { ...expr, left: f(expr.left), right: f(expr.right) };
-    case 'FunctionCall':
-      return { ...expr, args: expr.args.map(f) };
-    case 'Not':
-    case 'Negate':
-    case 'IsNull':
-      return { ...expr, operand: f(expr.operand) };
-    default:
-      return expr;
+/** The variable at the root of `v`, `v.a`, or `v.a.b`; undefined for other expressions. */
+function rootVariable(expr: ast.Expression): string | undefined {
+  if (expr.type === 'Variable') {
+    return expr.name;
   }
+  return expr.type === 'PropertyAccess' ? rootVariable(expr.subject) : undefined;
+}
+
+/** `locals` plus `local`, when a child is in the scope of a comprehension variable. */
+function withLocal(locals: ReadonlySet<string>, local: string | undefined): ReadonlySet<string> {
+  return local === undefined ? locals : new Set([...locals, local]);
 }

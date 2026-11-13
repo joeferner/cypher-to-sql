@@ -128,6 +128,8 @@ export function postgres(): Dialect {
     jsonKeys: (map) =>
       `(SELECT COALESCE(jsonb_agg(k ORDER BY k), '[]'::jsonb) FROM jsonb_object_keys(` +
       `CASE WHEN jsonb_typeof(${map}) = 'object' THEN ${map} END) AS k)`,
+    // `->` with a text key gives NULL for a non-object.
+    jsonMemberAt: (object, key) => `(${object} -> (${key})::text)`,
     jsonElement: (list, index) => `(${list} -> (${index})::int)`,
     jsonTail: (list) => `(CASE WHEN jsonb_typeof(${list}) = 'array' THEN ${list} - 0 END)`,
     reverseList: (list) =>
@@ -247,6 +249,7 @@ export function postgres(): Dialect {
       where: undefined,
       value: `${alias}.value`,
       order: `${alias}.ord`,
+      index: `(${alias}.ord - 1)`,
     }),
   };
 }

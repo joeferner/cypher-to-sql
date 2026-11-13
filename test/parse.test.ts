@@ -304,11 +304,8 @@ describe('parse: function calls', () => {
 
 describe('parse: unsupported expressions', () => {
   it.each([
-    ['a[0]', 'list indexing and slicing'],
     ['CASE WHEN a THEN 1 END', 'CASE expressions'],
-    ['[x IN a | x]', 'list comprehensions'],
     ['[(a)-->(b) | b]', 'pattern comprehensions'],
-    ['all(x IN a WHERE x)', 'list quantifiers (all, any, none, single)'],
     ['(a)-->()', 'pattern predicates'],
     ['EXISTS { (a)-->() }', 'EXISTS subqueries'],
   ])('%s → %s', (text, description) => {
@@ -320,15 +317,66 @@ describe('parse: unsupported expressions', () => {
   });
 
   it('keeps unsupported expressions nested inside supported ones', () => {
-    expect(expr('[1, a + b[0]]')).toMatchObject({
+    expect(expr('[1, a + [x IN b | CASE WHEN x THEN 1 END][0]]')).toMatchObject({
       type: 'List',
       items: [
         { type: 'Literal' },
         {
           type: 'Binary',
-          right: { type: 'UnsupportedExpression', description: 'list indexing and slicing' },
+          right: {
+            type: 'Index',
+            subject: {
+              type: 'ListComprehension',
+              projection: { type: 'UnsupportedExpression', description: 'CASE expressions' },
+            },
+          },
         },
       ],
     });
+  });
+});
+
+describe('parse: list expressions', () => {
+  it('parses indexing, slicing, and chains with property lookups in order', () => {
+    expect(expr('a.b[0].c')).toMatchObject({
+      type: 'PropertyAccess',
+      key: 'c',
+      subject: {
+        type: 'Index',
+        index: { type: 'Literal', value: 0n },
+        subject: { type: 'PropertyAccess', key: 'b', subject: { type: 'Variable', name: 'a' } },
+      },
+    });
+    expect(expr('a[1..-1]')).toMatchObject({
+      type: 'Slice',
+      from: { value: 1n },
+      to: { value: -1n },
+    });
+    expect(expr('a[..2]')).toMatchObject({ type: 'Slice', from: undefined, to: { value: 2n } });
+    expect(expr('a[1..]')).toMatchObject({ type: 'Slice', from: { value: 1n }, to: undefined });
+    expect(expr('a[..]')).toMatchObject({ type: 'Slice', from: undefined, to: undefined });
+  });
+
+  it('parses list comprehensions and quantifiers', () => {
+    expect(expr('[x IN a WHERE x > 1 | x * 2]')).toMatchObject({
+      type: 'ListComprehension',
+      variable: 'x',
+      list: { type: 'Variable', name: 'a' },
+      where: { type: 'Binary', operator: '>' },
+      projection: { type: 'Binary', operator: '*' },
+    });
+    expect(expr('[x IN a WHERE x]')).toMatchObject({
+      type: 'ListComprehension',
+      projection: undefined,
+    });
+    expect(expr('[x IN a | x]')).toMatchObject({ type: 'ListComprehension', where: undefined });
+    for (const quantifier of ['all', 'any', 'none', 'single']) {
+      expect(expr(`${quantifier.toUpperCase()}(x IN a WHERE x)`)).toMatchObject({
+        type: 'Quantifier',
+        quantifier,
+        variable: 'x',
+        where: { type: 'Variable', name: 'x' },
+      });
+    }
   });
 });

@@ -216,6 +216,15 @@ joined with `v.s = a.id AND v.t = b.id`.
 
 Any other function is an `UnsupportedFeatureError` whose hint lists the supported ones. Path functions (`nodes`, `relationships`, `length`) are described in "Named paths". Temporal functions, `startNode`/`endNode`, and `round` with a precision are not supported yet. Known differences: string parsing in `toInteger`/`toFloat` accepts JSON number syntax on SQLite (so not `+1` or `.5`) and a slightly wider syntax on PostgreSQL; `toUpper`/`toLower` follow the database (SQLite changes ASCII letters only); `trim` removes spaces only.
 
+### List expressions
+
+- **Indexing** `l[i]`: an integer index into a list (negative counts from the end; out of range is null), or a string key into a map, node, or relationship (`n['name']`, `n[$key]`). A constant key is a plain member access. A computed key is compared as data (`Dialect.jsonMemberAt`), never built into a SQLite JSON path.
+- **Slicing** `l[from..to]`: elements from position `from` up to `to`; negative bounds count from the end, bounds out of range are clamped, a missing bound is open, and a null bound gives null.
+- **List comprehensions** `[x IN l WHERE c | e]` and **quantifiers** `all`, `any`, `none`, `single` (`(x IN l WHERE c)`) are correlated subqueries over `Dialect.unwind(l)`: a comprehension aggregates the projected elements with `jsonAggregate` in list order, filtered by `c`; a quantifier aggregates `c` with three-valued logic (a null condition makes the result null unless the other elements decide it). `x` hides an outer variable of the same name, in the expression compiler and in every walk over the AST (`src/planner/walk.ts`).
+- `x` is a JSON value, except over a list literal of literals of one type, where it has that type, so that `none(x IN ['a'] WHERE x % 2 = 0)` is a compile-time type error.
+- Aggregates inside a comprehension's WHERE or projection are a `SemanticError`; a quantifier needs WHERE. `[x IN l]` without WHERE or `|` is a list literal holding `x IN l`, as the grammar reads it.
+- Known types that do not fit (`true[0]`, `[1][1.5]`, `[x IN 5 | x]`) are compile-time type errors; values known only at run time give null (#30).
+
 ## Ids (write mode)
 
 - `{ kind: 'database' }` (the default): the database generates ids. Each `INSERT` uses `RETURNING id` so that later parts of the pattern can refer to the new entity. PostgreSQL does not guarantee row order for a multi-row `RETURNING`, so this mode inserts one entity per statement. Speed is not a goal for `CREATE`.
@@ -258,6 +267,7 @@ The defaults are starting values, not measured ones (#16).
 | `OPTIONAL MATCH`                                                  | `LEFT JOIN (<new tables>) ON <pattern conditions and WHERE>` on both dialects (see "OPTIONAL MATCH")                            |
 | `WITH`                                                            | A derived table per stage (see "WITH stages"); a separate step for large stages later (#14)                                     |
 | `UNWIND`                                                          | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position. |
+| List comprehensions, `all`/`any`/`none`/`single`                  | Correlated subquery over the unwound list (see "List expressions")                                                              |
 | Pattern predicates, `EXISTS { }`                                  | `EXISTS (SELECT ...)`                                                                                                           |
 | `CREATE` (write mode)                                             | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`                                               |
 

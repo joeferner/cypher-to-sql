@@ -33,6 +33,8 @@ const readQueries = [
   'MATCH (a)-[*]-(b), (b)<-[*0..2]-(c) RETURN count(*)',
   'MATCH p = (a)-[r]->(b)-[*1..2]->(c) RETURN p, length(p), nodes(p)',
   'MATCH (a:A {k: 1}), (b:B) MATCH p = shortestPath((a)-[:T* {w: 1}]->(b)) RETURN p',
+  'MATCH (n) WHERE any(t IN n.tags WHERE t STARTS WITH $p) RETURN [t IN n.tags WHERE t <> $p | toUpper(t)]',
+  'MATCH (n) RETURN n.list[0], n.list[1..-1], n[$key], all(x IN [1, 2] WHERE x < n.max)',
   'MATCH (a), (b) WHERE a.k < b.k MATCH p = allShortestPaths((a)-[*..4]-(b)) RETURN length(p)',
 ];
 

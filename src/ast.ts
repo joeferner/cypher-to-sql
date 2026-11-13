@@ -126,7 +126,47 @@ export type Expression =
   | HasLabelsExpression
   | FunctionCall
   | CountStar
+  | IndexExpression
+  | SliceExpression
+  | ListComprehension
+  | QuantifierExpression
   | UnsupportedExpression;
+
+/** `subject[index]`: a list element, or a map entry or property by key. */
+export interface IndexExpression extends Node {
+  type: 'Index';
+  subject: Expression;
+  index: Expression;
+}
+
+/** `subject[from..to]`; a missing bound is open. */
+export interface SliceExpression extends Node {
+  type: 'Slice';
+  subject: Expression;
+  from: Expression | undefined;
+  to: Expression | undefined;
+}
+
+/**
+ * `[variable IN list WHERE where | projection]`. `variable` is visible only in
+ * `where` and `projection`.
+ */
+export interface ListComprehension extends Node {
+  type: 'ListComprehension';
+  variable: string;
+  list: Expression;
+  where: Expression | undefined;
+  projection: Expression | undefined;
+}
+
+/** `all(variable IN list WHERE where)`, and `any`, `none`, `single`. */
+export interface QuantifierExpression extends Node {
+  type: 'Quantifier';
+  quantifier: 'all' | 'any' | 'none' | 'single';
+  variable: string;
+  list: Expression;
+  where: Expression | undefined;
+}
 
 /** `count(*)` */
 export interface CountStar extends Node {

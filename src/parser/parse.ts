@@ -14,7 +14,11 @@ import { CypherSyntaxError, UnsupportedFeatureError, type SourcePosition } from 
 import { CypherLexer } from './generated/CypherLexer.js';
 import {
   CypherParser,
+  OC_ExpressionContext,
+  OC_ListOperatorExpressionContext,
   OC_ListPredicateExpressionContext,
+  OC_PropertyLookupContext,
+  type OC_FilterExpressionContext,
   OC_MultiplyDivideModuloExpressionContext,
   OC_NullPredicateExpressionContext,
   OC_PowerOfExpressionContext,
@@ -25,7 +29,6 @@ import {
   type OC_AtomContext,
   type OC_ComparisonExpressionContext,
   type OC_CreateContext,
-  type OC_ExpressionContext,
   type OC_NotExpressionContext,
   type OC_OrExpressionContext,
   type OC_StringListNullPredicateExpressionContext,
@@ -480,10 +483,12 @@ class AstBuilder {
     const sign = ctx.getChild(0)?.getText();
     const negate = sign === '-';
     const operand = ctx.oC_NonArithmeticOperatorExpression()!;
-
-    if (operand.oC_ListOperatorExpression().length > 0) {
-      return this.unsupported(operand, 'list indexing and slicing');
-    }
+    // Property lookups and list operators, in the order written.
+    const postfix = (operand.children ?? []).filter(
+      (child) =>
+        child instanceof OC_PropertyLookupContext ||
+        child instanceof OC_ListOperatorExpressionContext,
+    );
 
     // `-1` is a literal (so that the smallest integer can be written); any other
     // minus is an operator.
@@ -491,16 +496,19 @@ class AstBuilder {
     const foldMinus =
       negate &&
       atom.oC_Literal()?.oC_NumberLiteral() != null &&
-      operand.oC_PropertyLookup().length === 0 &&
+      postfix.length === 0 &&
       !operand.oC_NodeLabels();
     let expr = this.atom(atom, foldMinus);
-    for (const lookup of operand.oC_PropertyLookup()) {
-      expr = {
-        type: 'PropertyAccess',
-        position: pos(lookup),
-        subject: expr,
-        key: this.schemaName(lookup.oC_PropertyKeyName()!.oC_SchemaName()),
-      };
+    for (const op of postfix) {
+      expr =
+        op instanceof OC_PropertyLookupContext
+          ? {
+              type: 'PropertyAccess',
+              position: pos(op),
+              subject: expr,
+              key: this.schemaName(op.oC_PropertyKeyName()!.oC_SchemaName()),
+            }
+          : this.listOperator(op, expr);
     }
     const labels = operand.oC_NodeLabels();
     if (labels) {
@@ -515,6 +523,55 @@ class AstBuilder {
       expr = { type: 'Negate', position: pos(ctx), operand: expr };
     }
     return expr;
+  }
+
+  /** `subject[index]` or `subject[from..to]` (either bound may be missing). */
+  private listOperator(
+    ctx: OC_ListOperatorExpressionContext,
+    subject: ast.Expression,
+  ): ast.Expression {
+    const children = ctx.children ?? [];
+    const dots = children.findIndex(
+      (child) => !(child instanceof ParserRuleContext) && child.getText() === '..',
+    );
+    if (dots < 0) {
+      return {
+        type: 'Index',
+        position: pos(ctx),
+        subject,
+        index: this.expression(ctx.oC_Expression(0)!),
+      };
+    }
+    const bound = (child: unknown): ast.Expression | undefined =>
+      child instanceof OC_ExpressionContext ? this.expression(child) : undefined;
+    return {
+      type: 'Slice',
+      position: pos(ctx),
+      subject,
+      from: children
+        .slice(0, dots)
+        .map(bound)
+        .find((e) => e !== undefined),
+      to: children
+        .slice(dots + 1)
+        .map(bound)
+        .find((e) => e !== undefined),
+    };
+  }
+
+  /** `variable IN list [WHERE condition]` of a list comprehension or quantifier. */
+  private filterExpression(ctx: OC_FilterExpressionContext): {
+    variable: string;
+    list: ast.Expression;
+    where: ast.Expression | undefined;
+  } {
+    const idInColl = ctx.oC_IdInColl();
+    const where = ctx.oC_Where();
+    return {
+      variable: this.symbolicName(idInColl.oC_Variable().oC_SymbolicName()),
+      list: this.expression(idInColl.oC_Expression()),
+      where: where ? this.expression(where.oC_Expression()) : undefined,
+    };
   }
 
   /** `negate` folds a leading unary minus into a number literal. */
@@ -561,15 +618,36 @@ class AstBuilder {
     if (ctx.COUNT()) {
       return { type: 'CountStar', position: pos(ctx) };
     }
+    const comprehension = ctx.oC_ListComprehension();
+    if (comprehension) {
+      const projection = comprehension.oC_Expression();
+      return {
+        type: 'ListComprehension',
+        position: pos(ctx),
+        ...this.filterExpression(comprehension.oC_FilterExpression()),
+        projection: projection ? this.expression(projection) : undefined,
+      };
+    }
+    const quantifier = ctx.oC_Quantifier();
+    if (quantifier) {
+      return {
+        type: 'Quantifier',
+        position: pos(ctx),
+        quantifier: quantifier.ALL()
+          ? 'all'
+          : quantifier.ANY()
+            ? 'any'
+            : quantifier.NONE()
+              ? 'none'
+              : 'single',
+        ...this.filterExpression(quantifier.oC_FilterExpression()!),
+      };
+    }
     let description: string;
     if (ctx.oC_CaseExpression()) {
       description = 'CASE expressions';
-    } else if (ctx.oC_ListComprehension()) {
-      description = 'list comprehensions';
     } else if (ctx.oC_PatternComprehension()) {
       description = 'pattern comprehensions';
-    } else if (ctx.oC_Quantifier()) {
-      description = 'list quantifiers (all, any, none, single)';
     } else if (ctx.oC_PatternPredicate()) {
       description = 'pattern predicates';
     } else {

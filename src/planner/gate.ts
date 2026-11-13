@@ -1,5 +1,7 @@
 import type * as ast from '../ast.js';
 import { ReadOnlyViolationError, SemanticError, UnsupportedFeatureError } from '../errors.js';
+import { containsAggregate } from './aggregates.js';
+import { children } from './walk.js';
 
 /** True when the query contains any clause that modifies the graph. */
 export function hasWriteClause(query: ast.Query): boolean {
@@ -81,30 +83,26 @@ function patternExpressions(pattern: ast.PatternPart[]): ast.Expression[] {
   );
 }
 
+/**
+ * The first unsupported construct in the expression. Also rejects aggregates in
+ * the WHERE or projection of a list comprehension or quantifier, which would
+ * aggregate over the list's elements.
+ */
 function findUnsupported(expr: ast.Expression): ast.UnsupportedExpression | undefined {
-  switch (expr.type) {
-    case 'UnsupportedExpression':
-      return expr;
-    case 'List':
-      return firstDefined(expr.items.map(findUnsupported));
-    case 'Map':
-      return firstDefined(expr.entries.map((e) => findUnsupported(e.value)));
-    case 'PropertyAccess':
-    case 'HasLabels':
-      return findUnsupported(expr.subject);
-    case 'Binary':
-      return findUnsupported(expr.left) ?? findUnsupported(expr.right);
-    case 'FunctionCall':
-      return firstDefined(expr.args.map(findUnsupported));
-    case 'Not':
-    case 'Negate':
-    case 'IsNull':
-      return findUnsupported(expr.operand);
-    default:
-      return undefined;
+  if (expr.type === 'UnsupportedExpression') {
+    return expr;
   }
-}
-
-function firstDefined<T>(values: (T | undefined)[]): T | undefined {
-  return values.find((v) => v !== undefined);
+  for (const { child, local } of children(expr)) {
+    if (local !== undefined && containsAggregate(child)) {
+      throw new SemanticError(
+        'Aggregate functions cannot be used in a list comprehension or quantifier',
+        { position: child.position },
+      );
+    }
+    const found = findUnsupported(child);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
 }

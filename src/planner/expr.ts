@@ -83,19 +83,68 @@ export class ExprCompiler {
    * BY), or not because we are inside one already (`inside`).
    */
   public aggregation: 'none' | 'allowed' | 'inside' = 'none';
+  /**
+   * The element variables of the list comprehensions and quantifiers being
+   * compiled, innermost last. They hide variables of the same name.
+   */
+  private readonly locals: { name: string; binding: VariableBinding }[] = [];
 
   public constructor(
     public readonly b: SqlBuilder,
     private readonly lookup: (variable: ast.Variable) => VariableBinding,
   ) {}
 
+  private resolve(variable: ast.Variable): VariableBinding {
+    for (let i = this.locals.length - 1; i >= 0; i--) {
+      const local = this.locals[i]!;
+      if (local.name === variable.name) {
+        return local.binding;
+      }
+    }
+    return this.lookup(variable);
+  }
+
+  /**
+   * Runs `f` with `name` bound to the JSON value `sql`, an element of the list
+   * `list`. When `list` is a list literal of literals of one type, the element
+   * has that type, so that misuse is a compile-time type error.
+   */
+  private inScope<T>(name: string, list: ast.Expression, sql: string, f: () => T): T {
+    const aggregation = this.aggregation;
+    const type = literalElementType(list);
+    this.locals.push({
+      name,
+      binding:
+        type === undefined
+          ? { kind: 'value', sql }
+          : {
+              kind: 'column',
+              expr: { sql: this.b.dialect.fromJson(sql, type), type, atomic: false },
+            },
+    });
+    // The gate rejects aggregates here; this keeps them from compiling regardless.
+    this.aggregation = 'none';
+    try {
+      return f();
+    } finally {
+      this.locals.pop();
+      this.aggregation = aggregation;
+    }
+  }
+
   /**
    * Compiles an expression. Equal expressions compile to the same SQL text (with
    * the same bind markers), which GROUP BY relies on, except when they call
-   * rand(), whose calls must stay independent.
+   * rand(), whose calls must stay independent. Inside a list comprehension the
+   * same expression can mean something else, so the cache key includes the
+   * element variables in scope.
    */
   public compile(expr: ast.Expression): Expr {
-    const key = expressionKey(expr);
+    const base = expressionKey(expr);
+    const key =
+      base === undefined || this.locals.length === 0
+        ? base
+        : `${JSON.stringify(this.locals)}${base}`;
     const cached = key === undefined ? undefined : this.compiled.get(key);
     if (cached) {
       return cached;
@@ -142,7 +191,7 @@ export class ExprCompiler {
         return { sql, type: 'json', atomic: false, shape };
       }
       case 'Variable': {
-        const binding = this.lookup(expr);
+        const binding = this.resolve(expr);
         if (binding.kind === 'value') {
           return { ...json(binding.sql, /^[\w."]+$/.test(binding.sql)), shape: binding.shape };
         }
@@ -180,6 +229,14 @@ export class ExprCompiler {
       }
       case 'CountStar':
         return compileAggregate(this, expr);
+      case 'Index':
+        return this.index(expr);
+      case 'Slice':
+        return this.slice(expr);
+      case 'ListComprehension':
+        return this.comprehension(expr);
+      case 'Quantifier':
+        return this.quantifier(expr);
       case 'UnsupportedExpression':
         throw new UnsupportedFeatureError(`${expr.description} are not supported yet`, {
           position: expr.position,
@@ -197,7 +254,7 @@ export class ExprCompiler {
     if (expr.type !== 'Variable') {
       return undefined;
     }
-    const binding = this.lookup(expr);
+    const binding = this.resolve(expr);
     return binding.kind === 'relationships' ? binding.path : undefined;
   }
 
@@ -704,6 +761,219 @@ export class ExprCompiler {
     );
   }
 
+  // ---- lists -------------------------------------------------------------------
+
+  /**
+   * The operand of a list operation, checked to be a list where its type is
+   * known; undefined when it is the null literal (the result is null).
+   */
+  private listOperand(e: Expr, position: SourcePosition): Expr | undefined {
+    if (e.type === 'null') {
+      return undefined;
+    }
+    if (e.type !== 'json' || (e.shape !== undefined && e.shape !== 'list')) {
+      throw typeError('a list', e.shape ?? e.type, position);
+    }
+    return e;
+  }
+
+  /**
+   * `subject[index]`: the element of a list at an integer index (negative counts
+   * from the end, out of range is null), or the value of a map, node, or
+   * relationship under a string key. Other combinations are type errors when
+   * the types are known, and null at run time otherwise (#30).
+   */
+  private index(expr: ast.IndexExpression): Expr {
+    const b = this.b;
+    const d = b.dialect;
+    let subject = this.compile(expr.subject);
+    const index = this.compile(expr.index);
+    if (subject.type === 'null' || index.type === 'null') {
+      return { sql: 'NULL', type: 'null', atomic: true };
+    }
+    const key = expr.index.type === 'Literal' ? expr.index.value : undefined;
+    if (subject.type === 'node' || subject.type === 'relationship') {
+      if (typeof key === 'string') {
+        return this.member({ kind: subject.type, alias: subject.sql }, key);
+      }
+      // By a computed key: look it up in the properties.
+      const table = b.mapping[subject.type === 'node' ? 'nodes' : 'edges'];
+      subject = {
+        sql: `${subject.sql}.${b.ident(table.properties)}`,
+        type: 'json',
+        atomic: true,
+        shape: 'map',
+      };
+    }
+    if (subject.type !== 'json' || subject.shape === 'path') {
+      throw typeError('a list or a map', subject.shape ?? subject.type, expr.subject.position);
+    }
+    const lists = subject.shape !== 'map';
+    const maps = subject.shape !== 'list';
+    if (index.type !== 'integer' && index.type !== 'string' && index.type !== 'json') {
+      throw typeError('an integer or a string', index.type, expr.index.position);
+    }
+    if ((index.type === 'integer' && !lists) || (index.type === 'string' && !maps)) {
+      throw typeError(lists ? 'an integer' : 'a string', index.type, expr.index.position);
+    }
+    if (typeof key === 'string') {
+      // A constant key: a plain member access (an index on it can be used).
+      return json(d.jsonMember(subject.sql, b.bind({ kind: 'sql', value: key }), key), false);
+    }
+    return json(
+      this.share([subject, index], ([s, i]) => {
+        const arms: string[] = [];
+        const indexIs = (type: string): string =>
+          index.type === 'json' ? ` AND ${i!.jsonType} = '${type}'` : '';
+        if (lists && index.type !== 'string') {
+          const n = index.type === 'json' ? d.fromJson(i!.sql, 'integer') : i!.sql;
+          arms.push(
+            `WHEN ${s!.jsonType} = 'list'${indexIs('integer')} THEN ${d.jsonElement(s!.sql, n)}`,
+          );
+        }
+        if (maps && index.type !== 'integer') {
+          const k = index.type === 'json' ? d.fromJson(i!.sql, 'string') : i!.sql;
+          arms.push(
+            `WHEN ${s!.jsonType} IN ('map', 'node', 'relationship')${indexIs('string')} ` +
+              `THEN ${d.jsonMemberAt(s!.sql, k)}`,
+          );
+        }
+        return `(CASE ${arms.join(' ')} END)`;
+      }),
+      false,
+    );
+  }
+
+  /**
+   * `list[from..to]`: the elements from position `from` up to (not including)
+   * `to`. Negative bounds count from the end, bounds out of range are clamped,
+   * and a missing bound is open; a null bound gives null.
+   */
+  private slice(expr: ast.SliceExpression): Expr {
+    const d = this.b.dialect;
+    const list = this.listOperand(this.compile(expr.subject), expr.subject.position);
+    const bounds = [expr.from, expr.to].map((bound) =>
+      bound === undefined ? undefined : { expr: this.compile(bound), position: bound.position },
+    );
+    if (!list || bounds.some((bound) => bound?.expr.type === 'null')) {
+      return { sql: 'NULL', type: 'null', atomic: true };
+    }
+    for (const bound of bounds) {
+      if (bound && bound.expr.type !== 'integer' && bound.expr.type !== 'json') {
+        throw typeError('an integer', bound.expr.type, bound.position);
+      }
+    }
+    const given = bounds.filter((bound) => bound !== undefined).map((bound) => bound.expr);
+    const sql = this.share([list, ...given], ([l, ...shared]) => {
+      const length = d.listLength(l!.sql);
+      const conditions = [`${l!.jsonType} = 'list'`];
+      let next = 0;
+      const position = (bound: (typeof bounds)[number], open: string): string => {
+        if (!bound) {
+          return open;
+        }
+        const s = shared[next++]!;
+        let value = s.sql;
+        if (s.type === 'json') {
+          // A bound that is not an integer is a type error in Cypher; here it gives null.
+          value = `(CASE WHEN ${s.jsonType} = 'integer' THEN ${d.fromJson(s.sql, 'integer')} END)`;
+        }
+        conditions.push(`${value} IS NOT NULL`);
+        return `(CASE WHEN ${value} < 0 THEN ${length} + ${value} ELSE ${value} END)`;
+      };
+      const from = position(bounds[0], '0');
+      const to = position(bounds[1], length);
+      const n = this.aliases++;
+      const u = d.unwind(l!.sql, `ls${n}`);
+      const elements = d.jsonAggregate(u.value, {
+        distinct: false,
+        orderBy: [u.order],
+        filter: `${u.index} >= ${from} AND ${u.index} < ${to}`,
+      });
+      return (
+        `(CASE WHEN ${conditions.join(' AND ')} THEN (SELECT ${elements} FROM ${u.from}` +
+        `${u.where ? ` WHERE ${u.where}` : ''}) END)`
+      );
+    });
+    return { ...json(sql, false), shape: 'list' };
+  }
+
+  /** `[x IN list WHERE condition | projection]`: a list in the order of `list`. */
+  private comprehension(expr: ast.ListComprehension): Expr {
+    const d = this.b.dialect;
+    const list = this.listOperand(this.compile(expr.list), expr.list.position);
+    if (!list) {
+      return { sql: 'NULL', type: 'null', atomic: true };
+    }
+    const sql = this.share([list], ([l]) => {
+      const u = d.unwind(l!.sql, `lc${this.aliases++}`);
+      const [filter, value] = this.inScope(expr.variable, expr.list, u.value, () => [
+        expr.where ? this.condition(expr.where) : d.booleanLiteral(true),
+        expr.projection ? this.json(expr.projection) : u.value,
+      ]);
+      const elements = d.jsonAggregate(value, { distinct: false, orderBy: [u.order], filter });
+      return (
+        `(CASE WHEN ${l!.jsonType} = 'list' THEN (SELECT ${elements} FROM ${u.from}` +
+        `${u.where ? ` WHERE ${u.where}` : ''}) END)`
+      );
+    });
+    return { ...json(sql, false), shape: 'list' };
+  }
+
+  /**
+   * `all(x IN list WHERE condition)`, `any`, `none`, `single`, with Cypher's
+   * three-valued logic: a null condition makes the result null unless the
+   * elements that are not null decide it.
+   */
+  private quantifier(expr: ast.QuantifierExpression): Expr {
+    const d = this.b.dialect;
+    if (!expr.where) {
+      throw new SemanticError(`${expr.quantifier}(...) requires a WHERE condition`, {
+        position: expr.position,
+        hint: `For example: ${expr.quantifier}(x IN list WHERE x > 0)`,
+      });
+    }
+    const where = expr.where;
+    const list = this.listOperand(this.compile(expr.list), expr.list.position);
+    if (!list) {
+      return boolean(d.booleanLiteral(null));
+    }
+    return boolean(
+      this.share([list], ([l]) => {
+        const n = this.aliases++;
+        const u = d.unwind(l!.sql, `lq${n}`);
+        const condition = this.inScope(expr.variable, expr.list, u.value, () =>
+          this.condition(where),
+        );
+        return (
+          `(CASE WHEN ${l!.jsonType} = 'list' THEN (SELECT ${this.quantify('p', expr.quantifier)} ` +
+          `FROM (SELECT ${condition} AS p FROM ${u.from}${u.where ? ` WHERE ${u.where}` : ''}) AS q${n}) END)`
+        );
+      }),
+    );
+  }
+
+  /** A quantifier as an aggregate over the boolean column `column` (one row per element). */
+  private quantify(column: string, kind: ast.QuantifierExpression['quantifier']): string {
+    const d = this.b.dialect;
+    switch (kind) {
+      case 'any':
+      case 'all':
+        return `(${this.anyAll(column, kind)})`;
+      case 'none':
+        return `(NOT (${this.anyAll(column, 'any')}))`;
+      case 'single': {
+        const count = (condition: string): string =>
+          `SUM(CASE WHEN ${condition} THEN 1 ELSE 0 END)`;
+        return (
+          `(CASE WHEN ${count(column)} > 1 THEN ${d.booleanLiteral(false)} ` +
+          `WHEN ${count(`${column} IS NULL`)} > 0 THEN NULL ` +
+          `WHEN ${count(column)} = 1 THEN ${d.booleanLiteral(true)} ELSE ${d.booleanLiteral(false)} END)`
+        );
+      }
+    }
+  }
+
   // ---- arithmetic --------------------------------------------------------------
 
   private negate(expr: ast.NegateExpression): Expr {
@@ -859,6 +1129,33 @@ function expressionKey(expr: ast.Expression): string | undefined {
     return typeof value === 'bigint' ? `${value}n` : value;
   });
   return random ? undefined : key;
+}
+
+/**
+ * The type of every element of a list literal whose elements are all non-null
+ * literals of one type; undefined otherwise (also for an empty list).
+ */
+function literalElementType(list: ast.Expression): ScalarType | undefined {
+  if (list.type !== 'List' || list.items.length === 0) {
+    return undefined;
+  }
+  const types = new Set(
+    list.items.map((item) => {
+      if (item.type !== 'Literal' || item.value === null) {
+        return undefined;
+      }
+      const value = item.value;
+      return typeof value === 'bigint'
+        ? 'integer'
+        : typeof value === 'number'
+          ? 'float'
+          : typeof value === 'boolean'
+            ? 'boolean'
+            : 'string';
+    }),
+  );
+  const [type] = types;
+  return types.size === 1 ? type : undefined;
 }
 
 function json(sql: string, atomic: boolean): Expr {
