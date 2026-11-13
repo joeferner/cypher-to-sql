@@ -13,14 +13,18 @@ interface SelectOptions {
 }
 
 /**
- * Adds ORDER BY, LIMIT (always: the row limit), and OFFSET to `sql`. With
- * `distinct`, sorting happens outside: the DISTINCT rows become the derived
- * table `d`, and `orderBy` must refer to its columns.
+ * Adds ORDER BY, LIMIT, and OFFSET to `sql`. With `distinct`, sorting happens
+ * outside: the DISTINCT rows become the derived table `d`, and `orderBy` must
+ * refer to its columns.
+ *
+ * The final SELECT of a step (`capped`) always has a LIMIT: the query's LIMIT
+ * or the row limit, whichever is lower. A WITH stage has only the query's LIMIT,
+ * so that its rows are never cut short silently.
  */
 function finishSelect(
   b: SqlBuilder,
   sql: string,
-  options: SelectOptions & { implicitOrder?: string[] },
+  options: SelectOptions & { implicitOrder?: string[]; capped?: boolean },
 ): string {
   const orderBy = options.orderBy ?? [];
   if (options.distinct) {
@@ -33,7 +37,13 @@ function finishSelect(
       sql += ` ORDER BY ${order.join(', ')}`;
     }
   }
-  sql += ` LIMIT ${b.bind({ kind: 'rowLimit', userLimit: options.limit })}`;
+  if (options.capped ?? true) {
+    sql += ` LIMIT ${b.bind({ kind: 'rowLimit', userLimit: options.limit })}`;
+  } else if (options.limit) {
+    sql += ` LIMIT ${b.bind({ kind: 'stageLimit', limit: options.limit })}`;
+  } else if (options.skip) {
+    sql += ` LIMIT ${b.dialect.limitAll}`;
+  }
   if (options.skip) {
     sql += ` OFFSET ${b.bind({ kind: 'rowOffset', skip: options.skip })}`;
   }
@@ -57,23 +67,100 @@ export class ReadScope {
   private readonly where: string[] = [];
   /** Expressions that order rows the way Cypher produces them (one per FROM item). */
   private readonly order: string[] = [];
-  private hasUnwind = false;
+  /**
+   * True when the rows have an order to keep (from UNWIND, or from an earlier
+   * stage's ORDER BY or UNWIND); `order` then gives it.
+   */
+  public ordered = false;
   public readonly expressions: ExprCompiler;
 
   public constructor(public readonly b: SqlBuilder) {
     this.expressions = new ExprCompiler(b, (variable) => this.lookup(variable));
   }
 
-  public static of(b: SqlBuilder, clauses: ast.ReadingClause[]): ReadScope {
-    const scope = new ReadScope(b);
+  /**
+   * The scope after the given clauses. Each WITH ends a stage: the rows so far
+   * become a derived table, and a new scope starts with only the projected
+   * variables.
+   */
+  public static of(b: SqlBuilder, clauses: ast.RowClause[]): ReadScope {
+    let scope = new ReadScope(b);
     for (const clause of clauses) {
       if (clause.type === 'Match') {
         scope.addMatch(clause);
-      } else {
+      } else if (clause.type === 'Unwind') {
         scope.addUnwind(clause);
+      } else {
+        scope = scope.project(clause);
       }
     }
     return scope;
+  }
+
+  /** The scope after `WITH`: the projected rows as the derived table `w0`. */
+  private project(w: ast.WithClause): ReadScope {
+    const filterFirst = w.where !== undefined && this.whereBeforeProjection(w);
+    if (filterFirst) {
+      const projected = new Map(w.items.map((item) => [item.name, item.expression]));
+      this.where.push(this.expressions.condition(substituteAliases(w.where!, projected)));
+    }
+    const stage = planProjection(this.b, this, w, 'with');
+    const next = new ReadScope(this.b);
+    const alias = 'w0';
+    next.from.push(`(${stage.sql}) AS ${alias}`);
+    if (stage.ordered) {
+      next.order.push(`${alias}.o`);
+      next.ordered = true;
+    }
+    for (const output of stage.outputs) {
+      if (output.kind === 'value') {
+        const sql = output.expr.type === 'null' ? 'NULL' : `${alias}.${output.column}`;
+        next.bindings.set(output.name, {
+          kind: 'column',
+          expr: { ...output.expr, sql, atomic: true },
+        });
+        continue;
+      }
+      // An entity is carried as its id and joined back to its table, so that
+      // everything that works on entities works on it.
+      const table = output.kind === 'node' ? 'nodes' : 'edges';
+      const entity = `${output.kind === 'node' ? 'n' : 'e'}${next.from.length}`;
+      next.from.push(`${this.b.table(table)} AS ${entity}`);
+      next.where.push(
+        `${entity}.${this.b.ident(this.b.mapping[table].id)} = ${alias}.${output.column}`,
+      );
+      next.bindings.set(output.name, { kind: output.kind, alias: entity });
+    }
+    if (w.where && !filterFirst) {
+      // An expression equal to a projected one (`a.x` after `WITH DISTINCT a.x AS x`)
+      // refers to the projected value.
+      next.where.push(next.expressions.condition(replaceProjected(w.where, w.items)));
+    }
+    return next;
+  }
+
+  /**
+   * True when WITH's WHERE uses a variable from before the WITH that the WITH
+   * does not project (Cypher allows that). Without aggregation or DISTINCT each
+   * row projects to one row, so the filter can be applied before projecting.
+   */
+  private whereBeforeProjection(w: ast.WithClause): boolean {
+    const names = new Set([...w.items.map((i) => i.name), ...(w.star ? this.variables : [])]);
+    const outside = freeVariables(w.where!).filter((name) => !names.has(name));
+    if (outside.length === 0) {
+      return false;
+    }
+    if (w.distinct || w.items.some((item) => containsAggregate(item.expression))) {
+      // Not visible after DISTINCT or aggregation: the WHERE fails to compile later.
+      return false;
+    }
+    if (w.skip || w.limit) {
+      throw new UnsupportedFeatureError(
+        `WITH ... WHERE using \`${outside[0]}\`, which WITH does not project, together with SKIP or LIMIT is not supported yet`,
+        { position: w.where!.position, hint: `Add ${outside[0]} to the WITH items.` },
+      );
+    }
+    return true;
   }
 
   public get variables(): string[] {
@@ -271,7 +358,7 @@ export class ReadScope {
       this.where.push(u.where);
     }
     this.order.push(u.order);
-    this.hasUnwind = true;
+    this.ordered = true;
     this.bindings.set(unwind.variable, { kind: 'value', sql: u.value });
   }
 
@@ -295,13 +382,16 @@ export class ReadScope {
     return sql;
   }
 
-  /** The SELECT over this scope, with ORDER BY, SKIP, and the row limit. */
-  public select(columns: string[], options: SelectOptions = {}): string {
+  /**
+   * The SELECT over this scope, with ORDER BY, SKIP, and LIMIT (with the row
+   * limit unless `capped` is false).
+   */
+  public select(columns: string[], options: SelectOptions & { capped?: boolean } = {}): string {
     return finishSelect(this.b, this.selectBase(columns, options.distinct), {
       ...options,
       // UNWIND defines the order of its rows; keep it (nested-loop order across
       // FROM items) where ORDER BY leaves ties.
-      implicitOrder: this.hasUnwind ? this.order : [],
+      implicitOrder: this.ordered ? this.order : [],
     });
   }
 }
@@ -334,39 +424,73 @@ export class RowSource {
   }
 }
 
-/**
- * Plans `MATCH ... / UNWIND ... RETURN ...` as a single SELECT.
- *
- * Supported so far: node patterns with labels (several patterns form a Cartesian
- * product), UNWIND, and RETURN of node variables, properties, unwound values, and
- * constants, with LIMIT.
- */
+/** Plans `MATCH ... / UNWIND ... / WITH ... RETURN ...` as one SELECT. */
 export function planRead(
   b: SqlBuilder,
-  clauses: ast.ReadingClause[],
+  clauses: ast.RowClause[],
   ret: ast.ReturnClause,
 ): { step: PlanStep; columns: ColumnSpec[] } {
-  const scope = ReadScope.of(b, clauses);
+  const result = planProjection(b, ReadScope.of(b, clauses), ret, 'return');
+  return { step: b.finish(result.sql), columns: result.columns };
+}
 
-  const items: ast.ProjectionItem[] = [...ret.items];
-  if (ret.star) {
+/** A projected value of a WITH stage: a column of the stage's derived table. */
+type StageOutput =
+  | { name: string; kind: 'node' | 'relationship'; column: string }
+  | { name: string; kind: 'value'; column: string; expr: Expr };
+
+interface ProjectionResult {
+  sql: string;
+  /** For RETURN: how to build the result columns. */
+  columns: ColumnSpec[];
+  /** For WITH: the stage's columns. */
+  outputs: StageOutput[];
+  /** For WITH: the stage has an order to keep, in its column `o`. */
+  ordered: boolean;
+}
+
+type ProjectionMode = 'return' | 'with';
+
+/**
+ * A RETURN or WITH over a scope: its items, DISTINCT, aggregation, ORDER BY,
+ * SKIP, and LIMIT. RETURN gives the result columns; WITH gives raw columns
+ * (JSON stays JSON, entities are their ids) for the next stage.
+ */
+function planProjection(
+  b: SqlBuilder,
+  scope: ReadScope,
+  proj: ast.ReturnClause | ast.WithClause,
+  mode: ProjectionMode,
+): ProjectionResult {
+  const clause = mode === 'return' ? 'RETURN' : 'WITH';
+  const items: ast.ProjectionItem[] = [...proj.items];
+  if (proj.star) {
     if (scope.variables.length === 0) {
-      throw new SemanticError('RETURN * is not allowed when there are no variables in scope', {
-        position: ret.position,
+      throw new SemanticError(`${clause} * is not allowed when there are no variables in scope`, {
+        position: proj.position,
       });
     }
     const starItems = scope.variables.sort().map((name): ast.ProjectionItem => ({
-      position: ret.position,
-      expression: { type: 'Variable', position: ret.position, name },
+      position: proj.position,
+      expression: { type: 'Variable', position: proj.position, name },
       alias: undefined,
       name,
     }));
     items.unshift(...starItems);
   }
-
+  if (mode === 'with') {
+    for (const item of items) {
+      if (item.alias === undefined && item.expression.type !== 'Variable') {
+        throw new SemanticError('An expression in WITH must be given a name with AS', {
+          position: item.position,
+          hint: `For example: WITH ${item.name} AS value`,
+        });
+      }
+    }
+  }
   checkUniqueNames(items);
   if (items.some((item) => containsAggregate(item.expression))) {
-    return planAggregation(b, scope, items, ret);
+    return planAggregation(b, scope, items, proj, mode);
   }
 
   const values = (item: ast.ProjectionItem): ItemValue => {
@@ -377,14 +501,14 @@ export function planRead(
     }
     return { kind: 'value', expr: scope.expressions.compile(expr) };
   };
-  const { select, columns } = projectItems(b, items, values);
+  const { select, columns, outputs } = projectItems(b, items, values, mode);
 
   // ORDER BY sees the projection's names (which hide variables of the same
   // name) and, without DISTINCT, every variable in scope.
   const projected = new Map(items.map((item) => [item.name, item.expression]));
-  const orderBy = orderTerms(ret, items, select, scope.expressions, (expr) => {
+  const orderBy = orderTerms(proj, items, select, scope.expressions, (expr) => {
     if (containsAggregate(expr)) {
-      throw new SemanticError('ORDER BY can use aggregates only when RETURN aggregates', {
+      throw new SemanticError(`ORDER BY can use aggregates only when ${clause} aggregates`, {
         position: expr.position,
       });
     }
@@ -392,12 +516,36 @@ export function planRead(
   });
 
   const sql = scope.select(select, {
-    distinct: ret.distinct,
+    distinct: proj.distinct,
     orderBy,
-    skip: ret.skip ? rowCount(ret.skip, 'SKIP') : undefined,
-    limit: ret.limit ? rowCount(ret.limit, 'LIMIT') : undefined,
+    skip: proj.skip ? rowCount(proj.skip, 'SKIP') : undefined,
+    limit: proj.limit ? rowCount(proj.limit, 'LIMIT') : undefined,
+    capped: mode === 'return',
   });
-  return { step: b.finish(sql), columns };
+  const ordered = orderBy.length > 0 || (scope.ordered && !proj.distinct);
+  return stageResult(sql, columns, outputs, mode, ordered);
+}
+
+/**
+ * For WITH, a stage whose rows have an order (ORDER BY, or UNWIND before it)
+ * numbers them in column `o`, so that later stages can keep that order.
+ */
+function stageResult(
+  sql: string,
+  columns: ColumnSpec[],
+  outputs: StageOutput[],
+  mode: ProjectionMode,
+  ordered: boolean,
+): ProjectionResult {
+  if (mode === 'with' && ordered) {
+    return {
+      sql: `SELECT s.*, row_number() OVER () AS o FROM (${sql}) AS s`,
+      columns,
+      outputs,
+      ordered,
+    };
+  }
+  return { sql, columns, outputs, ordered: false };
 }
 
 function checkUniqueNames(items: ast.ProjectionItem[]): void {
@@ -456,13 +604,31 @@ function projectItems(
   b: SqlBuilder,
   items: ast.ProjectionItem[],
   value: (item: ast.ProjectionItem) => ItemValue,
-): { select: string[]; columns: ColumnSpec[] } {
+  mode: ProjectionMode,
+): { select: string[]; columns: ColumnSpec[]; outputs: StageOutput[] } {
   const d = b.dialect;
   const select: string[] = [];
   const columns: ColumnSpec[] = [];
-  for (const item of items) {
-    const c = `c${columns.length}`;
+  const outputs: StageOutput[] = [];
+  for (const [i, item] of items.entries()) {
+    const c = `c${i}`;
     const v = value(item);
+    if (mode === 'with') {
+      // Raw columns for the next stage: an entity's id, or the value itself.
+      if (v.kind === 'node' || v.kind === 'relationship') {
+        select.push(`${v.id} AS ${c}`);
+        outputs.push({ name: item.name, kind: v.kind, column: c });
+      } else if (v.expr.type === 'node' || v.expr.type === 'relationship') {
+        throw new UnsupportedFeatureError(
+          `Projecting this ${v.expr.type} expression is not supported yet`,
+          { position: item.expression.position },
+        );
+      } else {
+        select.push(`${v.expr.type === 'null' ? d.jsonInput('NULL') : v.expr.sql} AS ${c}`);
+        outputs.push({ name: item.name, kind: 'value', column: c, expr: v.expr });
+      }
+      continue;
+    }
     if (v.kind === 'node') {
       select.push(
         `${v.id} AS ${c}_id`,
@@ -507,7 +673,7 @@ function projectItems(
       columns.push({ name: item.name, kind: 'scalar', type: v.expr.type, column: c });
     }
   }
-  return { select, columns };
+  return { select, columns, outputs };
 }
 
 /**
@@ -516,7 +682,7 @@ function projectItems(
  * which rows are distinct) and the terms refer to the derived table `d`.
  */
 function orderTerms(
-  ret: ast.ReturnClause,
+  ret: ast.ReturnClause | ast.WithClause,
   items: ast.ProjectionItem[],
   select: string[],
   compiler: ExprCompiler,
@@ -555,8 +721,9 @@ function planAggregation(
   b: SqlBuilder,
   scope: ReadScope,
   items: ast.ProjectionItem[],
-  ret: ast.ReturnClause,
-): { step: PlanStep; columns: ColumnSpec[] } {
+  ret: ast.ReturnClause | ast.WithClause,
+  mode: ProjectionMode,
+): ProjectionResult {
   const keys = items.filter((item) => !containsAggregate(item.expression));
   for (const item of items) {
     if (containsAggregate(item.expression)) {
@@ -652,18 +819,36 @@ function planAggregation(
     return binding;
   });
 
-  const { select, columns } = projectItems(b, items, (item) => {
-    const key = keyValues.get(item);
-    if (key) {
-      return key;
-    }
-    return { kind: 'value', expr: outerCompiler.compile(rewrite(item.expression)) };
-  });
+  const { select, columns, outputs } = projectItems(
+    b,
+    items,
+    (item) => {
+      const key = keyValues.get(item);
+      if (key) {
+        return key;
+      }
+      return { kind: 'value', expr: outerCompiler.compile(rewrite(item.expression)) };
+    },
+    mode,
+  );
 
   const projected = new Map(items.map((item) => [item.name, item.expression]));
   const orderBy = orderTerms(ret, items, select, outerCompiler, (expr) => {
     if (containsAggregate(expr)) {
       checkGroupedOnly(expr, keys);
+      // ORDER BY may use only aggregates that are also projected.
+      const projectedAggregates = items.flatMap((item) => aggregatesIn(item.expression));
+      for (const aggregate of aggregatesIn(substituteAliases(expr, projected))) {
+        if (!projectedAggregates.some((p) => sameExpression(p, aggregate))) {
+          throw new SemanticError(
+            'ORDER BY after aggregation can use only aggregates that are projected',
+            {
+              position: aggregate.position,
+              hint: 'Project the aggregate with AS and sort by its name.',
+            },
+          );
+        }
+      }
     } else {
       checkProjectedOnly(expr, items);
     }
@@ -679,9 +864,47 @@ function planAggregation(
       orderBy,
       skip: ret.skip ? rowCount(ret.skip, 'SKIP') : undefined,
       limit: ret.limit ? rowCount(ret.limit, 'LIMIT') : undefined,
+      capped: mode === 'return',
     },
   );
-  return { step: b.finish(sql), columns };
+  return stageResult(sql, columns, outputs, mode, orderBy.length > 0);
+}
+
+/** The aggregate calls in an expression (not looking inside them). */
+function aggregatesIn(expr: ast.Expression): ast.Expression[] {
+  if (expr.type === 'CountStar' || (expr.type === 'FunctionCall' && isAggregateCall(expr))) {
+    return [expr];
+  }
+  const found: ast.Expression[] = [];
+  mapChildren(expr, (child) => {
+    found.push(...aggregatesIn(child));
+    return child;
+  });
+  return found;
+}
+
+/** Replaces subexpressions equal to a projection item's expression with the item's name. */
+function replaceProjected(expr: ast.Expression, items: ast.ProjectionItem[]): ast.Expression {
+  const item = items.find(
+    (i) => i.expression.type !== 'Variable' && sameExpression(i.expression, expr),
+  );
+  if (item) {
+    return { type: 'Variable', position: expr.position, name: item.name };
+  }
+  return mapChildren(expr, (child) => replaceProjected(child, items));
+}
+
+/** The names of the variables an expression uses. */
+function freeVariables(expr: ast.Expression): string[] {
+  if (expr.type === 'Variable') {
+    return [expr.name];
+  }
+  const names: string[] = [];
+  mapChildren(expr, (child) => {
+    names.push(...freeVariables(child));
+    return child;
+  });
+  return names;
 }
 
 /** The synthetic variable for grouping key `i` in the outer query of an aggregation. */

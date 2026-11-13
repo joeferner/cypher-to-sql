@@ -48,6 +48,14 @@ function clauseExpressions(clause: ast.Clause): ast.Expression[] {
       return [clause.expression];
     case 'Create':
       return patternExpressions(clause.pattern);
+    case 'With':
+      return [
+        ...clause.items.map((i) => i.expression),
+        ...clause.orderBy.map((o) => o.expression),
+        ...(clause.skip ? [clause.skip] : []),
+        ...(clause.limit ? [clause.limit] : []),
+        ...(clause.where ? [clause.where] : []),
+      ];
     case 'Return':
       return [
         ...clause.items.map((i) => i.expression),

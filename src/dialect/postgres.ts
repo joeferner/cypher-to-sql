@@ -173,6 +173,7 @@ export function postgres(): Dialect {
       );
     },
     noFlatten: ' OFFSET 0',
+    limitAll: 'ALL',
     unwind: (listExpr, alias) => ({
       // jsonb_array_elements raises an error for a non-array, so a scalar is a
       // separate branch. SQL NULL and JSON null give no rows.

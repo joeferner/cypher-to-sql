@@ -116,8 +116,24 @@ describe('parse: clauses', () => {
 
   it('rejects constructs that change the query shape', () => {
     expect(() => parse('CALL db.labels()')).toThrow(UnsupportedFeatureError);
-    expect(() => parse('MATCH (n) WITH n RETURN n')).toThrow(/WITH is not supported/);
     expect(() => parse('RETURN 1 UNION RETURN 2')).toThrow(/UNION is not supported/);
+  });
+
+  it('parses query parts ending in WITH, in order', () => {
+    const query = parse(
+      'MATCH (n) WITH DISTINCT n.x AS x ORDER BY x SKIP 1 LIMIT 2 WHERE x > 0 UNWIND [x] AS y WITH * RETURN y',
+    );
+    expect(query.clauses.map((c) => c.type)).toEqual(['Match', 'With', 'Unwind', 'With', 'Return']);
+    expect(query.clauses[1]).toMatchObject({
+      type: 'With',
+      distinct: true,
+      items: [{ name: 'x', alias: 'x' }],
+      orderBy: [{ expression: { type: 'Variable', name: 'x' } }],
+      skip: { value: 1n },
+      limit: { value: 2n },
+      where: { type: 'Binary', operator: '>' },
+    });
+    expect(query.clauses[3]).toMatchObject({ type: 'With', star: true, where: undefined });
   });
 
   it('reports syntax errors with a position', () => {

@@ -115,6 +115,22 @@ The items without aggregates are the grouping keys. Next to an aggregate, an ite
 
 Aggregates in WHERE, nested aggregates, and `rand()` inside an aggregate are a `SemanticError`.
 
+### WITH stages
+
+Each `WITH` ends a stage. `ReadScope.of` plans the clauses so far, projects them with the same code as RETURN (DISTINCT, aggregation, ORDER BY, SKIP, LIMIT), and starts a new scope on the result as the derived table `w0`:
+
+```sql
+SELECT ... FROM (SELECT <projected columns> FROM ... WHERE ...) AS w0
+  CROSS JOIN "nodes" AS n1 ... WHERE n1."id" = w0.c0 AND ...
+```
+
+- Values are columns of the stage in their SQL type (JSON stays JSON). Nodes and relationships are carried as ids and joined back to their tables, so that everything that works on entities keeps working; the join is by primary key.
+- Only projected names are visible after WITH (`WITH *` keeps them all). An expression must have an alias.
+- A stage's LIMIT is only the query's LIMIT: the row limit applies to the final SELECT of a step, so intermediate rows are never cut short silently.
+- A stage with an order (its ORDER BY, or UNWIND before it) numbers its rows (`row_number() OVER ()` over the ordered stage) in column `o`, and later stages order by it, so `WITH ... ORDER BY ... RETURN collect(...)` keeps the order.
+- `WITH ... WHERE` filters the projected rows. When it uses a variable that WITH does not project (Cypher allows that), a stage without aggregation or DISTINCT applies it before projecting (each row projects to one row); with SKIP or LIMIT that is not supported yet. An expression equal to a projected one refers to the projected value.
+- After aggregation, ORDER BY may use only aggregates that are projected.
+
 ### Functions
 
 `src/planner/functions.ts` compiles function calls (names are case-insensitive). Arguments of a known wrong type are a `SemanticError` at compile time; JSON arguments of the wrong type give null at run time (#30); a null argument gives null.
@@ -169,7 +185,7 @@ The defaults are starting values, not measured ones (#16).
 | `shortestPath` / `allShortestPaths`                         | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                     |
 | `nodes(p)`, `relationships(p)`, `length(p)`                 | Path id arrays, hydrated by the assembler                                                                                       |
 | `OPTIONAL MATCH`                                            | PostgreSQL: `LEFT JOIN LATERAL`. SQLite: `LEFT JOIN` with correlated conditions, or a separate step.                            |
-| `WITH`                                                      | CTE or subquery per stage, or a separate step for large stages                                                                  |
+| `WITH`                                                      | A derived table per stage (see "WITH stages"); a separate step for large stages later (#14)                                     |
 | `UNWIND`                                                    | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position. |
 | Pattern predicates, `EXISTS { }`                            | `EXISTS (SELECT ...)`                                                                                                           |
 | `CREATE` (write mode)                                       | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`                                               |

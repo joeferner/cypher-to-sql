@@ -41,12 +41,13 @@ import {
   type OC_PatternElementContext,
   type OC_ProjectionBodyContext,
   type OC_PropertiesContext,
-  type OC_ReadingClauseContext,
+  OC_ReadingClauseContext,
   type OC_RelationshipPatternContext,
   type OC_SchemaNameContext,
   type OC_SinglePartQueryContext,
   type OC_SymbolicNameContext,
-  type OC_UpdatingClauseContext,
+  OC_UpdatingClauseContext,
+  OC_WithContext,
 } from './generated/CypherParser.js';
 
 const MAX_INT64 = 2n ** 63n - 1n;
@@ -107,14 +108,22 @@ class AstBuilder {
       oC_MultiPartQuery(): OC_MultiPartQueryContext | null;
     } & ParserRuleContext,
   ): ast.Query {
-    const single = ctx.oC_SinglePartQuery();
-    if (!single) {
-      const multi = ctx.oC_MultiPartQuery()!;
-      throw new UnsupportedFeatureError('WITH is not supported yet', {
-        position: pos(multi.oC_With(0)!),
-      });
-    }
     const clauses: ast.Clause[] = [];
+    let single = ctx.oC_SinglePartQuery();
+    if (!single) {
+      // Query parts ending in WITH, in order, then the last part.
+      const multi = ctx.oC_MultiPartQuery()!;
+      for (const child of multi.children) {
+        if (child instanceof OC_ReadingClauseContext) {
+          clauses.push(this.readingClause(child));
+        } else if (child instanceof OC_UpdatingClauseContext) {
+          clauses.push(this.updatingClause(child));
+        } else if (child instanceof OC_WithContext) {
+          clauses.push(this.withClause(child));
+        }
+      }
+      single = multi.oC_SinglePartQuery();
+    }
     for (const reading of single.oC_ReadingClause()) {
       clauses.push(this.readingClause(reading));
     }
@@ -126,6 +135,15 @@ class AstBuilder {
       clauses.push(this.returnClause(ret.oC_ProjectionBody(), ret));
     }
     return { type: 'Query', position: pos(ctx), clauses };
+  }
+
+  private withClause(ctx: OC_WithContext): ast.WithClause {
+    const where = ctx.oC_Where();
+    return {
+      ...this.returnClause(ctx.oC_ProjectionBody(), ctx),
+      type: 'With',
+      where: where ? this.expression(where.oC_Expression()) : undefined,
+    };
   }
 
   private readingClause(ctx: OC_ReadingClauseContext): ast.Clause {

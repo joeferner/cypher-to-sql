@@ -45,7 +45,9 @@ export type BindValue =
   /** The SQL `LIMIT` of a step: `min(user limit, maxRowsPerStep + 1)`. */
   | { kind: 'rowLimit'; userLimit: ValueSource | undefined }
   /** The SQL `OFFSET` of a step: the query's SKIP. */
-  | { kind: 'rowOffset'; skip: ValueSource };
+  | { kind: 'rowOffset'; skip: ValueSource }
+  /** The SQL `LIMIT` inside a WITH stage: the query's LIMIT exactly (no row cap). */
+  | { kind: 'stageLimit'; limit: ValueSource };
 
 /** A Cypher value known at compile time, a query parameter, or a JSON column of the current source row. */
 export type ValueSource =
@@ -251,16 +253,27 @@ function resolveBind(
       }
       return limit < cap ? limit : cap;
     }
-    case 'rowOffset': {
-      const value = resolveValue(bind.skip, options.params, row);
-      if (typeof value !== 'bigint' || value < 0n) {
-        throw new SemanticError('SKIP must be a non-negative integer', {
-          position: bind.skip.kind === 'parameter' ? bind.skip.position : undefined,
-        });
-      }
-      return value;
-    }
+    case 'rowOffset':
+      return rowCount(bind.skip, 'SKIP', options, row);
+    case 'stageLimit':
+      return rowCount(bind.limit, 'LIMIT', options, row);
   }
+}
+
+/** A SKIP or LIMIT value, which must be a non-negative integer. */
+function rowCount(
+  source: ValueSource,
+  clause: 'SKIP' | 'LIMIT',
+  options: ExecuteOptions,
+  row: Row | undefined,
+): bigint {
+  const value = resolveValue(source, options.params, row);
+  if (typeof value !== 'bigint' || value < 0n) {
+    throw new SemanticError(`${clause} must be a non-negative integer`, {
+      position: source.kind === 'parameter' ? source.position : undefined,
+    });
+  }
+  return value;
 }
 
 function resolveValue(
@@ -407,6 +420,8 @@ function describeBind(bind: BindValue): string {
         : 'limit(maxRowsPerStep + 1)';
     case 'rowOffset':
       return `skip(${describeSource(bind.skip)})`;
+    case 'stageLimit':
+      return `limit(${describeSource(bind.limit)})`;
   }
 }
 

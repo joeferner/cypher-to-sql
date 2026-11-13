@@ -175,6 +175,9 @@ export interface Dialect {
    */
   readonly noFlatten: string;
 
+  /** A LIMIT value meaning no limit (an OFFSET without LIMIT needs it on SQLite). */
+  readonly limitAll: string;
+
   /**
    * `UNWIND listExpr AS ...` as a FROM item named `alias`, cross-joined after the
    * earlier FROM items (it may refer to them). `listExpr` is a JSON value. A list

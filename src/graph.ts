@@ -92,20 +92,28 @@ function planQuery(
       // Unreachable while the gate works; kept so that a gate bug cannot reach SQL.
       throw new ReadOnlyViolationError('Write clauses are not allowed on a read-only graph');
     }
-    // The grammar puts reading clauses before updating clauses.
-    const reading = clauses.filter(isReadingClause);
-    const creates = clauses.filter((c): c is ast.CreateClause => c.type === 'Create');
-    if (reading.length + creates.length !== clauses.length) {
+    // Reading clauses (and WITH) first, then CREATE clauses only.
+    const firstCreate = clauses.findIndex((c) => c.type === 'Create');
+    const reading = clauses.slice(0, firstCreate);
+    const creates = clauses.slice(firstCreate);
+    const misplaced =
+      reading.find((c) => !isRowClause(c)) ?? creates.find((c) => c.type !== 'Create');
+    if (misplaced) {
       throw new UnsupportedFeatureError(
-        'Only MATCH and UNWIND followed by CREATE can write for now (no RETURN or other clauses with CREATE)',
-        { position: clauses.find((c) => !isReadingClause(c) && c.type !== 'Create')?.position },
+        'Only MATCH, UNWIND, and WITH followed by CREATE can write for now (no RETURN or other clauses after CREATE)',
+        { position: misplaced.position },
       );
     }
     if (reading.length === 0) {
-      return checkSteps(createPlan(writer.planCreate(creates, limits), []), limits);
+      return checkSteps(
+        createPlan(writer.planCreate(creates as ast.CreateClause[], limits), []),
+        limits,
+      );
     }
-    const source = new RowSource(ReadScope.of(new SqlBuilder(dialect, mapping), reading));
-    const inserts = writer.planCreate(creates, limits, source);
+    const source = new RowSource(
+      ReadScope.of(new SqlBuilder(dialect, mapping), reading as ast.RowClause[]),
+    );
+    const inserts = writer.planCreate(creates as ast.CreateClause[], limits, source);
     return checkSteps(createPlan([source.finish(), ...inserts], []), limits);
   }
 
@@ -117,7 +125,7 @@ function planQuery(
   }
   const reading = clauses.slice(0, -1);
   for (const clause of reading) {
-    if (!isReadingClause(clause)) {
+    if (!isRowClause(clause)) {
       throw new UnsupportedFeatureError(`${clause.type} is not supported before RETURN yet`, {
         position: clause.position,
       });
@@ -125,14 +133,14 @@ function planQuery(
   }
   const { step, columns } = planRead(
     new SqlBuilder(dialect, mapping),
-    reading as ast.ReadingClause[],
+    reading as ast.RowClause[],
     ret,
   );
   return checkSteps(createPlan([step], columns), limits);
 }
 
-function isReadingClause(clause: ast.Clause): clause is ast.ReadingClause {
-  return clause.type === 'Match' || clause.type === 'Unwind';
+function isRowClause(clause: ast.Clause): clause is ast.RowClause {
+  return clause.type === 'Match' || clause.type === 'Unwind' || clause.type === 'With';
 }
 
 /**

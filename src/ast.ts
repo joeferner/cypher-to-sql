@@ -14,10 +14,23 @@ export interface Query extends Node {
   clauses: Clause[];
 }
 
-export type Clause = MatchClause | UnwindClause | CreateClause | ReturnClause | UnsupportedClause;
+export type Clause =
+  MatchClause | UnwindClause | WithClause | CreateClause | ReturnClause | UnsupportedClause;
 
 /** Clauses that read rows (they come before any updating clause in a query part). */
 export type ReadingClause = MatchClause | UnwindClause;
+
+/** Clauses that produce the rows a RETURN or CREATE works on. */
+export type RowClause = ReadingClause | WithClause;
+
+/**
+ * `WITH`: a projection like RETURN that ends a query part. Only the projected
+ * names are visible after it. `where` filters the projected rows.
+ */
+export interface WithClause extends Omit<ReturnClause, 'type'> {
+  type: 'With';
+  where: Expression | undefined;
+}
 
 export interface UnwindClause extends Node {
   type: 'Unwind';

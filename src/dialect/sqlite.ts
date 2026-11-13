@@ -154,6 +154,7 @@ export function sqlite(): Dialect {
     },
     // SQLite does not flatten a subquery that has an OFFSET.
     noFlatten: ' LIMIT -1 OFFSET 0',
+    limitAll: '-1',
     // 9e999 is infinity in SQLite. NaN becomes NULL in SQLite.
     floatDivide: (dividend, divisor) =>
       `(CASE WHEN ${divisor} = 0 THEN CASE WHEN ${dividend} > 0 THEN 9e999 ` +

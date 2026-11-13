@@ -25,6 +25,8 @@ const readQueries = [
   "MATCH (n) WHERE toLower(n.name) STARTS WITH 'a' RETURN size(labels(n)), coalesce(n.x, 0), range(1, $n)",
   'MATCH (n) RETURN n.team AS team, count(*) AS c, max(n.age) - min(n.age) AS spread ORDER BY c DESC',
   'MATCH (n)-->(m) RETURN n, collect(DISTINCT m.name), avg(m.age)',
+  'MATCH (n) WITH n, count(*) AS c WHERE c > 1 MATCH (n)-->(m) RETURN m.name ORDER BY m.name',
+  'UNWIND $xs AS x WITH x ORDER BY x DESC LIMIT 3 RETURN x',
 ];
 
 const writeQueries = [
