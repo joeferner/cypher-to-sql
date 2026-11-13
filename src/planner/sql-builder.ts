@@ -18,6 +18,12 @@ export class SqlBuilder {
    * shortest path searches, in the order the statement needs their results.
    */
   public readonly searchSteps: PlanStep[] = [];
+  private subqueries = 0;
+
+  /** A number for a new subquery scope, unique in the statement (for its alias prefix). */
+  public nextSubquery(): number {
+    return this.subqueries++;
+  }
 
   public constructor(
     public readonly dialect: Dialect,

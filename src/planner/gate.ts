@@ -38,40 +38,44 @@ export function assertSupported(query: ast.Query): void {
         position: shortest.position,
       });
     }
-    for (const expr of clauseExpressions(clause)) {
-      const unsupported = findUnsupported(expr);
-      if (unsupported) {
-        throw new UnsupportedFeatureError(`${unsupported.description} are not supported yet`, {
-          position: unsupported.position,
-        });
-      }
+    for (const { expr, where } of clauseExpressions(clause)) {
+      checkExpression(expr, where);
     }
   }
 }
 
-function clauseExpressions(clause: ast.Clause): ast.Expression[] {
+/** The expressions of a clause; `where` marks those of a WHERE. */
+function clauseExpressions(clause: ast.Clause): { expr: ast.Expression; where: boolean }[] {
+  const plain = (
+    exprs: (ast.Expression | undefined)[],
+  ): { expr: ast.Expression; where: boolean }[] =>
+    exprs.filter((e) => e !== undefined).map((expr) => ({ expr, where: false }));
+  const where = (expr: ast.Expression | undefined): { expr: ast.Expression; where: boolean }[] =>
+    expr ? [{ expr, where: true }] : [];
   switch (clause.type) {
     case 'Match':
-      return [...patternExpressions(clause.pattern), ...(clause.where ? [clause.where] : [])];
+      return [...plain(patternExpressions(clause.pattern)), ...where(clause.where)];
     case 'Unwind':
-      return [clause.expression];
+      return plain([clause.expression]);
     case 'Create':
-      return patternExpressions(clause.pattern);
+      return plain(patternExpressions(clause.pattern));
     case 'With':
       return [
-        ...clause.items.map((i) => i.expression),
-        ...clause.orderBy.map((o) => o.expression),
-        ...(clause.skip ? [clause.skip] : []),
-        ...(clause.limit ? [clause.limit] : []),
-        ...(clause.where ? [clause.where] : []),
+        ...plain([
+          ...clause.items.map((i) => i.expression),
+          ...clause.orderBy.map((o) => o.expression),
+          clause.skip,
+          clause.limit,
+        ]),
+        ...where(clause.where),
       ];
     case 'Return':
-      return [
+      return plain([
         ...clause.items.map((i) => i.expression),
         ...clause.orderBy.map((o) => o.expression),
-        ...(clause.skip ? [clause.skip] : []),
-        ...(clause.limit ? [clause.limit] : []),
-      ];
+        clause.skip,
+        clause.limit,
+      ]);
     case 'UnsupportedClause':
       return [];
   }
@@ -84,25 +88,47 @@ function patternExpressions(pattern: ast.PatternPart[]): ast.Expression[] {
 }
 
 /**
- * The first unsupported construct in the expression. Also rejects aggregates in
- * the WHERE or projection of a list comprehension or quantifier, which would
- * aggregate over the list's elements.
+ * Rejects unsupported constructs in an expression, and constructs in the wrong
+ * place: aggregates in the WHERE or projection of a list comprehension,
+ * quantifier, EXISTS, or pattern comprehension (they would aggregate per
+ * element); pattern predicates outside a WHERE (`inWhere`), as in Cypher; and
+ * write clauses in `EXISTS { query }`.
  */
-function findUnsupported(expr: ast.Expression): ast.UnsupportedExpression | undefined {
-  if (expr.type === 'UnsupportedExpression') {
-    return expr;
+function checkExpression(expr: ast.Expression, inWhere: boolean): void {
+  switch (expr.type) {
+    case 'UnsupportedExpression':
+      throw new UnsupportedFeatureError(`${expr.description} are not supported yet`, {
+        position: expr.position,
+      });
+    case 'PatternPredicate':
+      if (!inWhere) {
+        throw new SemanticError('A pattern can be used as a condition only in WHERE', {
+          position: expr.position,
+          hint: 'Use EXISTS { (a)-->(b) } instead, or COUNT the matches with a pattern comprehension.',
+        });
+      }
+      break;
+    case 'Exists':
+      if (expr.query) {
+        const write = expr.query.clauses.find(
+          (c) => c.type === 'Create' || (c.type === 'UnsupportedClause' && c.write),
+        );
+        if (write) {
+          throw new SemanticError('An EXISTS subquery cannot modify the graph', {
+            position: write.position,
+          });
+        }
+        assertSupported(expr.query);
+      }
+      break;
   }
   for (const { child, local } of children(expr)) {
-    if (local !== undefined && containsAggregate(child)) {
+    if (local.length > 0 && containsAggregate(child)) {
       throw new SemanticError(
-        'Aggregate functions cannot be used in a list comprehension or quantifier',
+        'Aggregate functions cannot be used inside a list comprehension, quantifier, EXISTS, or pattern comprehension',
         { position: child.position },
       );
     }
-    const found = findUnsupported(child);
-    if (found) {
-      return found;
-    }
+    checkExpression(child, inWhere || local.length > 0);
   }
-  return undefined;
 }

@@ -1,11 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  createGraph,
-  SemanticError,
-  UnsupportedFeatureError,
-  type CypherValue,
-  type Graph,
-} from '../src/index.js';
+import { createGraph, SemanticError, type CypherValue, type Graph } from '../src/index.js';
 import { testBackends } from './support/backends.js';
 
 for (const backend of testBackends()) {
@@ -143,7 +137,6 @@ for (const backend of testBackends()) {
       await expect(v('any(x IN [1] WHERE sum(x) > 0)')).rejects.toThrow(SemanticError);
       await expect(v('[x IN [1] | y]')).rejects.toThrow(SemanticError);
       await expect(v('[x IN [1] | x], x')).rejects.toThrow(SemanticError);
-      await expect(v('[p = ()-->() | p]')).rejects.toThrow(UnsupportedFeatureError);
     });
   });
 }

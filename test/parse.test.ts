@@ -302,21 +302,38 @@ describe('parse: function calls', () => {
   });
 });
 
-describe('parse: unsupported expressions', () => {
-  it.each([
-    ['[(a)-->(b) | b]', 'pattern comprehensions'],
-    ['(a)-->()', 'pattern predicates'],
-    ['EXISTS { (a)-->() }', 'EXISTS subqueries'],
-  ])('%s → %s', (text, description) => {
-    expect(expr(text)).toMatchObject({
-      type: 'UnsupportedExpression',
-      description,
+describe('parse: patterns in expressions', () => {
+  it('parses pattern predicates', () => {
+    expect(expr('(a)-[:T]->()')).toMatchObject({
+      type: 'PatternPredicate',
       position: { line: 1, column: 7 },
+      pattern: {
+        variable: undefined,
+        elements: [
+          { type: 'NodePattern', variable: 'a' },
+          { type: 'RelationshipPattern', types: ['T'], direction: 'right' },
+          { type: 'NodePattern', variable: undefined },
+        ],
+      },
     });
   });
 
-  it('keeps unsupported expressions nested inside supported ones', () => {
-    expect(expr('[1, a + [x IN b | EXISTS { (x) }][0]]')).toMatchObject({
+  it('parses EXISTS with a pattern or a query', () => {
+    expect(expr('EXISTS { (a)-->(b), (b)-->() WHERE b.x }')).toMatchObject({
+      type: 'Exists',
+      pattern: [{ elements: [{ variable: 'a' }, {}, { variable: 'b' }] }, {}],
+      where: { type: 'PropertyAccess', key: 'x' },
+      query: undefined,
+    });
+    expect(expr('EXISTS { MATCH (a)-->(b) RETURN b }')).toMatchObject({
+      type: 'Exists',
+      pattern: undefined,
+      query: { clauses: [{ type: 'Match' }, { type: 'Return' }] },
+    });
+  });
+
+  it('parses pattern comprehensions, nested in other expressions', () => {
+    expect(expr('[1, a + [p = (a)-->(b) WHERE b.x | b.y][0]]')).toMatchObject({
       type: 'List',
       items: [
         { type: 'Literal' },
@@ -325,8 +342,10 @@ describe('parse: unsupported expressions', () => {
           right: {
             type: 'Index',
             subject: {
-              type: 'ListComprehension',
-              projection: { type: 'UnsupportedExpression', description: 'EXISTS subqueries' },
+              type: 'PatternComprehension',
+              pattern: { variable: 'p' },
+              where: { key: 'x' },
+              projection: { key: 'y' },
             },
           },
         },

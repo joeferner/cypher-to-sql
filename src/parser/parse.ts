@@ -19,6 +19,7 @@ import {
   OC_ListPredicateExpressionContext,
   OC_PropertyLookupContext,
   type OC_FilterExpressionContext,
+  type OC_RelationshipsPatternContext,
   OC_MultiplyDivideModuloExpressionContext,
   OC_NullPredicateExpressionContext,
   OC_PowerOfExpressionContext,
@@ -659,15 +660,66 @@ class AstBuilder {
         otherwise: otherwise ? this.expression(otherwise) : undefined,
       };
     }
-    let description: string;
-    if (ctx.oC_PatternComprehension()) {
-      description = 'pattern comprehensions';
-    } else if (ctx.oC_PatternPredicate()) {
-      description = 'pattern predicates';
-    } else {
-      description = 'EXISTS subqueries';
+    const predicate = ctx.oC_PatternPredicate();
+    if (predicate) {
+      return {
+        type: 'PatternPredicate',
+        position: pos(ctx),
+        pattern: this.relationshipsPattern(predicate.oC_RelationshipsPattern(), undefined),
+      };
     }
-    return this.unsupported(ctx, description);
+    const patternComprehension = ctx.oC_PatternComprehension();
+    if (patternComprehension) {
+      const variable = patternComprehension.oC_Variable();
+      const where = patternComprehension.oC_Where();
+      return {
+        type: 'PatternComprehension',
+        position: pos(ctx),
+        pattern: this.relationshipsPattern(
+          patternComprehension.oC_RelationshipsPattern(),
+          variable ? this.symbolicName(variable.oC_SymbolicName()) : undefined,
+        ),
+        where: where ? this.expression(where.oC_Expression()) : undefined,
+        projection: this.expression(patternComprehension.oC_Expression()),
+      };
+    }
+    const exists = ctx.oC_ExistentialSubquery()!;
+    const regular = exists.oC_RegularQuery();
+    if (regular) {
+      if (regular.oC_Union().length > 0) {
+        throw new UnsupportedFeatureError('UNION is not supported yet', {
+          position: pos(regular.oC_Union(0)!),
+        });
+      }
+      return {
+        type: 'Exists',
+        position: pos(ctx),
+        pattern: undefined,
+        where: undefined,
+        query: this.query(regular.oC_SingleQuery()),
+      };
+    }
+    const where = exists.oC_Where();
+    return {
+      type: 'Exists',
+      position: pos(ctx),
+      pattern: this.pattern(exists.oC_Pattern()!),
+      where: where ? this.expression(where.oC_Expression()) : undefined,
+      query: undefined,
+    };
+  }
+
+  /** A relationships pattern (a node and at least one relationship) as a pattern part. */
+  private relationshipsPattern(
+    ctx: OC_RelationshipsPatternContext,
+    variable: string | undefined,
+  ): ast.PatternPart {
+    const elements: ast.PatternElement[] = [this.nodePattern(ctx.oC_NodePattern())];
+    for (const chain of ctx.oC_PatternElementChain()) {
+      elements.push(this.relationshipPattern(chain.oC_RelationshipPattern()));
+      elements.push(this.nodePattern(chain.oC_NodePattern()));
+    }
+    return { position: pos(ctx), variable, elements, shortest: undefined };
   }
 
   private literal(ctx: OC_LiteralContext, negate: boolean): ast.Expression {

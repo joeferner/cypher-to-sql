@@ -131,7 +131,35 @@ export type Expression =
   | ListComprehension
   | QuantifierExpression
   | CaseExpression
+  | PatternPredicate
+  | ExistsSubquery
+  | PatternComprehension
   | UnsupportedExpression;
+
+/** A relationship pattern used as a condition: `WHERE (a)-[:T]->()`. */
+export interface PatternPredicate extends Node {
+  type: 'PatternPredicate';
+  pattern: PatternPart;
+}
+
+/**
+ * `EXISTS { pattern WHERE condition }` (with `pattern`), or `EXISTS { query }`
+ * (with `query`): true when the pattern or query has at least one match.
+ */
+export interface ExistsSubquery extends Node {
+  type: 'Exists';
+  pattern: PatternPart[] | undefined;
+  where: Expression | undefined;
+  query: Query | undefined;
+}
+
+/** `[p = (a)-->(b) WHERE condition | projection]`: a list with one element per match. */
+export interface PatternComprehension extends Node {
+  type: 'PatternComprehension';
+  pattern: PatternPart;
+  where: Expression | undefined;
+  projection: Expression;
+}
 
 /**
  * `CASE subject WHEN value THEN result ... ELSE otherwise END` (simple form,

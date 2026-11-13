@@ -216,6 +216,15 @@ joined with `v.s = a.id AND v.t = b.id`.
 
 Any other function is an `UnsupportedFeatureError` whose hint lists the supported ones. Path functions (`nodes`, `relationships`, `length`) are described in "Named paths". Temporal functions, `startNode`/`endNode`, and `round` with a precision are not supported yet. Known differences: string parsing in `toInteger`/`toFloat` accepts JSON number syntax on SQLite (so not `+1` or `.5`) and a slightly wider syntax on PostgreSQL; `toUpper`/`toLower` follow the database (SQLite changes ASCII letters only); `trim` removes spaces only.
 
+### Patterns in expressions
+
+Pattern predicates (`WHERE (a)-[:T]->()`), `EXISTS { pattern WHERE c }`, `EXISTS { MATCH ... RETURN ... }`, and pattern comprehensions (`[p = (a)-->(b) WHERE c | e]`) are correlated subqueries. A new `ReadScope` (the subquery's) matches the pattern or runs the query; it resolves variables it does not bind through the enclosing scope (including list comprehension elements), so a bound node is the outer alias and only new variables add tables.
+
+- A pattern predicate is `EXISTS (SELECT 1 FROM <new tables> WHERE <pattern conditions>)`. It may not introduce variables, and may be used only in a WHERE (of MATCH, WITH, a list comprehension, or EXISTS), as in Cypher; elsewhere `EXISTS { }` does the same.
+- `EXISTS { query }` is `EXISTS (<query>)` and may use MATCH, UNWIND, and WITH, but not write clauses. A grouping key that uses only the enclosing query's variables is left out of GROUP BY (SQLite cannot group by an outer column; it is constant there), with `HAVING COUNT(*) > 0` when no key is left.
+- A pattern comprehension is the JSON list (`jsonAggregate`) of its projection over the matches.
+- Aliases of a subquery's scope and expression compiler start with `q<n>_`, so that none hides an alias of the enclosing query. Relationship uniqueness applies within the subquery's pattern only. `shortestPath` inside one is not supported (its node-pair step runs on its own), nor are patterns in expressions after aggregation.
+
 ### CASE
 
 `CASE` is SQL `CASE`. The generic form (`CASE WHEN c THEN r ... END`) takes the first branch whose condition is true; a null condition is not. The simple form (`CASE x WHEN v THEN r ... END`) compares with Cypher `=`, so a null `x` or `v` matches nothing and values of different types never match. No ELSE means null. When every branch that is not the null literal has one native type, the result has that type; otherwise each branch becomes JSON (so `CASE WHEN c THEN 1 ELSE 'a' END` keeps both types).
@@ -272,7 +281,7 @@ The defaults are starting values, not measured ones (#16).
 | `WITH`                                                            | A derived table per stage (see "WITH stages"); a separate step for large stages later (#14)                                     |
 | `UNWIND`                                                          | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position. |
 | List comprehensions, `all`/`any`/`none`/`single`                  | Correlated subquery over the unwound list (see "List expressions")                                                              |
-| Pattern predicates, `EXISTS { }`                                  | `EXISTS (SELECT ...)`                                                                                                           |
+| Pattern predicates, `EXISTS { }`, pattern comprehensions          | Correlated `EXISTS (SELECT ...)` or list subquery (see "Patterns in expressions")                                               |
 | `CREATE` (write mode)                                             | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`                                               |
 
 ## Dialect differences

@@ -3,9 +3,11 @@ import {
   assertReadOnly,
   createGraph,
   ReadOnlyViolationError,
+  SemanticError,
   sqlite,
   UnsupportedFeatureError,
   type CypherError,
+  type Graph,
   type SqlExecutor,
 } from '../src/index.js';
 
@@ -85,27 +87,37 @@ describe('feature gate', () => {
     expect(error.position).toMatchObject({ line: 1, column: 10 });
   });
 
-  it('rejects unsupported expressions anywhere in the query, at their position', () => {
-    const cases: [string, string, number][] = [
-      ['RETURN 1 + EXISTS { () }', 'EXISTS subqueries', 11],
-      ['MATCH (n {k: EXISTS { () }}) RETURN n', 'EXISTS subqueries', 13],
+  it('rejects misplaced constructs anywhere in the query, at their position', () => {
+    const pattern = 'A pattern can be used as a condition only in WHERE';
+    const aggregate = 'Aggregate functions cannot be used inside';
+    const cases: [string, string, number, Graph?][] = [
+      ['MATCH (n) RETURN (n)-->()', pattern, 17],
+      ['RETURN 1 ORDER BY [1][CASE 0 WHEN 1 THEN (a)-->() END]', pattern, 41],
+      ['MATCH (n) RETURN 1 + size([(n)-->(m) | count(m)])', aggregate, 39],
+      ['MATCH (n {k: [x IN [1] | sum(x)]}) RETURN n', aggregate, 25],
       [
-        'UNWIND [x IN [] | CASE WHEN EXISTS { () } THEN 1 END] AS x RETURN x',
-        'EXISTS subqueries',
-        28,
-      ],
-      ['MATCH (n) WHERE all(x IN [] WHERE (n)-->()) RETURN n', 'pattern predicates', 34],
-      [
-        'RETURN 1 ORDER BY [1][CASE 0 WHEN 1 THEN [(a)-->() | a] END]',
-        'pattern comprehensions',
-        41,
+        'MATCH (n) WHERE EXISTS { MATCH (n) CREATE (:X) RETURN n } RETURN n',
+        'An EXISTS subquery cannot modify the graph',
+        35,
+        writeGraph,
       ],
     ];
-    for (const [cypher, description, column] of cases) {
-      const error = errorOf(() => readGraph.compile(cypher));
-      expect(error, cypher).toBeInstanceOf(UnsupportedFeatureError);
-      expect(error.message, cypher).toContain(`${description} are not supported yet`);
+    for (const [cypher, message, column, graph] of cases) {
+      const error = errorOf(() => (graph ?? readGraph).compile(cypher));
+      expect(error, cypher).toBeInstanceOf(SemanticError);
+      expect(error.message, cypher).toContain(message);
       expect(error.position, cypher).toMatchObject({ line: 1, column });
+    }
+  });
+
+  it('allows patterns as conditions in any WHERE, also nested', () => {
+    for (const cypher of [
+      'MATCH (n) WHERE (n)-->() RETURN n',
+      'MATCH (n) WITH n WHERE NOT (n)-->() RETURN n',
+      'MATCH (n) RETURN [x IN [n] WHERE (x)-->()] AS l',
+      'MATCH (n) RETURN EXISTS { (n)-->(m) WHERE (m)-->() } AS e',
+    ]) {
+      expect(() => readGraph.compile(cypher), cypher).not.toThrow();
     }
   });
 });

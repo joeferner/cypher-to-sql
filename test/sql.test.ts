@@ -36,6 +36,8 @@ const readQueries = [
   'MATCH (n) WHERE any(t IN n.tags WHERE t STARTS WITH $p) RETURN [t IN n.tags WHERE t <> $p | toUpper(t)]',
   'MATCH (n) RETURN n.list[0], n.list[1..-1], n[$key], all(x IN [1, 2] WHERE x < n.max)',
   "MATCH (n) RETURN CASE n.k WHEN 1 THEN 'one' ELSE 'other' END, CASE WHEN n.k > 1 THEN n.k END",
+  'MATCH (n) WHERE (n)-[:T]->() AND NOT EXISTS { (n)<-[r]-(m) WHERE r.w > m.w } RETURN [(n)-->(x) | x.k]',
+  'MATCH (n) WHERE EXISTS { MATCH (n)-->(m) WITH n, count(*) AS c WHERE c > 2 RETURN c } RETURN n',
   'MATCH (a), (b) WHERE a.k < b.k MATCH p = allShortestPaths((a)-[*..4]-(b)) RETURN length(p)',
 ];
 

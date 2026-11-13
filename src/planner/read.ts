@@ -4,7 +4,7 @@ import type { ColumnSpec, PlanStep, ValueSource } from '../plan.js';
 import { containsAggregate, isAggregateCall } from './aggregates.js';
 import { ExprCompiler, orderTerm, type Expr, type VariableBinding } from './expr.js';
 import { constantValue, type SqlBuilder } from './sql-builder.js';
-import { children, mapChildren } from './walk.js';
+import { children, mapChildren, patternVariables } from './walk.js';
 
 interface SelectOptions {
   distinct?: boolean;
@@ -85,13 +85,34 @@ export class ReadScope {
 
   private aliasCount = 0;
 
-  public constructor(public readonly b: SqlBuilder) {
-    this.expressions = new ExprCompiler(b, (variable) => this.lookup(variable));
+  /**
+   * @param outer For the scope of a subquery (EXISTS, a pattern predicate or
+   *   comprehension): resolves the variables of the enclosing query, and starts
+   *   every alias, so that none hides an alias of the enclosing query.
+   */
+  public constructor(
+    public readonly b: SqlBuilder,
+    private readonly outer?: {
+      find: (name: string) => Binding | undefined;
+      prefix: string;
+    },
+  ) {
+    this.expressions = new ExprCompiler(
+      b,
+      (variable) => this.find(variable.name),
+      outer?.prefix ?? '',
+    );
+    this.expressions.subquery = (expr, find): Expr => this.subquery(expr, find);
   }
 
-  /** A new table alias, unique in this scope. */
+  /** A new table alias, unique in this scope and its enclosing ones. */
   private alias(prefix: string): string {
-    return `${prefix}${this.aliasCount++}`;
+    return `${this.outer?.prefix ?? ''}${prefix}${this.aliasCount++}`;
+  }
+
+  /** The binding of a variable of this scope or an enclosing query, or undefined. */
+  private find(name: string): Binding | undefined {
+    return this.bindings.get(name) ?? this.outer?.find(name);
   }
 
   /** Adds a FROM item, cross-joined to the ones before it. */
@@ -104,8 +125,12 @@ export class ReadScope {
    * become a derived table, and a new scope starts with only the projected
    * variables.
    */
-  public static of(b: SqlBuilder, clauses: ast.RowClause[]): ReadScope {
-    let scope = new ReadScope(b);
+  public static of(
+    b: SqlBuilder,
+    clauses: ast.RowClause[],
+    start: ReadScope = new ReadScope(b),
+  ): ReadScope {
+    let scope = start;
     for (const clause of clauses) {
       if (clause.type === 'Match') {
         scope.addMatch(clause);
@@ -126,7 +151,7 @@ export class ReadScope {
       this.where.push(this.expressions.condition(substituteAliases(w.where!, projected)));
     }
     const stage = planProjection(this.b, this, w, 'with');
-    const next = new ReadScope(this.b);
+    const next = new ReadScope(this.b, this.outer);
     const alias = next.alias('w');
     next.addFrom(`(${stage.sql}) AS ${alias}`);
     if (stage.ordered) {
@@ -197,7 +222,7 @@ export class ReadScope {
   }
 
   public lookup(variable: { name: string; position: ast.Variable['position'] }): Binding {
-    const binding = this.bindings.get(variable.name);
+    const binding = this.find(variable.name);
     if (!binding) {
       throw new SemanticError(`Variable \`${variable.name}\` not defined`, {
         position: variable.position,
@@ -207,7 +232,12 @@ export class ReadScope {
   }
 
   public has(name: string): boolean {
-    return this.bindings.has(name);
+    return this.find(name) !== undefined;
+  }
+
+  /** True for a variable of the enclosing query of a subquery (not bound by this scope). */
+  public isOuter(name: string): boolean {
+    return !this.bindings.has(name) && this.outer?.find(name) !== undefined;
   }
 
   private addMatch(match: ast.MatchClause): void {
@@ -233,7 +263,7 @@ export class ReadScope {
     }
     for (const part of match.pattern) {
       const named = part.variable !== undefined;
-      if (named && this.bindings.has(part.variable!)) {
+      if (named && this.has(part.variable!)) {
         throw new SemanticError(`Variable \`${part.variable}\` already declared`, {
           position: part.position,
         });
@@ -308,7 +338,7 @@ export class ReadScope {
   private matchNode(node: ast.NodePattern): string {
     const b = this.b;
     let alias: string;
-    const existing = node.variable !== undefined ? this.bindings.get(node.variable) : undefined;
+    const existing = node.variable !== undefined ? this.find(node.variable) : undefined;
     if (existing?.kind === 'value' || existing?.kind === 'column') {
       // A value that may hold a node (from a list, a path, or collect()): join
       // the node it holds, and refer to that from now on.
@@ -380,7 +410,7 @@ export class ReadScope {
     const b = this.b;
     const edges = b.mapping.edges;
     let alias: string;
-    const existing = rel.variable !== undefined ? this.bindings.get(rel.variable) : undefined;
+    const existing = rel.variable !== undefined ? this.find(rel.variable) : undefined;
     if (existing) {
       if (existing.kind !== 'relationship') {
         throw new SemanticError(`Variable \`${rel.variable}\` is not a relationship`, {
@@ -670,7 +700,7 @@ export class ReadScope {
 
   /** Checks the variable and inline properties of a variable-length relationship pattern. */
   private checkListPattern(rel: ast.RelationshipPattern, boundHere: Set<string>): void {
-    const existing = rel.variable !== undefined ? this.bindings.get(rel.variable) : undefined;
+    const existing = rel.variable !== undefined ? this.find(rel.variable) : undefined;
     if (existing?.kind === 'node' || existing?.kind === 'relationship') {
       throw new SemanticError(`Variable \`${rel.variable}\` is not a list of relationships`, {
         position: rel.position,
@@ -750,7 +780,7 @@ export class ReadScope {
   }
 
   private addUnwind(unwind: ast.UnwindClause): void {
-    if (this.bindings.has(unwind.variable)) {
+    if (this.has(unwind.variable)) {
       throw new SemanticError(`Variable \`${unwind.variable}\` already declared`, {
         position: unwind.position,
       });
@@ -765,6 +795,95 @@ export class ReadScope {
     this.order.push(u.order);
     this.ordered = true;
     this.bindings.set(unwind.variable, { kind: 'value', sql: u.value });
+  }
+
+  /**
+   * A pattern predicate, EXISTS, or pattern comprehension, as a correlated
+   * subquery: a new scope matches the pattern (or runs the query) with the
+   * variables visible here bound, through `find`, to this query's aliases and
+   * values.
+   *
+   * - `(a)-->(b)` and `EXISTS { pattern WHERE c }`: `EXISTS (SELECT 1 FROM ... WHERE ...)`.
+   *   A pattern predicate may not introduce variables.
+   * - `EXISTS { MATCH ... RETURN ... }`: `EXISTS (<the query>)`.
+   * - `[(a)-->(b) WHERE c | e]`: the JSON list of `e` over the matches.
+   */
+  private subquery(
+    expr: ast.PatternPredicate | ast.ExistsSubquery | ast.PatternComprehension,
+    find: (name: string) => Binding | undefined,
+  ): Expr {
+    const b = this.b;
+    const sub = new ReadScope(b, { find, prefix: `q${b.nextSubquery()}_` });
+    // The node-pair step of a search runs on its own, so it cannot refer to the
+    // enclosing query.
+    const noShortestPath = (pattern: ast.PatternPart[]): void => {
+      const shortest = pattern.find((part) => part.shortest !== undefined);
+      if (shortest) {
+        throw new UnsupportedFeatureError(
+          'shortestPath() inside EXISTS or a pattern comprehension is not supported yet',
+          { position: shortest.position },
+        );
+      }
+    };
+    const match = (pattern: ast.PatternPart[], where: ast.Expression | undefined): void => {
+      noShortestPath(pattern);
+      sub.addMatch({ type: 'Match', position: expr.position, optional: false, pattern, where });
+    };
+    const exists = (sql: string): Expr => ({
+      sql: `EXISTS (${sql})`,
+      type: 'boolean',
+      atomic: false,
+    });
+
+    switch (expr.type) {
+      case 'PatternPredicate': {
+        for (const name of patternVariables([expr.pattern])) {
+          if (find(name) === undefined) {
+            throw new SemanticError(`Variable \`${name}\` not defined`, {
+              position: expr.position,
+              hint: 'A pattern used as a condition cannot introduce variables; use EXISTS { ... } for that.',
+            });
+          }
+        }
+        match([expr.pattern], undefined);
+        return exists(sub.selectBase(['1']));
+      }
+      case 'Exists': {
+        if (expr.pattern) {
+          match(expr.pattern, expr.where);
+          return exists(sub.selectBase(['1']));
+        }
+        const clauses = expr.query!.clauses;
+        const ret = clauses.at(-1);
+        const reading = clauses.slice(0, -1);
+        const other = reading.find(
+          (c) => c.type !== 'Match' && c.type !== 'Unwind' && c.type !== 'With',
+        );
+        if (ret?.type !== 'Return' || other) {
+          throw new UnsupportedFeatureError(
+            'An EXISTS subquery may use only MATCH, UNWIND, and WITH, and must end with RETURN',
+            { position: (other ?? ret ?? expr).position },
+          );
+        }
+        for (const clause of reading) {
+          if (clause.type === 'Match') {
+            noShortestPath(clause.pattern);
+          }
+        }
+        const scope = ReadScope.of(b, reading as ast.RowClause[], sub);
+        return exists(planProjection(b, scope, ret, 'return').sql);
+      }
+      case 'PatternComprehension': {
+        match([expr.pattern], expr.where);
+        const value = sub.expressions.json(expr.projection);
+        const list = b.dialect.jsonAggregate(value, {
+          distinct: false,
+          orderBy: sub.order,
+          filter: b.dialect.booleanLiteral(true),
+        });
+        return { sql: `(${sub.selectBase([list])})`, type: 'json', atomic: false, shape: 'list' };
+      }
+    }
   }
 
   /** SQL of the dialect's JSON type for a non-entity expression. */
@@ -1159,13 +1278,19 @@ function planAggregation(
   const keyValues = new Map<ast.ProjectionItem, ItemValue>();
   keys.forEach((item, i) => {
     const expr = item.expression;
+    // In a subquery, a key that uses only the enclosing query's variables is the
+    // same in every row; SQLite cannot group by an outer column, so it is not grouped.
+    const variables = freeVariables(expr);
+    const grouped = variables.length === 0 || !variables.every((name) => scope.isOuter(name));
     const binding = expr.type === 'Variable' ? scope.lookup(expr) : undefined;
     if (binding?.kind === 'node' || binding?.kind === 'relationship') {
       const raw = entityColumns(b, binding.kind, (n) => `${binding.alias}.${b.ident(n)}`);
       const fields = Object.entries(raw).filter(([field]) => field !== 'kind');
       for (const [field, sql] of fields) {
         inner.push(`${sql} AS g${i}_${field}`);
-        groupBy.push(sql as string);
+        if (grouped) {
+          groupBy.push(sql as string);
+        }
       }
       keyValues.set(
         item,
@@ -1187,7 +1312,9 @@ function planAggregation(
       outer.set(keyName(i), { kind: 'column', expr: e });
     } else {
       inner.push(`${e.sql} AS g${i}`);
-      groupBy.push(e.sql);
+      if (grouped) {
+        groupBy.push(e.sql);
+      }
       column(`g${i}`, e);
       outer.set(keyName(i), outer.get(`g${i}`)!);
     }
@@ -1286,7 +1413,11 @@ function planAggregation(
     return outerCompiler.compile(rewrite(substituteAliases(expr, projected)));
   });
 
-  const innerSql = scope.selectBase(inner.length > 0 ? inner : ['1 AS g'], false, groupBy);
+  let innerSql = scope.selectBase(inner.length > 0 ? inner : ['1 AS g'], false, groupBy);
+  if (keys.length > 0 && groupBy.length === 0) {
+    // Keys that are not grouped (see above) still mean no row for no input.
+    innerSql += ' HAVING COUNT(*) > 0';
+  }
   const sql = finishSelect(
     b,
     `SELECT ${ret.distinct ? 'DISTINCT ' : ''}${select.join(', ')} FROM (${innerSql}) AS g`,
@@ -1320,11 +1451,12 @@ function replaceProjected(expr: ast.Expression, items: ast.ProjectionItem[]): as
   return mapChildren(expr, (child, local) =>
     replaceProjected(
       child,
-      // Inside a comprehension, `local` is the element: not a projected name, and
-      // an item's expression that uses it means something else there.
-      local === undefined
-        ? items
-        : items.filter((i) => i.name !== local && !freeVariables(i.expression).includes(local)),
+      // Inside a comprehension, the local names are not projected names, and an
+      // item's expression that uses one means something else there.
+      items.filter(
+        (i) =>
+          !local.includes(i.name) && !freeVariables(i.expression).some((n) => local.includes(n)),
+      ),
     ),
   );
 }
@@ -1369,14 +1501,25 @@ function checkShortestPath(part: ast.PatternPart, where: ast.Expression | undefi
   }
 }
 
-/** The names of the variables an expression uses from outside it. */
+/**
+ * The names of the variables an expression uses from outside it. The variables
+ * of a pattern in an expression count (they refer to outer ones when bound),
+ * except in an opaque `EXISTS { query }`.
+ */
 function freeVariables(expr: ast.Expression): string[] {
   if (expr.type === 'Variable') {
     return [expr.name];
   }
-  return children(expr).flatMap(({ child, local }) =>
-    freeVariables(child).filter((name) => name !== local),
+  const own =
+    expr.type === 'PatternPredicate' || expr.type === 'PatternComprehension'
+      ? patternVariables([expr.pattern])
+      : expr.type === 'Exists' && expr.pattern
+        ? patternVariables(expr.pattern)
+        : [];
+  const inner = children(expr).flatMap(({ child, local }) =>
+    freeVariables(child).filter((name) => !local.includes(name)),
   );
+  return [...new Set([...own, ...inner])];
 }
 
 /** The synthetic variable for grouping key `i` in the outer query of an aggregation. */
@@ -1477,11 +1620,13 @@ function substituteAliases(
     return projected.get(expr.name) ?? expr;
   }
   return mapChildren(expr, (child, local) => {
-    if (local === undefined || !projected.has(local)) {
+    if (!local.some((name) => projected.has(name))) {
       return substituteAliases(child, projected);
     }
     const inner = new Map(projected);
-    inner.delete(local);
+    for (const name of local) {
+      inner.delete(name);
+    }
     return substituteAliases(child, inner);
   });
 }
@@ -1528,7 +1673,7 @@ function rootVariable(expr: ast.Expression): string | undefined {
   return expr.type === 'PropertyAccess' ? rootVariable(expr.subject) : undefined;
 }
 
-/** `locals` plus `local`, when a child is in the scope of a comprehension variable. */
-function withLocal(locals: ReadonlySet<string>, local: string | undefined): ReadonlySet<string> {
-  return local === undefined ? locals : new Set([...locals, local]);
+/** `locals` plus `local`, the variables a comprehension or pattern binds for a child. */
+function withLocal(locals: ReadonlySet<string>, local: readonly string[]): ReadonlySet<string> {
+  return local.length === 0 ? locals : new Set([...locals, ...local]);
 }

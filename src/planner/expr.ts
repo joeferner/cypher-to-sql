@@ -88,20 +88,53 @@ export class ExprCompiler {
    * compiled, innermost last. They hide variables of the same name.
    */
   private readonly locals: { name: string; binding: VariableBinding }[] = [];
+  /**
+   * Compiles a pattern predicate, EXISTS, or pattern comprehension: a
+   * correlated subquery over the patterns, which the read planner builds.
+   * `find` resolves the variables visible here (including list elements).
+   */
+  public subquery:
+    | ((
+        expr: ast.PatternPredicate | ast.ExistsSubquery | ast.PatternComprehension,
+        find: (name: string) => VariableBinding | undefined,
+      ) => Expr)
+    | undefined;
 
+  /**
+   * @param lookup Resolves a variable of the enclosing scope; undefined when it
+   *   is not defined.
+   * @param prefix Starts the aliases this compiler makes, so that those of a
+   *   nested subquery never hide the outer query's.
+   */
   public constructor(
     public readonly b: SqlBuilder,
-    private readonly lookup: (variable: ast.Variable) => VariableBinding,
+    private readonly lookup: (variable: ast.Variable) => VariableBinding | undefined,
+    private readonly prefix = '',
   ) {}
 
-  private resolve(variable: ast.Variable): VariableBinding {
+  private nextAlias(): string {
+    return `${this.prefix}${this.aliases++}`;
+  }
+
+  /** The binding of a variable visible here, or undefined. */
+  public find(name: string, position: SourcePosition): VariableBinding | undefined {
     for (let i = this.locals.length - 1; i >= 0; i--) {
       const local = this.locals[i]!;
-      if (local.name === variable.name) {
+      if (local.name === name) {
         return local.binding;
       }
     }
-    return this.lookup(variable);
+    return this.lookup({ type: 'Variable', name, position });
+  }
+
+  private resolve(variable: ast.Variable): VariableBinding {
+    const binding = this.find(variable.name, variable.position);
+    if (!binding) {
+      throw new SemanticError(`Variable \`${variable.name}\` not defined`, {
+        position: variable.position,
+      });
+    }
+    return binding;
   }
 
   /**
@@ -239,6 +272,16 @@ export class ExprCompiler {
         return this.quantifier(expr);
       case 'Case':
         return this.caseExpression(expr);
+      case 'PatternPredicate':
+      case 'Exists':
+      case 'PatternComprehension':
+        if (!this.subquery) {
+          throw new UnsupportedFeatureError(
+            'Patterns in expressions are not supported here (after aggregation)',
+            { position: expr.position },
+          );
+        }
+        return this.subquery(expr, (name) => this.find(name, expr.position));
       case 'UnsupportedExpression':
         throw new UnsupportedFeatureError(`${expr.description} are not supported yet`, {
           position: expr.position,
@@ -412,7 +455,7 @@ export class ExprCompiler {
    */
   public share(exprs: Expr[], body: (shared: Shared[]) => string): string {
     const d = this.b.dialect;
-    const alias = `s${this.aliases++}`;
+    const alias = `s${this.nextAlias()}`;
     const values: string[] = [];
     const outer: string[] = [];
     const refs = exprs.map((e, i): Shared => {
@@ -680,7 +723,7 @@ export class ExprCompiler {
    */
   private listOrder(op: Comparison, left: string, right: string): string {
     const d = this.b.dialect;
-    const n = this.aliases++;
+    const n = this.nextAlias();
     const a = d.unwind(left, `la${n}`);
     const z = d.unwind(right, `lb${n}`);
     const ea = json(a.value, false);
@@ -726,7 +769,7 @@ export class ExprCompiler {
     }
     return boolean(
       this.share([left, right], ([l, r]) => {
-        const n = this.aliases++;
+        const n = this.nextAlias();
         const e = d.unwind(r!.sql, `in${n}`);
         const eq = this.compare('=', l!, json(e.value, false), 0).sql;
         return (
@@ -938,7 +981,7 @@ export class ExprCompiler {
       };
       const from = position(bounds[0], '0');
       const to = position(bounds[1], length);
-      const n = this.aliases++;
+      const n = this.nextAlias();
       const u = d.unwind(l!.sql, `ls${n}`);
       const elements = d.jsonAggregate(u.value, {
         distinct: false,
@@ -961,7 +1004,7 @@ export class ExprCompiler {
       return { sql: 'NULL', type: 'null', atomic: true };
     }
     const sql = this.share([list], ([l]) => {
-      const u = d.unwind(l!.sql, `lc${this.aliases++}`);
+      const u = d.unwind(l!.sql, `lc${this.nextAlias()}`);
       const [filter, value] = this.inScope(expr.variable, expr.list, u.value, () => [
         expr.where ? this.condition(expr.where) : d.booleanLiteral(true),
         expr.projection ? this.json(expr.projection) : u.value,
@@ -995,7 +1038,7 @@ export class ExprCompiler {
     }
     return boolean(
       this.share([list], ([l]) => {
-        const n = this.aliases++;
+        const n = this.nextAlias();
         const u = d.unwind(l!.sql, `lq${n}`);
         const condition = this.inScope(expr.variable, expr.list, u.value, () =>
           this.condition(where),
