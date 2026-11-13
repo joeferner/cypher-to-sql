@@ -1369,10 +1369,21 @@ export class ExprCompiler {
 
     // At least one side is known only at run time: compute on JSON.
     const listResult = op === '+' && (left.shape === 'list' || right.shape === 'list');
+    // Temporal arithmetic only where the static types allow it: a JSON value of
+    // unknown shape may be a temporal value or duration.
+    const mayBeTemporal = (e: Expr): boolean => e.type === 'json' && e.shape === undefined;
+    const mayBeNumber = (e: Expr): boolean => numeric(e.type) || mayBeTemporal(e);
+    const temporal =
+      op === '+' || op === '-'
+        ? mayBeTemporal(left) && mayBeTemporal(right)
+        : op === '*'
+          ? (mayBeTemporal(left) && mayBeNumber(right)) ||
+            (mayBeNumber(left) && mayBeTemporal(right))
+          : op === '/' && mayBeTemporal(left) && mayBeNumber(right);
     return {
       ...json(
         this.share([this.asJson(left), this.asJson(right)], ([l, r]) =>
-          this.jsonArithmetic(op, l!, r!, expr.position),
+          this.jsonArithmetic(op, l!, r!, expr.position, temporal),
         ),
         false,
       ),
@@ -1386,6 +1397,7 @@ export class ExprCompiler {
     l: Shared,
     r: Shared,
     position: SourcePosition,
+    temporalPossible: boolean,
   ): string {
     const d = this.b.dialect;
     const lt = l.jsonType;
@@ -1436,7 +1448,7 @@ export class ExprCompiler {
     }
     // A temporal value or duration on either side: the dialect's temporal arithmetic.
     const temporal = d.temporalArithmetic;
-    if (temporal && op !== '%' && op !== '^') {
+    if (temporal && temporalPossible && op !== '%' && op !== '^') {
       arms.push(
         `WHEN ${lt} IN ${TEMPORAL_OR_DURATION} OR ${rt} IN ${TEMPORAL_OR_DURATION} ` +
           `THEN ${temporal(op, l.sql, r.sql)}`,

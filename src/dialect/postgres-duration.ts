@@ -4,7 +4,7 @@
 // temporal pipeline (postgresTemporalCall) from a map of fields.
 
 import { TEMPORAL_KINDS } from '../temporal.js';
-import { fail, offsetAtLocal, postgresTemporalCall, stage } from './postgres-temporal.js';
+import { CALENDAR, fail, offsetAtLocal, renderAnyKind, stage } from './postgres-temporal.js';
 
 const DAY = '86400000000000';
 const TEMPORAL_TYPES = `(${TEMPORAL_KINDS.map((k) => `'${k}'`).join(', ')})`;
@@ -15,11 +15,14 @@ const pad = (n: string, width: number): string => `lpad((${n})::text, ${width}, 
 const typeFail = (message: string): string =>
   `(('cypher temporal type error: ' || ${message} || substr(random()::text, 1, 0))::int)`;
 
-/** The tagged JSON of a duration from bigint columns `u.m` (months), `u.d` (days), `u.s` (seconds), `u.n` (0 to 999,999,999). */
+/**
+ * The tagged JSON of a duration from bigint columns `u.m` (months), `u.d`
+ * (days), `u.s` (seconds), `u.n` (0 to 999,999,999), and stage `g` (TEXT_PARTS).
+ */
 const RENDER = ((): string => {
-  const neg = `(u.s < 0 AND u.n > 0)`;
-  const s = `(u.s + (CASE WHEN ${neg} THEN 1 ELSE 0 END))`;
-  const n = `(CASE WHEN ${neg} THEN 1000000000 - u.n ELSE u.n END)`;
+  const neg = `g.neg`;
+  const s = `g.s`;
+  const n = `g.n`;
   const rest = `(${s} % 60)`;
   const seconds =
     `(CASE WHEN ${rest} <> 0 OR ${n} <> 0 THEN ` +
@@ -46,9 +49,11 @@ const RENDER = ((): string => {
 })();
 
 /**
- * Stages `c` and `u` that turn numeric amounts `mo` (months), `dy` (days), and
- * `na` (nanoseconds, whole) of stage `w` into a duration: a fraction of a month
- * becomes days and seconds, a fraction of a day seconds (see durationOf).
+ * Stages `c`, `u`, and `g` that turn numeric amounts `mo` (months), `dy`
+ * (days), and `na` (nanoseconds, whole) of stage `w` into a duration: a
+ * fraction of a month becomes days and seconds, a fraction of a day seconds
+ * (see durationOf). `g` holds the seconds and nanos as the text writes them
+ * (-60.001 is -60 and 0.001, `neg`).
  */
 const CASCADE = [
   stage(
@@ -61,6 +66,11 @@ const CASCADE = [
       `(c.wd + trunc(c.ms / 86400))::bigint AS d, ` +
       `round(((c.ms - trunc(c.ms / 86400) * 86400) + (c.dy - c.wd) * 86400) * 1000000000) + c.na AS t) p`,
     'u',
+  ),
+  stage(
+    `SELECT q.neg, u.s + (CASE WHEN q.neg THEN 1 ELSE 0 END) AS s, ` +
+      `(CASE WHEN q.neg THEN 1000000000 - u.n ELSE u.n END) AS n FROM (SELECT u.s < 0 AND u.n > 0 AS neg) q`,
+    'g',
   ),
 ].join(', ');
 
@@ -203,38 +213,37 @@ export function postgresDurationCall(name: string, args: string): string {
 
 // ---- arithmetic ----------------------------------------------------------------
 
-/** A temporal value `t` plus `sign` times duration `d` (JSON), as the temporal pipeline builds it. */
+/**
+ * A temporal value `t` plus `sign` times duration `d` (JSON): one pipeline for
+ * every kind. Months (the day clamped by PostgreSQL's month arithmetic), then
+ * days, then the time on the local value; a date takes whole days of the time
+ * toward zero, a time only the time. A named zone's offset is taken at the new
+ * local time.
+ */
 function addToTemporal(t: string, d: string, sign: string): string {
-  const months = `(${sign} * (${d} ->> 'months')::int)`;
-  const days = `(${sign} * (${d} ->> 'days')::int)`;
-  const nanos = `(${sign} * ((${d} ->> 'seconds')::numeric * 1000000000 + (${d} ->> 'nanosecondsOfSecond')::numeric))`;
-  const tns =
-    `(((${t} ->> 'hour')::numeric * 3600 + (${t} ->> 'minute')::numeric * 60 + (${t} ->> 'second')::numeric) ` +
-    `* 1000000000 + (${t} ->> 'nanosecond')::numeric)`;
-  const date = `((make_date((${t} ->> 'year')::int, (${t} ->> 'month')::int, (${t} ->> 'day')::int) + make_interval(months => ${months}))::date + ${days})`;
-  // `ns` is a non-negative numeric: div() and mod() keep the parts whole.
-  const time = (ns: string): string =>
-    `'hour', div(${ns}, 3600000000000)::bigint, 'minute', mod(div(${ns}, 60000000000), 60)::bigint, ` +
-    `'second', mod(div(${ns}, 1000000000), 60)::bigint, 'nanosecond', mod(${ns}, 1000000000)::bigint`;
-  const ymd = (dt: string): string =>
-    `'year', extract(year FROM ${dt})::int, 'month', extract(month FROM ${dt})::int, 'day', extract(day FROM ${dt})::int`;
-  const zone = `'timezone', ${t} -> 'timezone'`;
-  const wrap = `((${tns} + ${nanos}) % ${DAY} + ${DAY}) % ${DAY}`;
-  const carried = `floor((${tns} + ${nanos}) / ${DAY})::int`;
-  const arms: Record<string, string> = {
-    date: `jsonb_build_object(${ymd(`(${date} + trunc(${nanos} / ${DAY})::int)`)})`,
-    localtime: `jsonb_build_object(${time(`trunc(${wrap})`)})`,
-    time: `jsonb_build_object(${time(`trunc(${wrap})`)}, ${zone})`,
-    localdatetime: `jsonb_build_object(${ymd(`(${date} + ${carried})`)}, ${time(`trunc(${wrap})`)})`,
-    datetime: `jsonb_build_object(${ymd(`(${date} + ${carried})`)}, ${time(`trunc(${wrap})`)}, ${zone})`,
-  };
+  const inputs =
+    `SELECT ${t} ->> '~cypher' AS kind, ${t} AS t, ${sign} * (${d} ->> 'months')::int AS mo, ` +
+    `${sign} * (${d} ->> 'days')::int AS dy, ${sign} * ((${d} ->> 'seconds')::numeric * 1000000000 + ` +
+    `(${d} ->> 'nanosecondsOfSecond')::numeric) AS na, ` +
+    `coalesce(((${t} ->> 'hour')::numeric * 3600 + (${t} ->> 'minute')::numeric * 60 + ` +
+    `(${t} ->> 'second')::numeric) * 1000000000 + (${t} ->> 'nanosecond')::numeric, 0) AS tns, ` +
+    `(CASE WHEN (${t} -> 'year') IS NOT NULL THEN make_date((${t} ->> 'year')::int, (${t} ->> 'month')::int, ` +
+    `(${t} ->> 'day')::int) END) AS bd`;
+  const local =
+    `SELECT (CASE WHEN s.bd IS NULL THEN NULL WHEN s.kind = 'date' ` +
+    `THEN (s.bd + make_interval(months => s.mo))::date + s.dy + trunc(s.na / ${DAY})::int ` +
+    `ELSE (s.bd + make_interval(months => s.mo))::date + s.dy + floor((s.tns + s.na) / ${DAY})::int END) AS dt, ` +
+    `(CASE WHEN s.kind = 'date' THEN 0 ELSE mod(mod(s.tns + s.na, ${DAY}) + ${DAY}, ${DAY}) END)::bigint AS ns`;
+  const zoneName = `(s.t ->> 'timezone')`;
+  const zone =
+    `SELECT (CASE WHEN s.kind = 'datetime' AND ${zoneName} !~ '^[+-]' ` +
+    `THEN ${offsetAtLocal(zoneName, `(v.dt + make_interval(secs => v.ns / 1000000000.0))::timestamp`)} ` +
+    `ELSE coalesce((s.t ->> 'offsetSeconds')::int, 0) END) AS off, ` +
+    `(CASE WHEN s.kind = 'datetime' AND ${zoneName} !~ '^[+-]' THEN ${zoneName} END) AS zone`;
+  const rendered = renderAnyKind('s.kind');
   return (
-    `(CASE ${t} ->> '~cypher' ` +
-    TEMPORAL_KINDS.map(
-      (kind) =>
-        `WHEN '${kind}' THEN ${postgresTemporalCall(kind, `jsonb_build_array(${arms[kind]})`)}`,
-    ).join(' ') +
-    ' END)'
+    `(SELECT ${rendered.json} FROM ${stage(inputs, 's')}, ${stage(local, 'v')}, ` +
+    `${stage(zone, 'y')}, ${stage(CALENDAR, 'c')}, ${stage(rendered.stage, 'x')})`
   );
 }
 
@@ -256,9 +265,16 @@ export function postgresTemporalArithmetic(op: string, l: string, r: string): st
   const arms: string[] = [];
   if (op === '+' || op === '-') {
     const sign = op === '+' ? '1' : '-1';
-    arms.push(`WHEN ${isTemporal(l)} AND ${isDuration(r)} THEN ${addToTemporal(l, r, sign)}`);
     if (op === '+') {
-      arms.push(`WHEN ${isDuration(l)} AND ${isTemporal(r)} THEN ${addToTemporal(r, l, '1')}`);
+      // Either order: one pipeline, with the temporal value picked at run time.
+      const t = `(CASE WHEN ${isTemporal(l)} THEN ${l} ELSE ${r} END)`;
+      const d = `(CASE WHEN ${isTemporal(l)} THEN ${r} ELSE ${l} END)`;
+      arms.push(
+        `WHEN (${isTemporal(l)} AND ${isDuration(r)}) OR (${isDuration(l)} AND ${isTemporal(r)}) ` +
+          `THEN ${addToTemporal(t, d, sign)}`,
+      );
+    } else {
+      arms.push(`WHEN ${isTemporal(l)} AND ${isDuration(r)} THEN ${addToTemporal(l, r, sign)}`);
     }
     arms.push(
       `WHEN ${isDuration(l)} AND ${isDuration(r)} THEN ` +

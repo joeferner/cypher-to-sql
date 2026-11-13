@@ -198,13 +198,65 @@ function shifted(kind: TemporalKind): string {
 
 /** The tagged JSON of a value of `kind` from `v.dt`, `v.ns`, `y.off`, `y.zone`, and calendar fields `c`. */
 function render(kind: TemporalKind): string {
+  const f = FRAGMENTS;
   const parts: string[] = [`'~cypher', '${kind}'`];
   const text: string[] = [];
+  // Seconds of the instant (or of the local value): date, plus time, minus offset.
   let seconds = '0';
   if (hasDate(kind)) {
-    seconds = `(v.dt - ${EPOCH})::bigint * 86400`;
-    text.push(`${pad('c.y', 4)} || '-' || ${pad('c.mo', 2)} || '-' || ${pad('c.d', 2)}`);
-    parts.push(
+    seconds = f.dateSeconds;
+    text.push(f.dateText);
+    parts.push(...f.dateParts);
+  }
+  if (hasTime(kind)) {
+    seconds = `${seconds} + ${f.timeSeconds}`;
+    text.push(text.length > 0 ? `'T' || ${f.timeText}` : f.timeText);
+    parts.push(...f.timeParts);
+  }
+  if (hasOffset(kind)) {
+    seconds = `${seconds} - y.off`;
+    text.push(f.offsetText);
+    parts.push(...f.offsetParts);
+    if (kind === 'datetime') {
+      text.push(f.zoneText);
+      parts.push(...f.epochParts(seconds));
+    }
+  }
+  parts.push(
+    `'~s', ${text.join(' || ')}`,
+    `'~k', ${f.key(seconds, hasTime(kind) ? f.nanos : '0')}`,
+  );
+  return `jsonb_build_object(${parts.join(', ')})`;
+}
+
+/**
+ * The SQL pieces of a temporal value's JSON, from columns `v.dt` (date),
+ * `v.ns` (nanoseconds of the day), `y.off`, `y.zone`, and calendar fields `c`.
+ */
+const FRAGMENTS = ((): {
+  dateSeconds: string;
+  dateText: string;
+  dateParts: string[];
+  timeSeconds: string;
+  timeText: string;
+  timeParts: string[];
+  nanos: string;
+  offsetText: string;
+  zoneText: string;
+  offsetParts: string[];
+  epochParts: (seconds: string) => string[];
+  key: (seconds: string, nanos: string) => string;
+} => {
+  const s = `(v.ns / 1000000000)`;
+  const nanos = `(v.ns % 1000000000)`;
+  const abs = `abs(y.off)`;
+  const offset =
+    `(CASE WHEN y.off < 0 THEN '-' ELSE '+' END) || ${pad(`${abs} / 3600`, 2)} || ':' || ` +
+    `${pad(`${abs} / 60 % 60`, 2)} || (CASE WHEN ${abs} % 60 <> 0 THEN ':' || ${pad(`${abs} % 60`, 2)} ELSE '' END)`;
+  return {
+    dateSeconds: `(v.dt - ${EPOCH})::bigint * 86400`,
+    dateText: `${pad('c.y', 4)} || '-' || ${pad('c.mo', 2)} || '-' || ${pad('c.d', 2)}`,
+    dateParts: [
       `'year', c.y`,
       `'quarter', c.q`,
       `'month', c.mo`,
@@ -215,59 +267,76 @@ function render(kind: TemporalKind): string {
       `'weekDay', c.dow`,
       `'dayOfWeek', c.dow`,
       `'dayOfQuarter', v.dt - make_date(c.y, (c.q - 1) * 3 + 1, 1) + 1`,
-    );
-  }
-  if (hasTime(kind)) {
-    seconds = `${seconds} + v.ns / 1000000000`;
-    const s = `(v.ns / 1000000000)`;
-    const nanos = `(v.ns % 1000000000)`;
-    const time =
+    ],
+    timeSeconds: `v.ns / 1000000000`,
+    timeText:
       `${pad(`${s} / 3600`, 2)} || ':' || ${pad(`${s} / 60 % 60`, 2)} || ` +
       `(CASE WHEN ${s} % 60 <> 0 OR ${nanos} <> 0 THEN ':' || ${pad(`${s} % 60`, 2)} ELSE '' END) || ` +
       `(CASE WHEN ${nanos} = 0 THEN '' WHEN ${nanos} % 1000000 = 0 THEN '.' || left(${pad(nanos, 9)}, 3) ` +
-      `WHEN ${nanos} % 1000 = 0 THEN '.' || left(${pad(nanos, 9)}, 6) ELSE '.' || ${pad(nanos, 9)} END)`;
-    text.push(text.length > 0 ? `'T' || ${time}` : time);
-    parts.push(
+      `WHEN ${nanos} % 1000 = 0 THEN '.' || left(${pad(nanos, 9)}, 6) ELSE '.' || ${pad(nanos, 9)} END)`,
+    timeParts: [
       `'hour', ${s} / 3600`,
       `'minute', ${s} / 60 % 60`,
       `'second', ${s} % 60`,
       `'millisecond', ${nanos} / 1000000`,
       `'microsecond', ${nanos} / 1000`,
       `'nanosecond', ${nanos}`,
-    );
-  }
-  if (hasOffset(kind)) {
-    const abs = `abs(y.off)`;
-    const offset =
-      `(CASE WHEN y.off < 0 THEN '-' ELSE '+' END) || ${pad(`${abs} / 3600`, 2)} || ':' || ` +
-      `${pad(`${abs} / 60 % 60`, 2)} || (CASE WHEN ${abs} % 60 <> 0 THEN ':' || ${pad(`${abs} % 60`, 2)} ELSE '' END)`;
-    text.push(`(CASE WHEN y.off = 0 THEN 'Z' ELSE ${offset} END)`);
-    if (kind === 'datetime') {
-      text.push(`coalesce('[' || y.zone || ']', '')`);
-    }
-    seconds = `${seconds} - y.off`;
-    parts.push(
+    ],
+    nanos,
+    offsetText: `(CASE WHEN y.off = 0 THEN 'Z' ELSE ${offset} END)`,
+    zoneText: `coalesce('[' || y.zone || ']', '')`,
+    offsetParts: [
       `'timezone', coalesce(y.zone, ${offset})`,
       `'offset', ${offset}`,
       `'offsetMinutes', trunc(y.off / 60.0)::bigint`,
       `'offsetSeconds', y.off`,
-    );
-    if (kind === 'datetime') {
-      parts.push(
-        `'epochSeconds', ${seconds}`,
-        `'epochMillis', (${seconds}) * 1000 + (v.ns % 1000000000) / 1000000`,
-      );
-    }
-  }
-  const nanosKey = hasTime(kind) ? `(v.ns % 1000000000)` : '0';
-  parts.push(
-    `'~s', ${text.join(' || ')}`,
-    `'~k', ${pad(`(${seconds}) + 1000000000000000000`, 19)} || ${pad(nanosKey, 9)}`,
-  );
-  return `jsonb_build_object(${parts.join(', ')})`;
+    ],
+    epochParts: (seconds) => [
+      `'epochSeconds', ${seconds}`,
+      `'epochMillis', (${seconds}) * 1000 + (v.ns % 1000000000) / 1000000`,
+    ],
+    key: (seconds, keyNanos) =>
+      `${pad(`(${seconds}) + 1000000000000000000`, 19)} || ${pad(keyNanos, 9)}`,
+  };
+})();
+
+/**
+ * Like `render`, for a kind known only at run time (`kind`, SQL text): a stage
+ * (to be named `x`, after `c`) that computes the text pieces and seconds once,
+ * and one JSON object whose parts each apply when the kind has them.
+ */
+export function renderAnyKind(kind: string): { stage: string; json: string } {
+  const f = FRAGMENTS;
+  const among = (...kinds: TemporalKind[]): string =>
+    `${kind} IN (${kinds.map((k) => `'${k}'`).join(', ')})`;
+  const dated = among('date', 'localdatetime', 'datetime');
+  const timed = among('localtime', 'time', 'localdatetime', 'datetime');
+  const zoned = among('time', 'datetime');
+  const stageSql =
+    `SELECT (CASE WHEN ${dated} THEN ${f.dateText} END) AS dtx, ` +
+    `(CASE WHEN ${timed} THEN ${f.timeText} END) AS ttx, ` +
+    `(CASE WHEN ${zoned} THEN ${f.offsetText} END) AS otx, ` +
+    `(CASE WHEN ${dated} THEN ${f.dateSeconds} ELSE 0 END) + ` +
+    `(CASE WHEN ${timed} THEN ${f.timeSeconds} ELSE 0 END) - ` +
+    `(CASE WHEN ${zoned} THEN y.off ELSE 0 END) AS secs`;
+  const part = (condition: string, parts: string[]): string =>
+    `(CASE WHEN ${condition} THEN jsonb_build_object(${parts.join(', ')}) ELSE '{}'::jsonb END)`;
+  const text =
+    `(CASE ${kind} WHEN 'date' THEN x.dtx WHEN 'localtime' THEN x.ttx WHEN 'time' THEN x.ttx || x.otx ` +
+    `WHEN 'localdatetime' THEN x.dtx || 'T' || x.ttx ` +
+    `ELSE x.dtx || 'T' || x.ttx || x.otx || ${f.zoneText} END)`;
+  return {
+    stage: stageSql,
+    json:
+      `jsonb_build_object('~cypher', ${kind}) || ${part(dated, f.dateParts)} || ` +
+      `${part(timed, f.timeParts)} || ${part(zoned, f.offsetParts)} || ` +
+      `${part(`${kind} = 'datetime'`, f.epochParts('x.secs'))} || ` +
+      `jsonb_build_object('~s', ${text}, '~k', ${f.key('x.secs', `(CASE WHEN ${timed} THEN ${f.nanos} ELSE 0 END)`)})`,
+  };
 }
 
-const CALENDAR =
+/** The calendar fields of `v.dt` (stage `c`). */
+export const CALENDAR =
   `SELECT extract(year FROM v.dt)::int AS y, extract(month FROM v.dt)::int AS mo, ` +
   `extract(day FROM v.dt)::int AS d, extract(quarter FROM v.dt)::int AS q, ` +
   `extract(week FROM v.dt)::int AS w, extract(isoyear FROM v.dt)::int AS wy, ` +
