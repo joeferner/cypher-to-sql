@@ -69,6 +69,10 @@ export function rowVariables(
   return { written, variables };
 }
 
+/** The clauses that change the graph. */
+export type UpdateClause =
+  ast.CreateClause | ast.SetClause | ast.RemoveClause | ast.DeleteClause | ast.MergeClause;
+
 export type IdStrategy =
   | { kind: 'database' }
   | { kind: 'generator'; generate: (entity: 'node' | 'relationship') => string | number };
@@ -101,7 +105,7 @@ export class WritePlanner {
    * Returns the steps and the entities the CREATE clauses bind to variables.
    */
   public planUpdates(
-    clauses: (ast.CreateClause | ast.SetClause | ast.RemoveClause | ast.DeleteClause)[],
+    clauses: UpdateClause[],
     limits: Limits,
     source: CreateSource,
   ): { steps: PlanStep[]; created: Map<string, CreatedEntity> } {
@@ -180,6 +184,11 @@ export class WritePlanner {
       return entities - 1;
     };
 
+    /** Where the INSERTs of a pattern go: the plan's steps, or a MERGE's create branch. */
+    let into = steps;
+    /** For MERGE: a null property value is an error, and parameter maps are not allowed. */
+    let merging = false;
+
     const createNode = (node: ast.NodePattern): BindValue => {
       if (node.variable !== undefined) {
         const existing =
@@ -192,7 +201,7 @@ export class WritePlanner {
           }
           if (node.labels.length > 0 || node.properties) {
             throw new SemanticError(
-              `Variable \`${node.variable}\` is already bound; it cannot get new labels or properties in CREATE`,
+              `Variable \`${node.variable}\` is already bound; it cannot get new labels or properties in ${merging ? 'MERGE' : 'CREATE'}`,
               { position: node.position },
             );
           }
@@ -202,14 +211,18 @@ export class WritePlanner {
       const entity = newEntity();
       const id: BindValue = { kind: 'entityId', entity };
       const labels = [...new Set(node.labels)];
-      steps.push(
+      into.push(
         this.insert('node', entity, [
           [
             this.mapping.nodes.labels,
             { kind: 'json', value: { kind: 'constant', value: labels } },
             true,
           ],
-          [this.mapping.nodes.properties, this.properties('nodes', node.properties, valueOf), true],
+          [
+            this.mapping.nodes.properties,
+            this.properties('nodes', node.properties, valueOf, merging),
+            true,
+          ],
         ]),
       );
       // Bound after its properties, which cannot refer to the node itself.
@@ -221,15 +234,81 @@ export class WritePlanner {
       return id;
     };
 
+    /** Plans the INSERTs of one pattern part (into `into`), binding its new variables. */
+    const createPart = (part: ast.PatternPart): void => {
+      let previous = createNode(part.elements[0] as ast.NodePattern);
+      for (let i = 1; i < part.elements.length; i += 2) {
+        const rel = part.elements[i] as ast.RelationshipPattern;
+        const next = createNode(part.elements[i + 1] as ast.NodePattern);
+        this.checkRelationship(rel, merging);
+        const entity = newEntity();
+        if (
+          rel.variable !== undefined &&
+          (variables.has(rel.variable) || source.current?.scope.has(rel.variable))
+        ) {
+          throw new SemanticError(`Variable \`${rel.variable}\` is already bound`, {
+            position: rel.position,
+          });
+        }
+        // MERGE creates an undirected relationship from left to right.
+        const [start, end] = rel.direction === 'left' ? [next, previous] : [previous, next];
+        const edges = this.mapping.edges;
+        into.push(
+          this.insert('relationship', entity, [
+            [edges.startId, start, false],
+            [edges.endId, end, false],
+            [edges.type, { kind: 'sql', value: rel.types[0]! }, false],
+            [edges.properties, this.properties('edges', rel.properties, valueOf, merging), true],
+          ]),
+        );
+        if (rel.variable !== undefined) {
+          variables.set(rel.variable, { kind: 'relationship', id: { kind: 'entityId', entity } });
+          created.set(rel.variable, { kind: 'relationship', entity });
+          createdProperties.set(rel.variable, rel.properties);
+        }
+        previous = next;
+      }
+    };
+
     let computed = 0;
     let deletesNodes = false;
+    /** The index of each clause's first step, to tag steps with their clause. */
+    const starts: number[] = [];
     for (const clause of clauses) {
+      starts.push(steps.length);
+      if (clause.type === 'Merge') {
+        steps.push(
+          this.planMerge(
+            clause,
+            source.need(),
+            created,
+            computed++,
+            (part) => {
+              // The create branch: the pattern's INSERTs, with its variables bound.
+              const branch: PlanStep[] = [];
+              into = branch;
+              merging = true;
+              try {
+                createPart(part);
+              } finally {
+                into = steps;
+                merging = false;
+              }
+              return branch;
+            },
+            (item) => this.planSetItem(item, 'Set', source.need(), created, computed++),
+          ),
+        );
+        continue;
+      }
       if (clause.type === 'Delete') {
         for (const expression of clause.expressions) {
           steps.push(
             ...this.planDeleteItem(expression, clause.detach, source.need(), created, computed++),
           );
         }
+        // After the clause ran for every row: its nodes without relationships go now.
+        steps.push(this.deleteFreeNodes());
         deletesNodes = true;
         continue;
       }
@@ -265,41 +344,14 @@ export class WritePlanner {
             position: first.position,
           });
         }
-        let previous = createNode(part.elements[0] as ast.NodePattern);
-        for (let i = 1; i < part.elements.length; i += 2) {
-          const rel = part.elements[i] as ast.RelationshipPattern;
-          const next = createNode(part.elements[i + 1] as ast.NodePattern);
-          this.checkRelationship(rel);
-          const entity = newEntity();
-          if (
-            rel.variable !== undefined &&
-            (variables.has(rel.variable) || source.current?.scope.has(rel.variable))
-          ) {
-            throw new SemanticError(`Variable \`${rel.variable}\` is already bound`, {
-              position: rel.position,
-            });
-          }
-          const [start, end] = rel.direction === 'left' ? [next, previous] : [previous, next];
-          const edges = this.mapping.edges;
-          steps.push(
-            this.insert('relationship', entity, [
-              [edges.startId, start, false],
-              [edges.endId, end, false],
-              [edges.type, { kind: 'sql', value: rel.types[0]! }, false],
-              [edges.properties, this.properties('edges', rel.properties, valueOf), true],
-            ]),
-          );
-          if (rel.variable !== undefined) {
-            variables.set(rel.variable, { kind: 'relationship', id: { kind: 'entityId', entity } });
-            created.set(rel.variable, { kind: 'relationship', entity });
-            createdProperties.set(rel.variable, rel.properties);
-          }
-          previous = next;
-        }
+        createPart(part);
       }
     }
+    // Each step knows its clause (the runner runs a clause for every row before the next).
+    const clauseOf = (i: number): number => starts.findLastIndex((start) => start <= i);
+    const tagged = steps.map((step, i) => ({ ...step, clause: clauseOf(i) }));
     // A source made for a computed value (after some INSERTs were planned) makes every step per-row.
-    const all = source.current ? steps.map((step) => ({ ...step, perRow: true })) : steps;
+    const all = source.current ? tagged.map((step) => ({ ...step, perRow: true })) : tagged;
     return { steps: deletesNodes ? [...all, ...this.deleteNodes()] : all, created };
   }
 
@@ -420,6 +472,98 @@ export class WritePlanner {
   }
 
   /**
+   * MERGE, for each source row: a SELECT over the row as stored now finds the
+   * pattern's matches (the ids of its new variables). The runner then runs the
+   * rest of the row once for each match, after the ON MATCH items; with no
+   * match it runs the create branch (the pattern's INSERTs) and the ON CREATE
+   * items. The new variables are entities (as CREATE's), whose ids come from the
+   * match or the INSERT, so later clauses see them alike.
+   */
+  private planMerge(
+    clause: ast.MergeClause,
+    source: RowSource,
+    created: Map<string, CreatedEntity>,
+    index: number,
+    createBranch: (part: ast.PatternPart) => PlanStep[],
+    setItem: (item: ast.SetItem) => PlanStep[],
+  ): PlanStep {
+    const part = clause.pattern;
+    const position = clause.position;
+    if (part.variable !== undefined || part.shortest !== undefined) {
+      throw new UnsupportedFeatureError('Named paths in MERGE are not supported yet', {
+        position: part.position,
+      });
+    }
+    const bound = (name: string): boolean => source.scope.has(name) || created.has(name);
+    const first = part.elements[0] as ast.NodePattern;
+    if (part.elements.length === 1 && first.variable !== undefined && bound(first.variable)) {
+      throw new SemanticError(`Variable \`${first.variable}\` already declared`, {
+        position: first.position,
+      });
+    }
+    const fresh = [
+      ...new Set(
+        part.elements
+          .map((e) => e.variable)
+          .filter((name): name is string => name !== undefined && !bound(name)),
+      ),
+    ];
+    const { written, variables } = rowVariables(source, created, this.mapping, position);
+    const b = new SqlBuilder(this.dialect, this.mapping);
+    const items: ast.ProjectionItem[] = fresh.map((name, i) => ({
+      position,
+      expression: { type: 'Variable', position, name },
+      alias: `m${i}`,
+      name: `m${i}`,
+    }));
+    if (items.length === 0) {
+      items.push({
+        position,
+        expression: { type: 'Literal', position, value: 1n },
+        alias: 'm',
+        name: 'm',
+      });
+    }
+    const { step, columns } = planWrittenReturn(
+      b,
+      variables,
+      [{ type: 'Match', position, optional: false, pattern: [part], where: undefined }],
+      {
+        type: 'Return',
+        position,
+        distinct: false,
+        star: false,
+        items,
+        orderBy: [],
+        skip: undefined,
+        limit: undefined,
+      },
+      { kind: 'currentRow', written },
+    );
+    if (b.searchSteps.length > 0) {
+      throw new UnsupportedFeatureError('shortestPath() in MERGE is not supported', { position });
+    }
+    // The create branch binds the new variables to new entities.
+    const createSteps = createBranch(part);
+    const bind = fresh.map((name, i) => ({
+      entity: created.get(name)!.entity,
+      column: columns[i]!,
+    }));
+    const onCreate = clause.onCreate.flatMap(setItem);
+    const onMatch = clause.onMatch.flatMap(setItem);
+    const perRow = (s: PlanStep): PlanStep => ({ ...s, perRow: true });
+    return {
+      ...step,
+      computes: index,
+      merge: {
+        bind,
+        onCreate: [...createSteps, ...onCreate].map(perRow),
+        onMatch: onMatch.map(perRow),
+      },
+    };
+  }
+
+  /**
    * One DELETE value, for each source row: a SELECT over the row as stored now
    * computes it (a node, relationship, or path), then its relationships are
    * deleted, and with DETACH every relationship of its nodes. Its nodes are
@@ -482,6 +626,26 @@ export class WritePlanner {
   }
 
   /**
+   * After a DELETE clause ran for every row: its nodes that no longer have
+   * relationships are deleted, so that later clauses no longer see them.
+   */
+  private deleteFreeNodes(): PlanStep {
+    const { nodes, edges } = this.mapping;
+    const u = new SqlBuilder(this.dialect, this.mapping);
+    const ids = this.dialect.jsonInput(u.bind({ kind: 'deletedNodes' }));
+    const nodeTable = u.table('nodes');
+    const id = `${nodeTable}.${u.ident(nodes.id)}`;
+    // RETURNING: the runner forgets the deleted ids, so that a new entity that
+    // gets one of them again (SQLite reuses the largest id) is not deleted later.
+    return u.finish(
+      `DELETE FROM ${nodeTable} WHERE ${this.dialect.boundIdIn(id, ids, nodeTable, nodes.id)} ` +
+        `AND NOT EXISTS (SELECT 1 FROM ${u.table('edges')} AS e WHERE e.${u.ident(edges.startId)} = ${id} ` +
+        `OR e.${u.ident(edges.endId)} = ${id}) RETURNING ${id} AS id`,
+      { updates: true, afterClause: true, forgetsDeleted: true },
+    );
+  }
+
+  /**
    * The node deletions of DELETE, after every row: fails when a deleted node
    * still has relationships (`DeleteConnectedNode`), then deletes the nodes.
    */
@@ -523,13 +687,14 @@ export class WritePlanner {
     ];
   }
 
-  private checkRelationship(rel: ast.RelationshipPattern): void {
+  private checkRelationship(rel: ast.RelationshipPattern, merging: boolean): void {
+    const clause = merging ? 'MERGE' : 'CREATE';
     if (rel.types.length !== 1) {
-      throw new SemanticError('A relationship in CREATE must have exactly one type', {
+      throw new SemanticError(`A relationship in ${clause} must have exactly one type`, {
         position: rel.position,
       });
     }
-    if (rel.direction === 'both') {
+    if (rel.direction === 'both' && !merging) {
       throw new SemanticError('A relationship in CREATE must have a direction', {
         position: rel.position,
       });
@@ -545,6 +710,7 @@ export class WritePlanner {
     kind: 'nodes' | 'edges',
     expr: ast.Expression | undefined,
     valueOf: (expr: ast.Expression) => ValueSource,
+    merging = false,
   ): BindValue {
     // Declared types are checked when the values are known, at run time.
     const types = this.mapping[kind].propertyTypes;
@@ -552,6 +718,12 @@ export class WritePlanner {
       return { kind: 'properties', entries: [], types };
     }
     if (expr.type === 'Parameter') {
+      if (merging) {
+        throw new SemanticError('MERGE cannot take its properties from a parameter map', {
+          position: expr.position,
+          hint: 'Write the properties as a map: MERGE (n {key: $value}).',
+        });
+      }
       return { kind: 'propertiesParameter', name: expr.name, position: expr.position, types };
     }
     if (expr.type !== 'Map') {
@@ -568,6 +740,7 @@ export class WritePlanner {
         return { key, value: valueOf(value) };
       }),
       types,
+      ...(merging ? { noNulls: true } : {}),
     };
   }
 

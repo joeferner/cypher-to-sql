@@ -92,12 +92,17 @@ describe('parse: clauses', () => {
     ]);
   });
 
-  it('keeps unsupported clauses as nodes, marking write clauses', () => {
-    const clauses = (text: string): unknown => parse(text).clauses[0];
-    expect(clauses('MERGE (n)')).toMatchObject({
-      type: 'UnsupportedClause',
-      name: 'MERGE',
-      write: true,
+  it('parses MERGE and DELETE, and keeps unsupported clauses as nodes', () => {
+    expect(
+      parse('MERGE (n:N {k: 1}) ON CREATE SET n.c = 1 ON MATCH SET n.m = 1, n:L').clauses[0],
+    ).toMatchObject({
+      type: 'Merge',
+      pattern: { elements: [{ variable: 'n', labels: ['N'] }] },
+      onCreate: [{ kind: 'property', key: 'c' }],
+      onMatch: [
+        { kind: 'property', key: 'm' },
+        { kind: 'labels', labels: ['L'] },
+      ],
     });
     expect(parse('MATCH (n) DELETE n, m.k').clauses[1]).toMatchObject({
       type: 'Delete',

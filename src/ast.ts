@@ -22,6 +22,7 @@ export type Clause =
   | SetClause
   | RemoveClause
   | DeleteClause
+  | MergeClause
   | ReturnClause
   | UnsupportedClause;
 
@@ -39,6 +40,17 @@ export interface DeleteClause extends Node {
   type: 'Delete';
   detach: boolean;
   expressions: Expression[];
+}
+
+/**
+ * `MERGE pattern ON CREATE SET ... ON MATCH SET ...`: for each row, the
+ * pattern's matches, or the pattern created when it has none.
+ */
+export interface MergeClause extends Node {
+  type: 'Merge';
+  pattern: PatternPart;
+  onCreate: SetItem[];
+  onMatch: SetItem[];
 }
 
 /** `REMOVE item, ...`: removes properties (`n.key`) or labels (`n:L`). */

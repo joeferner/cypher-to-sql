@@ -9,12 +9,12 @@ import {
 /** DDL for the generic layout with the default mapping. */
 export const SQLITE_SCHEMA = `
 CREATE TABLE nodes (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   labels TEXT NOT NULL CHECK (json_type(labels) = 'array'),
   properties TEXT NOT NULL CHECK (json_type(properties) = 'object')
 );
 CREATE TABLE edges (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   start_id INTEGER NOT NULL REFERENCES nodes (id),
   end_id INTEGER NOT NULL REFERENCES nodes (id),
   type TEXT NOT NULL,

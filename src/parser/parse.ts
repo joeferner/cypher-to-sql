@@ -44,6 +44,7 @@ import {
   type OC_NodePatternContext,
   type OC_PatternContext,
   type OC_PatternElementContext,
+  type OC_PatternPartContext,
   type OC_ProjectionBodyContext,
   type OC_PropertiesContext,
   type OC_PropertyExpressionContext,
@@ -193,7 +194,19 @@ class AstBuilder {
         expressions: del.oC_Expression().map((e) => this.expression(e)),
       };
     }
-    return { type: 'UnsupportedClause', position: pos(ctx), name: 'MERGE', write: true };
+    const merge = ctx.oC_Merge()!;
+    const actions = (onCreate: boolean): ast.SetItem[] =>
+      merge
+        .oC_MergeAction()
+        .filter((a) => (a.CREATE() !== null) === onCreate)
+        .flatMap((a) => this.setClause(a.oC_Set()!).items);
+    return {
+      type: 'Merge',
+      position: pos(merge),
+      pattern: this.patternPart(merge.oC_PatternPart()),
+      onCreate: actions(true),
+      onMatch: actions(false),
+    };
   }
 
   private setClause(ctx: OC_SetContext): ast.SetClause {
@@ -379,19 +392,21 @@ class AstBuilder {
   // ---- patterns -------------------------------------------------------------
 
   private pattern(ctx: OC_PatternContext): ast.PatternPart[] {
-    return ctx.oC_PatternPart().map((part) => {
-      const variable = part.oC_Variable();
-      const anonymous = part.oC_AnonymousPatternPart()!;
-      const shortest = anonymous.oC_ShortestPathPattern();
-      return {
-        position: pos(part),
-        variable: variable ? this.symbolicName(variable.oC_SymbolicName()) : undefined,
-        elements: this.patternElement(
-          shortest ? shortest.oC_PatternElement() : anonymous.oC_PatternElement()!,
-        ),
-        shortest: shortest ? this.shortestKind(shortest.oC_SymbolicName()) : undefined,
-      };
-    });
+    return ctx.oC_PatternPart().map((part) => this.patternPart(part));
+  }
+
+  private patternPart(part: OC_PatternPartContext): ast.PatternPart {
+    const variable = part.oC_Variable();
+    const anonymous = part.oC_AnonymousPatternPart()!;
+    const shortest = anonymous.oC_ShortestPathPattern();
+    return {
+      position: pos(part),
+      variable: variable ? this.symbolicName(variable.oC_SymbolicName()) : undefined,
+      elements: this.patternElement(
+        shortest ? shortest.oC_PatternElement() : anonymous.oC_PatternElement()!,
+      ),
+      shortest: shortest ? this.shortestKind(shortest.oC_SymbolicName()) : undefined,
+    };
   }
 
   /** The function name of `shortestPath(...)` or `allShortestPaths(...)` (any case). */

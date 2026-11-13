@@ -46,6 +46,8 @@ export type BindValue =
       kind: 'properties';
       entries: { key: string; value: ValueSource }[];
       types: PropertyTypes | undefined;
+      /** MERGE: a null value is an error (it could never be matched). */
+      noNulls?: boolean;
     }
   | {
       kind: 'propertiesParameter';
@@ -229,6 +231,28 @@ export interface PlanStep {
   deletesNodes?: ColumnSpec | undefined;
   /** The step runs once, after the per-row steps (the deferred node deletions of DELETE). */
   afterRows?: boolean | undefined;
+  /**
+   * The write clause the per-row step belongs to (in clause order). Each clause
+   * runs for every row before the next one does, as Cypher defines it.
+   */
+  clause?: number | undefined;
+  /** The step runs once after its clause ran for every row (DELETE's node deletions). */
+  afterClause?: boolean | undefined;
+  /** The step returns the ids (column `id`) of nodes it deleted; they leave `deletedNodes`. */
+  forgetsDeleted?: boolean | undefined;
+  /**
+   * When set, the step is MERGE's match: it returns the matches of the
+   * pattern. With none, `onCreate` runs (the INSERTs, then ON CREATE); with
+   * some, the rest of the row runs once for each, after `onMatch`, with the
+   * entities in `bind` set from the match's columns.
+   */
+  merge?:
+    | {
+        bind: { entity: number; column: ColumnSpec }[];
+        onCreate: PlanStep[];
+        onMatch: PlanStep[];
+      }
+    | undefined;
 }
 
 /** A Cypher error that a step's SQL raises at run time, through `Dialect.raise`. */
@@ -278,7 +302,7 @@ export interface ExecuteOptions {
 }
 
 export function createPlan(steps: PlanStep[], columns: ColumnSpec[]): CompiledPlan {
-  const readOnly = steps.every((s) => s.creates === undefined && !s.updates);
+  const readOnly = steps.every((s) => s.creates === undefined && !s.updates && !s.merge);
   return {
     readOnly,
     steps,
@@ -369,6 +393,11 @@ export async function executePlan(
       if (step.creates && !step.generatedId) {
         entityIds.set(step.creates.entity, result[0]?.['id']);
       }
+      if (step.forgetsDeleted) {
+        for (const deleted of result) {
+          state.deletedNodes.delete(String(deleted['id']));
+        }
+      }
       if (step.computes !== undefined) {
         state.computed.set(step.computes, result[0] ?? {});
         if (step.deletesNodes) {
@@ -411,13 +440,75 @@ export async function executePlan(
           `The query creates more than ${limits.maxCreatedEntities} entities (maxCreatedEntities)`,
         );
       }
-      for (const row of last) {
+      // Clause by clause: each write clause runs for every row before the next
+      // one. A row carries its entity ids and computed rows; MERGE turns a row
+      // into one per match.
+      interface Context {
+        row: Row;
+        ids: Map<number, unknown>;
+        computed: Map<number, Row>;
+      }
+      const load = (context: Context): void => {
         entityIds.clear();
+        context.ids.forEach((v, k) => entityIds.set(k, v));
         state.computed.clear();
-        for (const step of perRow) {
-          await run(step, row);
+        context.computed.forEach((v, k) => state.computed.set(k, v));
+      };
+      const save = (row: Row): Context => ({
+        row,
+        ids: new Map(entityIds),
+        computed: new Map(state.computed),
+      });
+      let contexts: Context[] = last.map((row) => ({ row, ids: new Map(), computed: new Map() }));
+      const clauses = [...new Set(perRow.map((s) => s.clause ?? 0))];
+      for (const clause of clauses) {
+        const clauseSteps = perRow.filter((s) => (s.clause ?? 0) === clause && !s.afterClause);
+        const next: Context[] = [];
+        for (const context of contexts) {
+          load(context);
+          let expanded = false;
+          for (const step of clauseSteps) {
+            const matches = await run(step, context.row);
+            const merge = step.merge;
+            if (!merge) {
+              continue;
+            }
+            if (matches.length === 0) {
+              for (const branch of merge.onCreate) {
+                await run(branch, context.row);
+              }
+              continue;
+            }
+            const before = save(context.row);
+            for (const match of matches) {
+              load(before);
+              for (const { entity, column } of merge.bind) {
+                entityIds.set(
+                  entity,
+                  column.kind === 'node' || column.kind === 'relationship'
+                    ? match[column.id]
+                    : null,
+                );
+              }
+              for (const branch of merge.onMatch) {
+                await run(branch, context.row);
+              }
+              next.push(save(context.row));
+            }
+            expanded = true;
+          }
+          if (!expanded) {
+            next.push(save(context.row));
+          }
         }
-        collect(row);
+        for (const step of perRow.filter((s) => (s.clause ?? 0) === clause && s.afterClause)) {
+          await run(step, undefined);
+        }
+        contexts = next;
+      }
+      for (const context of contexts) {
+        load(context);
+        collect(context.row);
       }
       last = [];
     } else if (final) {
@@ -565,6 +656,11 @@ function resolveBind(
         if (resolved !== null) {
           checkPropertyValue(key, resolved, bind.types);
           map[key] = resolved;
+        } else if (bind.noNulls) {
+          throw new SemanticError(
+            `MERGE cannot use a null property value (for ${JSON.stringify(key)})`,
+            { hint: 'A pattern with a null property never matches; leave the property out.' },
+          );
         }
       }
       return stringifyCypherJson(map);

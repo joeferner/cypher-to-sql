@@ -14,6 +14,8 @@ export function writeClauseName(clause: ast.Clause): string | undefined {
       return 'REMOVE';
     case 'Delete':
       return clause.detach ? 'DETACH DELETE' : 'DELETE';
+    case 'Merge':
+      return 'MERGE';
     case 'UnsupportedClause':
       return clause.write ? clause.name : undefined;
     default:
@@ -102,6 +104,13 @@ function clauseExpressions(clause: ast.Clause): { expr: ast.Expression; where: b
       return plain(clause.items.map((i) => (i.kind === 'property' ? i.target : undefined)));
     case 'Delete':
       return plain(clause.expressions);
+    case 'Merge':
+      return plain([
+        ...patternExpressions([clause.pattern]),
+        ...[...clause.onCreate, ...clause.onMatch].flatMap((i) =>
+          i.kind === 'property' ? [i.target, i.value] : i.kind === 'labels' ? [] : [i.value],
+        ),
+      ]);
     case 'UnsupportedClause':
       return [];
   }
