@@ -57,10 +57,12 @@ npm test                      # unit tests + allow-listed TCK scenarios, on SQLi
 npm run test:tck:all          # every TCK scenario; passing ids go to tmp/tck-passing-*.json
 npm run pre-commit            # format, lint, typecheck, test
 npm run bench                 # benchmarks on reference graphs (bench/README.md)
-npm run db:down               # remove the PostgreSQL container
+npm run db:up:reference       # PostgreSQL, Neo4j, and ArcadeDB
+npm run test:diff             # differential tests against Neo4j and ArcadeDB (diff/README.md)
+npm run db:down               # remove the containers
 ```
 
-The tests need PostgreSQL running. They connect to `TEST_POSTGRES_URL`, which defaults to `postgres://cypher:cypher@localhost:55432/cypher`; the dev container points it at the host. Set `POSTGRES_VERSION` to change the version that `db:up` starts (default 18).
+The tests need PostgreSQL running. They connect to `TEST_POSTGRES_URL`, which defaults to `postgres://cypher:cypher@localhost:55432/cypher`; the dev container points it at the host. Set `POSTGRES_VERSION` to change the version that `db:up` starts (default 18). The differential tests also connect to `NEO4J_URL` (default `bolt://localhost:57687`) and `ARCADEDB_URL` (default `http://localhost:52480`).
 
 Conformance is measured with the official [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck). [test/tck/allow-list.json](test/tck/allow-list.json) lists the scenarios that must pass on each dialect.
 

@@ -14,7 +14,9 @@
   // in this container, so tests reach PostgreSQL through the host gateway.
   "runArgs": ["--add-host=host.docker.internal:host-gateway"],
   "containerEnv": {
-    "TEST_POSTGRES_URL": "postgres://cypher:cypher@host.docker.internal:55432/cypher"
+    "TEST_POSTGRES_URL": "postgres://cypher:cypher@host.docker.internal:55432/cypher",
+    "NEO4J_URL": "bolt://host.docker.internal:57687",
+    "ARCADEDB_URL": "http://host.docker.internal:52480"
   },
   // Mount the workspace at the same path as on the host. Claude Code keys its
   // session history (~/.claude/projects/<path>) by the absolute project path,

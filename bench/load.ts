@@ -69,8 +69,12 @@ export function loadSqlite(graph: Graph): Promise<LoadedGraph> {
   });
 }
 
-export async function loadPostgres(graph: Graph, url: string): Promise<LoadedGraph> {
-  const name = `bench_${graph.spec.name}`;
+/** Loads `graph` into the schema `name`, which is dropped first. */
+export async function loadPostgres(
+  graph: Graph,
+  url: string,
+  name = `bench_${graph.spec.name}`,
+): Promise<LoadedGraph> {
   const admin = new pg.Client({ connectionString: url });
   await admin.connect();
   try {

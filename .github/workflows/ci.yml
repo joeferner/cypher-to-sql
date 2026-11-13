@@ -48,3 +48,20 @@ jobs:
       - run: npm test
       - if: always()
         run: npm run db:down
+
+  diff:
+    name: Differential tests (Neo4j, ArcadeDB)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run db:up:reference
+      - run: npm run test:diff
+      - if: always()
+        run: npm run db:down

@@ -1,4 +1,4 @@
-// Reference graphs for benchmarks (and later differential tests, #20): the
+// Reference graphs for the benchmarks and the differential tests (diff/): the
 // same seed gives the same graph on every database.
 
 /** A graph to generate: `nodes` nodes, each person with `degree` outgoing KNOWS. */

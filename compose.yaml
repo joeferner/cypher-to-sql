@@ -1,5 +1,8 @@
 # PostgreSQL for tests. `npm run db:up` starts it, `npm run db:down` removes it.
-# Data lives in tmpfs and durability is off: this database is disposable.
+# Data lives in tmpfs and durability is off: these databases are disposable.
+#
+# Neo4j and ArcadeDB are the reference engines of the differential tests (#20),
+# in the `reference` profile: `npm run db:up:reference` starts them as well.
 services:
   postgres:
     image: postgres:${POSTGRES_VERSION:-18}-alpine
@@ -18,3 +21,39 @@ services:
       interval: 1s
       timeout: 3s
       retries: 30
+
+  neo4j:
+    image: neo4j:${NEO4J_VERSION:-2026.10.2}-community
+    profiles: [reference]
+    environment:
+      NEO4J_AUTH: neo4j/cypherpass
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 256M
+    ports:
+      - '${NEO4J_BOLT_PORT:-57687}:7687'
+      - '${NEO4J_HTTP_PORT:-57474}:7474'
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ['CMD-SHELL', "cypher-shell -u neo4j -p cypherpass 'RETURN 1'"]
+      interval: 2s
+      timeout: 10s
+      retries: 60
+
+  arcadedb:
+    image: arcadedata/arcadedb:${ARCADEDB_VERSION:-26.11.1}
+    profiles: [reference]
+    environment:
+      JAVA_OPTS: >-
+        -Darcadedb.server.rootPassword=cypherpass
+        -Darcadedb.server.defaultDatabases=graph[root]
+    ports:
+      - '${ARCADEDB_PORT:-52480}:2480'
+    tmpfs:
+      # Owned by root otherwise; ArcadeDB runs as its own user.
+      - /home/arcadedb/databases:mode=1777
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://localhost:2480/api/v1/ready']
+      interval: 2s
+      timeout: 5s
+      retries: 60

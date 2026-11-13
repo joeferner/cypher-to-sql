@@ -332,8 +332,8 @@ The defaults were checked against the reference graphs (#16, `npm run bench:limi
 
 - **openCypher TCK** (`vendor/openCypher`, pinned submodule). `test/tck` parses the Gherkin features with `@cucumber/gherkin` and generates one vitest test per scenario and dialect. Setup runs on a write graph; the query runs on a read-only graph, which also tests the gate on every scenario. A scenario that hits an unsupported feature is skipped with that reason. `test/tck/allow-list.json` lists the scenarios that must pass, by dialect.
 - **Unit tests** for each stage, and emitted-SQL snapshots per dialect (#4).
-- **Differential tests** against a reference engine such as Neo4j (#20). When results differ, the TCK decides which side is wrong.
-- **Benchmarks** (`npm run bench`, [bench/README.md](bench/README.md)): a query corpus on seeded reference graphs of different sizes and densities, on both dialects, with a recorded baseline to compare against. The graphs are meant to be shared with the differential tests (#20).
+- **Differential tests** (`npm run test:diff`, [diff/README.md](diff/README.md)): a query corpus on both dialects and on two reference engines, Neo4j and ArcadeDB, which runs Cypher through its own engine. A result where both references agree and this library differs fails the run, unless the corpus marks it as a known difference with the reason. Where the references disagree with each other, the TCK decides.
+- **Benchmarks** (`npm run bench`, [bench/README.md](bench/README.md)): a query corpus on seeded reference graphs of different sizes and densities, on both dialects, with a recorded baseline to compare against. The differential tests use the same graphs.
 - Treat a difference between the two dialects on the same scenario as a failure.
 
 ## Risks
