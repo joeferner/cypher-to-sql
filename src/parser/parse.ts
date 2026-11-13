@@ -45,7 +45,10 @@ import {
   type OC_PatternElementContext,
   type OC_ProjectionBodyContext,
   type OC_PropertiesContext,
+  type OC_PropertyExpressionContext,
   OC_ReadingClauseContext,
+  type OC_RemoveContext,
+  type OC_SetContext,
   type OC_RelationshipPatternContext,
   type OC_SchemaNameContext,
   type OC_SinglePartQueryContext,
@@ -172,17 +175,81 @@ class AstBuilder {
     if (create) {
       return this.createClause(create);
     }
-    let name: string;
-    if (ctx.oC_Merge()) {
-      name = 'MERGE';
-    } else if (ctx.oC_Set()) {
-      name = 'SET';
-    } else if (ctx.oC_Remove()) {
-      name = 'REMOVE';
-    } else {
-      name = ctx.oC_Delete()?.DETACH() ? 'DETACH DELETE' : 'DELETE';
+    const set = ctx.oC_Set();
+    if (set) {
+      return this.setClause(set);
     }
+    const remove = ctx.oC_Remove();
+    if (remove) {
+      return this.removeClause(remove);
+    }
+    const name = ctx.oC_Merge() ? 'MERGE' : ctx.oC_Delete()?.DETACH() ? 'DETACH DELETE' : 'DELETE';
     return { type: 'UnsupportedClause', position: pos(ctx), name, write: true };
+  }
+
+  private setClause(ctx: OC_SetContext): ast.SetClause {
+    return {
+      type: 'Set',
+      position: pos(ctx),
+      items: ctx.oC_SetItem().map((item): ast.SetItem => {
+        const property = item.oC_PropertyExpression();
+        const value = item.oC_Expression();
+        if (property) {
+          return { ...this.propertyTarget(property), value: this.expression(value!) };
+        }
+        const variable = this.symbolicName(item.oC_Variable()!.oC_SymbolicName());
+        const labels = item.oC_NodeLabels();
+        if (labels) {
+          return { kind: 'labels', position: pos(item), variable, labels: this.nodeLabels(labels) };
+        }
+        return {
+          kind: item.getText().includes('+=') ? 'merge' : 'replace',
+          position: pos(item),
+          variable,
+          value: this.expression(value!),
+        };
+      }),
+    };
+  }
+
+  private removeClause(ctx: OC_RemoveContext): ast.RemoveClause {
+    return {
+      type: 'Remove',
+      position: pos(ctx),
+      items: ctx.oC_RemoveItem().map((item) => {
+        const property = item.oC_PropertyExpression();
+        if (property) {
+          return this.propertyTarget(property);
+        }
+        return {
+          kind: 'labels' as const,
+          position: pos(item),
+          variable: this.symbolicName(item.oC_Variable()!.oC_SymbolicName()),
+          labels: this.nodeLabels(item.oC_NodeLabels()),
+        };
+      }),
+    };
+  }
+
+  /** `atom.a.b`: the target is `atom.a`, the key `b`. */
+  private propertyTarget(ctx: OC_PropertyExpressionContext): ast.PropertyTarget {
+    const lookups = ctx.oC_PropertyLookup();
+    let target = this.atom(ctx.oC_Atom(), false);
+    for (const lookup of lookups.slice(0, -1)) {
+      target = {
+        type: 'PropertyAccess',
+        position: pos(lookup),
+        subject: target,
+        key: this.schemaName(lookup.oC_PropertyKeyName()!.oC_SchemaName()),
+      };
+    }
+    const last = lookups.at(-1)!;
+    return {
+      kind: 'property',
+      position: pos(ctx),
+      target,
+      key: this.schemaName(last.oC_PropertyKeyName()!.oC_SchemaName()),
+    };
   }
 
   private matchClause(ctx: OC_MatchContext): ast.MatchClause {

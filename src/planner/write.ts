@@ -1,10 +1,15 @@
 import type * as ast from '../ast.js';
-import { LimitExceededError, SemanticError, UnsupportedFeatureError } from '../errors.js';
+import {
+  LimitExceededError,
+  SemanticError,
+  UnsupportedFeatureError,
+  type SourcePosition,
+} from '../errors.js';
 import type { Limits } from '../limits.js';
-import type { BindValue, PlanStep, ValueSource } from '../plan.js';
+import type { BindValue, ColumnSpec, PlanStep, ValueSource, WrittenValue } from '../plan.js';
 import type { Dialect } from '../dialect/dialect.js';
 import type { GraphMapping } from '../mapping.js';
-import type { RowSource } from './read.js';
+import { planWrittenReturn, type RowSource, type WrittenVariable } from './read.js';
 import { constantValue, SqlBuilder } from './sql-builder.js';
 import { mapChildren } from './walk.js';
 
@@ -26,6 +31,44 @@ export interface CreatedEntity {
   entity: number;
 }
 
+/**
+ * The variables of a source row and the entities created for it so far, as a
+ * written row (see `PlanStep.written`): matched entities and created ones are
+ * ids, other values JSON. Adds columns to the source, so it must be called
+ * before `source.finish()`.
+ */
+export function rowVariables(
+  source: RowSource,
+  created: Map<string, CreatedEntity>,
+  mapping: GraphMapping,
+  position: SourcePosition,
+): { written: { name: string; value: WrittenValue }[]; variables: WrittenVariable[] } {
+  const scope = source.scope;
+  const written: { name: string; value: WrittenValue }[] = [];
+  const variables: WrittenVariable[] = [];
+  for (const name of scope.variables) {
+    const binding = scope.lookup({ name, position });
+    if (binding.kind === 'node' || binding.kind === 'relationship') {
+      const table = binding.kind === 'node' ? mapping.nodes : mapping.edges;
+      const column = source.column(`${binding.alias}.${scope.b.ident(table.id)}`);
+      written.push({ name, value: { kind: 'rowId', column } });
+      variables.push({ name, kind: binding.kind });
+    } else {
+      const value = source.valueColumn({ type: 'Variable', position, name });
+      if (value.kind !== 'row') {
+        throw new Error('Internal error: a variable is not a row column');
+      }
+      written.push({ name, value: { kind: 'rowJson', column: value.column } });
+      variables.push({ name, kind: 'value' });
+    }
+  }
+  for (const [name, entity] of created) {
+    written.push({ name, value: { kind: 'entity', entity: entity.entity } });
+    variables.push({ name, kind: entity.kind });
+  }
+  return { written, variables };
+}
+
 export type IdStrategy =
   | { kind: 'database' }
   | { kind: 'generator'; generate: (entity: 'node' | 'relationship') => string | number };
@@ -42,17 +85,23 @@ export class WritePlanner {
   ) {}
 
   /**
-   * Plans CREATE clauses as one INSERT per entity, in pattern order. With database
-   * ids each INSERT returns the new id, which later relationship INSERTs bind.
+   * Plans CREATE, SET, and REMOVE clauses, in order.
+   *
+   * CREATE is one INSERT per entity, in pattern order. With database ids each
+   * INSERT returns the new id, which later relationship INSERTs bind.
    *
    * With a source (the reading clauses before CREATE, or a one-row SELECT made
    * when a property value has to be computed), the INSERTs run once for each
    * source row: matched nodes and computed values come from that row.
    *
+   * SET and REMOVE always run per source row, each item as a SELECT that
+   * computes the target and the value over the row as it is stored now (so it
+   * sees earlier writes), then UPDATEs (see `planSetItem`).
+   *
    * Returns the steps and the entities the CREATE clauses bind to variables.
    */
-  public planCreate(
-    clauses: ast.CreateClause[],
+  public planUpdates(
+    clauses: (ast.CreateClause | ast.SetClause | ast.RemoveClause)[],
     limits: Limits,
     source: CreateSource,
   ): { steps: PlanStep[]; created: Map<string, CreatedEntity> } {
@@ -172,7 +221,23 @@ export class WritePlanner {
       return id;
     };
 
+    let computed = 0;
     for (const clause of clauses) {
+      if (clause.type !== 'Create') {
+        // REMOVE n.key is SET n.key = null.
+        const items: ast.SetItem[] =
+          clause.type === 'Set'
+            ? clause.items
+            : clause.items.map((item) =>
+                item.kind === 'labels'
+                  ? item
+                  : { ...item, value: { type: 'Literal', position: item.position, value: null } },
+              );
+        for (const item of items) {
+          steps.push(...this.planSetItem(item, clause.type, source.need(), created, computed++));
+        }
+        continue;
+      }
       for (const part of clause.pattern) {
         if (part.variable !== undefined) {
           throw new UnsupportedFeatureError('Named paths in CREATE are not supported yet', {
@@ -228,6 +293,122 @@ export class WritePlanner {
       steps: source.current ? steps.map((step) => ({ ...step, perRow: true })) : steps,
       created,
     };
+  }
+
+  /**
+   * One SET or REMOVE item, for each source row: a SELECT over the row as it is
+   * stored now computes the target entity (`t`) and the value (`v`); then one
+   * UPDATE per table the target can be in merges the value into the properties
+   * (or replaces them), or changes the labels. The runner checks the value and
+   * builds the JSON patch (`propertyPatch`), as CREATE checks its properties.
+   */
+  private planSetItem(
+    item: ast.SetItem,
+    clause: 'Set' | 'Remove',
+    source: RowSource,
+    created: Map<string, CreatedEntity>,
+    index: number,
+  ): PlanStep[] {
+    const position = item.position;
+    const target: ast.Expression =
+      item.kind === 'property' ? item.target : { type: 'Variable', position, name: item.variable };
+    const value: ast.Expression =
+      item.kind === 'labels' ? { type: 'Literal', position, value: null } : item.value;
+    const projection = (expression: ast.Expression, name: string): ast.ProjectionItem => ({
+      position: expression.position,
+      expression,
+      alias: name,
+      name,
+    });
+    const { written, variables } = rowVariables(source, created, this.mapping, position);
+    const b = new SqlBuilder(this.dialect, this.mapping);
+    const { step, columns } = planWrittenReturn(
+      b,
+      variables,
+      [],
+      {
+        type: 'Return',
+        position,
+        distinct: false,
+        star: false,
+        items: [projection(target, 't'), projection(value, 'v')],
+        orderBy: [],
+        skip: undefined,
+        limit: undefined,
+      },
+      { kind: 'currentRow', written },
+    );
+    if (b.searchSteps.length > 0) {
+      throw new UnsupportedFeatureError(
+        `shortestPath() in ${clause.toUpperCase()} is not supported`,
+        {
+          position,
+        },
+      );
+    }
+    const [t, v] = columns as [ColumnSpec, ColumnSpec];
+    const kinds: ('node' | 'relationship')[] =
+      t.kind === 'node' || t.kind === 'relationship'
+        ? [t.kind]
+        : t.kind === 'json'
+          ? item.kind === 'labels'
+            ? ['node']
+            : ['node', 'relationship']
+          : [];
+    if (kinds.length === 0 || (item.kind === 'labels' && !kinds.includes('node'))) {
+      throw new SemanticError(
+        `${clause.toUpperCase()} needs a ${item.kind === 'labels' ? 'node' : 'node or relationship'}`,
+        { position: target.position },
+      );
+    }
+
+    const steps: PlanStep[] = [{ ...step, computes: index }];
+    for (const kind of kinds) {
+      const table = kind === 'node' ? this.mapping.nodes : this.mapping.edges;
+      const id = { kind: 'computedId' as const, index, column: t, entity: kind, position };
+      if (item.kind === 'labels') {
+        for (const label of new Set(item.labels)) {
+          const u = new SqlBuilder(this.dialect, this.mapping);
+          const labels = u.ident(this.mapping.nodes.labels);
+          const l = u.bind({ kind: 'sql', value: label });
+          const next =
+            clause === 'Set'
+              ? `CASE WHEN ${this.dialect.hasLabel(labels, l)} THEN ${labels} ` +
+                `ELSE ${this.dialect.appendLabel(labels, l)} END`
+              : this.dialect.removeLabel(labels, l);
+          steps.push(
+            u.finish(
+              `UPDATE ${u.table('nodes')} SET ${labels} = ${next} WHERE ${u.ident(table.id)} = ${u.bind(id)}`,
+              { updates: true },
+            ),
+          );
+        }
+        continue;
+      }
+      const u = new SqlBuilder(this.dialect, this.mapping);
+      const properties = u.ident(table.properties);
+      const patch = this.dialect.jsonInput(
+        u.bind({
+          kind: 'propertyPatch',
+          index,
+          column: v,
+          mode: item.kind,
+          key: item.kind === 'property' ? item.key : undefined,
+          types: table.propertyTypes,
+          position,
+        }),
+      );
+      const next =
+        item.kind === 'replace' ? patch : this.dialect.mergeProperties(properties, patch);
+      steps.push(
+        u.finish(
+          `UPDATE ${u.table(kind === 'node' ? 'nodes' : 'edges')} SET ${properties} = ${next} ` +
+            `WHERE ${u.ident(table.id)} = ${u.bind(id)}`,
+          { updates: true },
+        ),
+      );
+    }
+    return steps;
   }
 
   private checkRelationship(rel: ast.RelationshipPattern): void {

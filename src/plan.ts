@@ -71,6 +71,38 @@ export type BindValue =
   /** The rows a write query wrote, as a JSON array of objects (see `PlanStep.written`). */
   | { kind: 'writtenRows' }
   /**
+   * The current source row of a write query as a one-element JSON array, in the
+   * form of `writtenRows`: what SET reads its values from, after earlier writes.
+   */
+  | { kind: 'currentRow'; written: { name: string; value: WrittenValue }[] }
+  /**
+   * The id of the node or relationship in column `column` of the row that step
+   * `computes: index` returned; null when the value is null or an entity of the
+   * other kind. Any other value is a type error.
+   */
+  | {
+      kind: 'computedId';
+      index: number;
+      column: ColumnSpec;
+      entity: 'node' | 'relationship';
+      position: SourcePosition;
+    }
+  /**
+   * The JSON object a SET or REMOVE merges into (`property`, `merge`) or puts in
+   * place of (`replace`) an entity's properties, from column `column` of the
+   * row that step `computes: index` returned. The values are checked as CREATE
+   * checks them.
+   */
+  | {
+      kind: 'propertyPatch';
+      index: number;
+      column: ColumnSpec;
+      mode: 'property' | 'merge' | 'replace';
+      key: string | undefined;
+      types: PropertyTypes | undefined;
+      position: SourcePosition;
+    }
+  /**
    * A query parameter compared with a declared property (`n.age > $min`), as a
    * value of the property's type, so that the comparison is plain SQL that an
    * index can serve: the value, null when it has another type, and an integer
@@ -142,6 +174,10 @@ export interface PlanStep {
   values: BindValue[];
   /** When set, the step inserts entity `index`. With database ids it returns that id as column `id`. */
   creates?: { entity: number; kind: 'node' | 'relationship' } | undefined;
+  /** The step changes the graph without creating an entity (SET, REMOVE). */
+  updates?: boolean | undefined;
+  /** When set, the step's first row is kept for `computedId` and `propertyPatch` binds. */
+  computes?: number | undefined;
   /** When set, the step supplies a generated id for entity `entity` in this bind slot. */
   generatedId?: { entity: number; kind: 'node' | 'relationship' } | undefined;
   /**
@@ -209,7 +245,7 @@ export interface ExecuteOptions {
 }
 
 export function createPlan(steps: PlanStep[], columns: ColumnSpec[]): CompiledPlan {
-  const readOnly = steps.every((s) => s.creates === undefined);
+  const readOnly = steps.every((s) => s.creates === undefined && !s.updates);
   return {
     readOnly,
     steps,
@@ -249,6 +285,7 @@ export async function executePlan(
     searches: new Map(),
     frontier: undefined,
     written: undefined,
+    computed: new Map(),
   };
   const entityIds = state.entityIds;
   let stepsRun = 0;
@@ -297,6 +334,9 @@ export async function executePlan(
       if (step.creates && !step.generatedId) {
         entityIds.set(step.creates.entity, result[0]?.['id']);
       }
+      if (step.computes !== undefined) {
+        state.computed.set(step.computes, result[0] ?? {});
+      }
       return result;
     };
 
@@ -332,6 +372,7 @@ export async function executePlan(
       }
       for (const row of last) {
         entityIds.clear();
+        state.computed.clear();
         for (const step of perRow) {
           await run(step, row);
         }
@@ -411,6 +452,8 @@ interface RunState {
   frontier: string | undefined;
   /** JSON text of the rows a write query wrote, for its RETURN step. */
   written: string | undefined;
+  /** The first row of each `computes` step, for the current source row. */
+  computed: Map<number, Row>;
 }
 
 /** One written row as a JSON object: ids of created and matched entities, and JSON values. */
@@ -531,6 +574,29 @@ function resolveBind(
         throw new Error('Internal error: written rows are bound before the writes ran');
       }
       return state.written;
+    case 'currentRow':
+      return `[${writtenRow(bind.written, entityIds, row)}]`;
+    case 'computedId': {
+      const computed = computedValue(state, bind.index, bind.column);
+      if (computed.raw !== undefined) {
+        // A node or relationship column: its id column, as the database returned it.
+        return bind.column.kind === bind.entity ? computed.raw : null;
+      }
+      const value = computed.value;
+      if (value === null) {
+        return null;
+      }
+      if (value instanceof CypherNode || value instanceof CypherRelationship) {
+        const kind = value instanceof CypherNode ? 'node' : 'relationship';
+        return kind === bind.entity ? value.id : null;
+      }
+      throw new CypherTypeError('Type mismatch: expected a node or relationship', {
+        code: 'InvalidArgumentType',
+        position: bind.position,
+      });
+    }
+    case 'propertyPatch':
+      return propertyPatch(bind, computedValue(state, bind.index, bind.column).value);
     case 'parameterAs':
     case 'parameterFits': {
       const value = resolveValue(
@@ -639,6 +705,62 @@ function requireRow(row: Row | undefined): Row {
  * Property values are scalars or lists of scalars (Cypher has no map-valued
  * properties), and a declared property has its declared type.
  */
+/**
+ * Column `column` of the row a `computes` step returned, as a Cypher value; for
+ * a node or relationship column also the raw id the database returned.
+ */
+function computedValue(
+  state: RunState,
+  index: number,
+  column: ColumnSpec,
+): { value: CypherValue; raw?: unknown } {
+  const row = state.computed.get(index);
+  if (!row) {
+    throw new Error(`Internal error: computed row ${index} is bound before its step ran`);
+  }
+  const value = assembleRecord(row, [column])[column.name] ?? null;
+  return column.kind === 'node' || column.kind === 'relationship'
+    ? { value, raw: row[column.id] ?? null }
+    : { value };
+}
+
+/** The JSON object of a `propertyPatch` bind, from the value SET computed. */
+function propertyPatch(
+  bind: Extract<BindValue, { kind: 'propertyPatch' }>,
+  value: CypherValue,
+): string {
+  const patch: CypherMap = {};
+  if (bind.mode === 'property') {
+    if (value !== null) {
+      checkPropertyValue(bind.key!, value, bind.types);
+    }
+    patch[bind.key!] = value;
+    return stringifyCypherJson(patch);
+  }
+  let entries: CypherMap;
+  if (value === null) {
+    entries = {};
+  } else if (value instanceof CypherNode || value instanceof CypherRelationship) {
+    entries = value.properties;
+  } else if (isCypherMap(value)) {
+    entries = value;
+  } else {
+    throw new CypherTypeError('Type mismatch: expected a map, node, or relationship', {
+      code: 'InvalidArgumentType',
+      position: bind.position,
+    });
+  }
+  for (const [key, v] of Object.entries(entries)) {
+    if (v !== null) {
+      checkPropertyValue(key, v, bind.types);
+      patch[key] = v;
+    } else if (bind.mode === 'merge') {
+      patch[key] = null;
+    }
+  }
+  return stringifyCypherJson(patch);
+}
+
 function checkPropertyValue(
   key: string,
   value: CypherValue,
@@ -810,6 +932,12 @@ function describeBind(bind: BindValue): string {
       return `shortestPaths(search ${bind.search + 1})`;
     case 'writtenRows':
       return 'writtenRows';
+    case 'currentRow':
+      return `currentRow(${bind.written.map((w) => w.name).join(', ')})`;
+    case 'computedId':
+      return `id(computed ${bind.index + 1}.${bind.column.name}, ${bind.entity})`;
+    case 'propertyPatch':
+      return `${bind.mode}${bind.key === undefined ? '' : ` ${bind.key}`}(computed ${bind.index + 1}.${bind.column.name})`;
     case 'parameterAs':
       return `$${bind.name} as ${bind.type}`;
     case 'parameterFits':

@@ -99,9 +99,6 @@ describe('parse: clauses', () => {
       name: 'MERGE',
       write: true,
     });
-    expect(clauses('MATCH (n) SET n.x = 1')).toBeDefined();
-    expect(parse('MATCH (n) SET n.x = 1').clauses[1]).toMatchObject({ name: 'SET', write: true });
-    expect(parse('MATCH (n) REMOVE n.x').clauses[1]).toMatchObject({ name: 'REMOVE', write: true });
     expect(parse('MATCH (n) DELETE n').clauses[1]).toMatchObject({ name: 'DELETE', write: true });
     expect(parse('MATCH (n) DETACH DELETE n').clauses[1]).toMatchObject({
       name: 'DETACH DELETE',
@@ -111,6 +108,38 @@ describe('parse: clauses', () => {
       type: 'UnsupportedClause',
       name: 'CALL',
       write: false,
+    });
+  });
+
+  it('parses SET and REMOVE items', () => {
+    const position = expect.anything() as unknown;
+    expect(
+      parse('MATCH (n) SET n.a = 1, (n).b.c = 2, n = {x: 1}, n += $m, n:A:B').clauses[1],
+    ).toMatchObject({
+      type: 'Set',
+      items: [
+        {
+          kind: 'property',
+          target: { type: 'Variable', name: 'n' },
+          key: 'a',
+          value: { value: 1n },
+        },
+        {
+          kind: 'property',
+          target: { type: 'PropertyAccess', subject: { name: 'n' }, key: 'b' },
+          key: 'c',
+        },
+        { kind: 'replace', variable: 'n', value: { type: 'Map' }, position },
+        { kind: 'merge', variable: 'n', value: { type: 'Parameter', name: 'm' } },
+        { kind: 'labels', variable: 'n', labels: ['A', 'B'] },
+      ],
+    });
+    expect(parse('MATCH (n) REMOVE n.a, n:A').clauses[1]).toMatchObject({
+      type: 'Remove',
+      items: [
+        { kind: 'property', target: { name: 'n' }, key: 'a' },
+        { kind: 'labels', variable: 'n', labels: ['A'] },
+      ],
     });
   });
 

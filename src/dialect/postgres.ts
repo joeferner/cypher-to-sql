@@ -121,6 +121,10 @@ export function postgres(): Dialect {
     // `@>` can use a GIN index on the labels column.
     hasLabel: (labelsExpr, labelPlaceholder) =>
       `(${labelsExpr} @> jsonb_build_array(${labelPlaceholder}::text))`,
+    // The properties have no nulls, so the nulls after `||` are the patch's.
+    mergeProperties: (properties, patch) => `jsonb_strip_nulls(${properties} || ${patch})`,
+    appendLabel: (labels, label) => `(${labels} || jsonb_build_array(${label}::text))`,
+    removeLabel: (labels, label) => `(${labels} - ${label}::text)`,
     typedPlaceholder: (placeholder, type) => `(${placeholder}::${SQL_TYPES[type]})`,
     booleanLiteral: (value) =>
       value === null ? 'CAST(NULL AS boolean)' : value ? 'TRUE' : 'FALSE',

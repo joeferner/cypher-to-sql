@@ -232,7 +232,7 @@ for (const backend of testBackends()) {
           '(after the writes, over the written rows: a)',
         );
         expect(() => write.compile('CREATE (a) WITH a CREATE (b) RETURN b')).toThrow(
-          /not CREATE again/,
+          /not writes again/,
         );
       });
 

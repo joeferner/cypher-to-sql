@@ -28,7 +28,7 @@ console.log(graph.compile('MATCH (p:Person) RETURN p LIMIT 5').explain());
 
 For SQLite, use `sqlite()` with the [`better-sqlite3`](examples/executors/better-sqlite3.ts) or [`node:sqlite`](examples/executors/node-sqlite.ts) executor.
 
-`CREATE` works only on a graph created with `readOnly: false`. Use a separate executor and database role for that graph, and never pass it untrusted queries:
+`CREATE`, `SET`, and `REMOVE` work only on a graph created with `readOnly: false`. Use a separate executor and database role for that graph, and never pass it untrusted queries:
 
 ```ts
 const writer = createGraph({

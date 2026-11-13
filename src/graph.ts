@@ -11,18 +11,12 @@ import {
   type ColumnSpec,
   type CompiledPlan,
   type PlanStep,
-  type WrittenValue,
 } from './plan.js';
 import { assertQueryReadOnly, assertSupported, hasWriteClause } from './planner/gate.js';
-import {
-  planRead,
-  planWrittenReturn,
-  ReadScope,
-  RowSource,
-  type WrittenVariable,
-} from './planner/read.js';
+import { planRead, planWrittenReturn, ReadScope, RowSource } from './planner/read.js';
 import { SqlBuilder } from './planner/sql-builder.js';
 import {
+  rowVariables,
   WritePlanner,
   type CreatedEntity,
   type CreateSource,
@@ -35,7 +29,7 @@ export interface GraphOptions {
   executor: SqlExecutor;
   /** Defaults to `defaultMapping` (tables `nodes` and `edges`). */
   mapping?: GraphMapping | undefined;
-  /** Defaults to true. With false, CREATE is allowed (the only write clause in version 1). */
+  /** Defaults to true. With false, CREATE, SET, and REMOVE are allowed. */
   readOnly?: boolean | undefined;
   /** Graph-wide limits. Unset entries use `defaultLimits`. */
   limits?: Partial<Limits> | undefined;
@@ -110,13 +104,13 @@ function planQuery(
       // Unreachable while the gate works; kept so that a gate bug cannot reach SQL.
       throw new ReadOnlyViolationError('Write clauses are not allowed on a read-only graph');
     }
-    // Reading clauses, then CREATE clauses, then optionally reading clauses over
-    // the written rows and RETURN.
-    const firstCreate = clauses.findIndex((c) => c.type === 'Create');
-    const reading = clauses.slice(0, firstCreate);
-    const afterCreate = clauses.findIndex((c, i) => i > firstCreate && c.type !== 'Create');
-    const creates = clauses.slice(firstCreate, afterCreate < 0 ? undefined : afterCreate);
-    const tail = afterCreate < 0 ? [] : clauses.slice(afterCreate);
+    // Reading clauses, then CREATE, SET, and REMOVE clauses, then optionally
+    // reading clauses over the written rows and RETURN.
+    const firstWrite = clauses.findIndex(isUpdateClause);
+    const reading = clauses.slice(0, firstWrite);
+    const afterWrites = clauses.findIndex((c, i) => i > firstWrite && !isUpdateClause(c));
+    const updates = clauses.slice(firstWrite, afterWrites < 0 ? undefined : afterWrites);
+    const tail = afterWrites < 0 ? [] : clauses.slice(afterWrites);
     const last = tail.at(-1);
     const ret = last?.type === 'Return' ? last : undefined;
     const tailReading = tail.slice(0, -1);
@@ -126,7 +120,7 @@ function planQuery(
       tailReading.find((c) => !isRowClause(c));
     if (misplaced) {
       throw new UnsupportedFeatureError(
-        'A write query can be MATCH, UNWIND, and WITH, then CREATE, then MATCH, UNWIND, and WITH with RETURN for now (not CREATE again after them)',
+        'A write query can be MATCH, UNWIND, and WITH, then CREATE, SET, and REMOVE, then MATCH, UNWIND, and WITH with RETURN for now (not writes again after them)',
         { position: misplaced.position },
       );
     }
@@ -145,8 +139,8 @@ function planQuery(
       // RETURN collects the written rows from the per-row steps.
       createSource.need();
     }
-    const { steps: inserts, created } = writer.planCreate(
-      creates as ast.CreateClause[],
+    const { steps: inserts, created } = writer.planUpdates(
+      updates as (ast.CreateClause | ast.SetClause | ast.RemoveClause)[],
       limits,
       createSource,
     );
@@ -202,29 +196,7 @@ function planReturnAfterCreate(
   dialect: Dialect,
   mapping: GraphMapping,
 ): { step: PlanStep; columns: ColumnSpec[] } {
-  const scope = source.scope;
-  const written: { name: string; value: WrittenValue }[] = [];
-  const variables: WrittenVariable[] = [];
-  for (const name of scope.variables) {
-    const binding = scope.lookup({ name, position: ret.position });
-    if (binding.kind === 'node' || binding.kind === 'relationship') {
-      const table = binding.kind === 'node' ? mapping.nodes : mapping.edges;
-      const column = source.column(`${binding.alias}.${scope.b.ident(table.id)}`);
-      written.push({ name, value: { kind: 'rowId', column } });
-      variables.push({ name, kind: binding.kind });
-    } else {
-      const value = source.valueColumn({ type: 'Variable', position: ret.position, name });
-      if (value.kind !== 'row') {
-        throw new Error('Internal error: a variable is not a row column');
-      }
-      written.push({ name, value: { kind: 'rowJson', column: value.column } });
-      variables.push({ name, kind: 'value' });
-    }
-  }
-  for (const [name, entity] of created) {
-    written.push({ name, value: { kind: 'entity', entity: entity.entity } });
-    variables.push({ name, kind: entity.kind });
-  }
+  const { written, variables } = rowVariables(source, created, mapping, ret.position);
   const b = new SqlBuilder(dialect, mapping);
   const { step, columns } = planWrittenReturn(b, variables, reading, ret);
   if (b.searchSteps.length > 0) {
@@ -233,6 +205,10 @@ function planReturnAfterCreate(
     });
   }
   return { step: { ...step, written }, columns };
+}
+
+function isUpdateClause(clause: ast.Clause): boolean {
+  return clause.type === 'Create' || clause.type === 'Set' || clause.type === 'Remove';
 }
 
 function isRowClause(clause: ast.Clause): clause is ast.RowClause {

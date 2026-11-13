@@ -50,6 +50,20 @@ export interface Dialect {
   /** Condition: the JSON array of strings `labelsExpr` contains the bound label. */
   hasLabel(labelsExpr: string, labelPlaceholder: string): string;
 
+  /**
+   * A properties object with `patch` (a JSON object) merged in, as JSON merge
+   * patch (RFC 7396) does at the top level: a null entry removes the key, any
+   * other entry sets it. Property values are never maps, so nothing is merged
+   * deeper. For SET and REMOVE.
+   */
+  mergeProperties(propertiesExpr: string, patch: string): string;
+
+  /** A labels array with the label appended (the caller checks that it is not there yet). */
+  appendLabel(labelsExpr: string, labelPlaceholder: string): string;
+
+  /** A labels array without the label. */
+  removeLabel(labelsExpr: string, labelPlaceholder: string): string;
+
   /** A bind placeholder holding a value of `type`, with the type made explicit. */
   typedPlaceholder(placeholder: string, type: 'integer' | 'float' | 'string'): string;
 

@@ -81,9 +81,9 @@ describe('read-only gate', () => {
 
 describe('feature gate', () => {
   it('rejects unsupported write clauses on a write graph', () => {
-    const error = errorOf(() => writeGraph.compile('MATCH (n) SET n.x = 1'));
+    const error = errorOf(() => writeGraph.compile('MATCH (n) DELETE n'));
     expect(error).toBeInstanceOf(UnsupportedFeatureError);
-    expect(error.message).toMatch(/^SET is not supported yet/);
+    expect(error.message).toMatch(/^DELETE is not supported yet/);
     expect(error.position).toMatchObject({ line: 1, column: 10 });
   });
 

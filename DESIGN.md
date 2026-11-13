@@ -4,7 +4,7 @@ How cypher-to-sql works and the rules it keeps. For the roadmap and progress, se
 
 ## Scope
 
-Version 1 runs read-only openCypher on PostgreSQL (including managed PostgreSQL such as RDS and Aurora, where graph extensions are not available) and SQLite. `CREATE` is available behind an explicit write mode, mainly so that the TCK can build its test graphs with the library itself. Coverage grows feature by feature, and every unsupported construct fails with a clear `UnsupportedFeatureError`.
+Version 1 runs read-only openCypher on PostgreSQL (including managed PostgreSQL such as RDS and Aurora, where graph extensions are not available) and SQLite. `CREATE`, `SET`, and `REMOVE` are available behind an explicit write mode, mainly so that the TCK can build its test graphs with the library itself. Coverage grows feature by feature, and every unsupported construct fails with a clear `UnsupportedFeatureError`.
 
 **Non-goals:** procedures (`CALL`), APOC, vendor-specific functions, and `LOAD CSV`. Managing application schemas: the library reads a mapping and never creates application tables. Database drivers, connections, and pooling: the caller runs the SQL with their own driver, and the library has no runtime dependency on any driver.
 
@@ -44,7 +44,8 @@ A query compiles to a plan of one or more SQL steps (`graph.compile(cypher).expl
 - **Entity hydration:** first find matching ids, then fetch full nodes and relationships in one batched step.
 - **Large `WITH` stages:** materialize an intermediate result once instead of repeating it.
 - **Writes after reading clauses:** a source `SELECT` runs first, then the `CREATE` inserts run once per source row (`perRow` steps). The source is fully read before any insert, so new entities are never matched by the same query. A `CREATE` with no reading clauses gets a one-row source `SELECT` when a property value must be computed in SQL (or for RETURN); constant values need none. In a property value, `a.key` of an entity created earlier in the query is the expression `a` was given for `key` (null if none), so `rand()` there is evaluated again.
-- **RETURN after CREATE:** for each source row the runner collects its variables (ids of matched and created entities, other values as JSON text) into a JSON object. A last step (`written`) reads the bound array of them in source order, joins the entities back by id, and runs the clauses after CREATE (`MATCH`, `UNWIND`, `WITH`, which see the new entities) and the RETURN, so filtering and aggregation there change the result but not what was created. A second CREATE after those clauses is not supported yet.
+- **RETURN after CREATE:** for each source row the runner collects its variables (ids of matched and created entities, other values as JSON text) into a JSON object. A last step (`written`) reads the bound array of them in source order, joins the entities back by id, and runs the clauses after CREATE (`MATCH`, `UNWIND`, `WITH`, which see the new entities) and the RETURN, so filtering and aggregation there change the result but not what was created. A value that is a node or relationship (from `UNWIND` or a list) is joined back by its id too, so it shows later writes; a list of them keeps the values it had. Writes after those clauses are not supported yet.
+- **SET and REMOVE:** they run per source row, among the CREATE steps in clause order. Each item is two steps: a `SELECT` over the current row in written-row form (`currentRow`, as for RETURN after CREATE), which computes the target entity and the value from the entities as stored now, so it sees earlier writes, earlier items, and earlier rows (`computes`); then an `UPDATE ... WHERE id = ?` per table the target can be in. The runner checks the computed value as CREATE checks properties (declared types, no maps or nested lists) and binds a JSON patch: `n.key = v` and `n += map` merge it (`Dialect.mergeProperties`: SQLite's `json_patch`, PostgreSQL's `jsonb_strip_nulls(old || patch)`; a null removes the key), `n = map` replaces the properties; a node or relationship as the map stands for its properties. `REMOVE n.key` is `SET n.key = null`. Labels change with `Dialect.appendLabel` (when absent) and `removeLabel`. A null target changes nothing. RETURN reads the entities after every row's writes, so a value read per row in Neo4j (`SET n.c = n.c + 1 RETURN n.c` over several rows) is the final one here.
 
 Rules:
 
@@ -286,27 +287,28 @@ The defaults were checked against the reference graphs (#16, `npm run bench:limi
 
 ## Translation rules
 
-| Cypher                                                            | SQL                                                                                                                             |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Node pattern `(a:Label {k: v})`                                   | Scan of the node table with label and property filters                                                                          |
-| Fixed relationship `-[r:T]->`                                     | Join to the edge table on start and end ids                                                                                     |
-| Undirected `-[r]-`                                                | Join on either direction with `OR`. As in Cypher, a relationship matches once per orientation that fits (a self-loop once)      |
-| Several relationship patterns in one `MATCH`                      | `r1.id <> r2.id` for each pair (relationship uniqueness), including anonymous ones and ones bound by an earlier clause          |
-| Inline property map `{k: v}` in `MATCH`                           | `n.k = v` per entry with Cypher equality: a missing property or a null never matches. A parameter map is an error               |
-| `WHERE`                                                           | The expression compiler (see "Expressions"), with Cypher null semantics                                                         |
-| `RETURN`, `SKIP`, `LIMIT`                                         | Direct equivalents; `SKIP`/`LIMIT` are bound values checked to be non-negative integers                                         |
-| `ORDER BY`                                                        | Sort keys from `ExprCompiler.sortKeys`: aliases are substituted, then a JSON value sorts by type rank and then value            |
-| `DISTINCT` with `ORDER BY`                                        | `SELECT * FROM (SELECT DISTINCT ..., <sort keys>) AS d ORDER BY d.k0, ...`; the keys may use only projected values              |
-| Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`)       | Two levels: SQL aggregates grouped by the non-aggregated items, then the items over those columns (see "Aggregation")           |
-| Variable length `[*1..n]`                                         | Recursive CTE with an edge-id list per path, capped by `maxPathDepth` (see "Variable-length patterns")                          |
-| `shortestPath` / `allShortestPaths`                               | Breadth-first search, one step per depth, joined back as bound paths (see "Shortest paths")                                     |
-| Named path `p = ...`, `nodes(p)`, `relationships(p)`, `length(p)` | A JSON path value of tagged entities (see "Named paths")                                                                        |
-| `OPTIONAL MATCH`                                                  | `LEFT JOIN (<new tables>) ON <pattern conditions and WHERE>` on both dialects (see "OPTIONAL MATCH")                            |
-| `WITH`                                                            | A derived table per stage (see "WITH stages"); a separate step for large stages later (#14)                                     |
-| `UNWIND`                                                          | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position. |
-| List comprehensions, `all`/`any`/`none`/`single`                  | Correlated subquery over the unwound list (see "List expressions")                                                              |
-| Pattern predicates, `EXISTS { }`, pattern comprehensions          | Correlated `EXISTS (SELECT ...)` or list subquery (see "Patterns in expressions")                                               |
-| `CREATE` (write mode)                                             | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`; RETURN over the written rows                 |
+| Cypher                                                            | SQL                                                                                                                              |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Node pattern `(a:Label {k: v})`                                   | Scan of the node table with label and property filters                                                                           |
+| Fixed relationship `-[r:T]->`                                     | Join to the edge table on start and end ids                                                                                      |
+| Undirected `-[r]-`                                                | Join on either direction with `OR`. As in Cypher, a relationship matches once per orientation that fits (a self-loop once)       |
+| Several relationship patterns in one `MATCH`                      | `r1.id <> r2.id` for each pair (relationship uniqueness), including anonymous ones and ones bound by an earlier clause           |
+| Inline property map `{k: v}` in `MATCH`                           | `n.k = v` per entry with Cypher equality: a missing property or a null never matches. A parameter map is an error                |
+| `WHERE`                                                           | The expression compiler (see "Expressions"), with Cypher null semantics                                                          |
+| `RETURN`, `SKIP`, `LIMIT`                                         | Direct equivalents; `SKIP`/`LIMIT` are bound values checked to be non-negative integers                                          |
+| `ORDER BY`                                                        | Sort keys from `ExprCompiler.sortKeys`: aliases are substituted, then a JSON value sorts by type rank and then value             |
+| `DISTINCT` with `ORDER BY`                                        | `SELECT * FROM (SELECT DISTINCT ..., <sort keys>) AS d ORDER BY d.k0, ...`; the keys may use only projected values               |
+| Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`)       | Two levels: SQL aggregates grouped by the non-aggregated items, then the items over those columns (see "Aggregation")            |
+| Variable length `[*1..n]`                                         | Recursive CTE with an edge-id list per path, capped by `maxPathDepth` (see "Variable-length patterns")                           |
+| `shortestPath` / `allShortestPaths`                               | Breadth-first search, one step per depth, joined back as bound paths (see "Shortest paths")                                      |
+| Named path `p = ...`, `nodes(p)`, `relationships(p)`, `length(p)` | A JSON path value of tagged entities (see "Named paths")                                                                         |
+| `OPTIONAL MATCH`                                                  | `LEFT JOIN (<new tables>) ON <pattern conditions and WHERE>` on both dialects (see "OPTIONAL MATCH")                             |
+| `WITH`                                                            | A derived table per stage (see "WITH stages"); a separate step for large stages later (#14)                                      |
+| `UNWIND`                                                          | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position.  |
+| List comprehensions, `all`/`any`/`none`/`single`                  | Correlated subquery over the unwound list (see "List expressions")                                                               |
+| Pattern predicates, `EXISTS { }`, pattern comprehensions          | Correlated `EXISTS (SELECT ...)` or list subquery (see "Patterns in expressions")                                                |
+| `CREATE` (write mode)                                             | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`; RETURN over the written rows                  |
+| `SET`, `REMOVE` (write mode)                                      | Per source row and item: a `SELECT` of the target and value as stored now, then `UPDATE` with a JSON merge patch or label change |
 
 ## Dialect differences
 

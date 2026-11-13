@@ -15,7 +15,49 @@ export interface Query extends Node {
 }
 
 export type Clause =
-  MatchClause | UnwindClause | WithClause | CreateClause | ReturnClause | UnsupportedClause;
+  | MatchClause
+  | UnwindClause
+  | WithClause
+  | CreateClause
+  | SetClause
+  | RemoveClause
+  | ReturnClause
+  | UnsupportedClause;
+
+/** `SET item, ...`: the items apply in order, each for every row. */
+export interface SetClause extends Node {
+  type: 'Set';
+  items: SetItem[];
+}
+
+/** `REMOVE item, ...`: removes properties (`n.key`) or labels (`n:L`). */
+export interface RemoveClause extends Node {
+  type: 'Remove';
+  items: (PropertyTarget | LabelsItem)[];
+}
+
+export type SetItem =
+  /** `target.key = value`; a null value removes the property. */
+  | (PropertyTarget & { value: Expression })
+  /** `n = map` replaces all properties; `n += map` sets the map's entries. */
+  | { kind: 'replace' | 'merge'; position: SourcePosition; variable: string; value: Expression }
+  | LabelsItem;
+
+/** `target.key`, where `target` should be a node or relationship. */
+export interface PropertyTarget {
+  kind: 'property';
+  position: SourcePosition;
+  target: Expression;
+  key: string;
+}
+
+/** `n:A:B`: labels to add (SET) or remove (REMOVE). */
+export interface LabelsItem {
+  kind: 'labels';
+  position: SourcePosition;
+  variable: string;
+  labels: string[];
+}
 
 /** Clauses that read rows (they come before any updating clause in a query part). */
 export type ReadingClause = MatchClause | UnwindClause;

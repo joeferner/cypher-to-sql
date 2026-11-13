@@ -117,6 +117,11 @@ export function sqlite(options: SqliteOptions = {}): Dialect {
     typedMember: (objectExpr, key) => `(${objectExpr} ->> ${sqlStringLiteral(`$."${key}"`)})`,
     hasLabel: (labelsExpr, labelPlaceholder) =>
       `EXISTS (SELECT 1 FROM json_each(${labelsExpr}) WHERE json_each.value = ${labelPlaceholder})`,
+    mergeProperties: (properties, patch) => `json_patch(${properties}, ${patch})`,
+    appendLabel: (labels, label) => `json_insert(${labels}, '$[#]', ${label})`,
+    removeLabel: (labels, label) =>
+      `(SELECT json_group_array(json_each.value) FROM json_each(${labels}) ` +
+      `WHERE json_each.value <> ${label})`,
     typedPlaceholder: (placeholder, type) =>
       type === 'float' ? `CAST(${placeholder} AS REAL)` : placeholder,
     booleanLiteral: (value) => (value === null ? 'NULL' : value ? '1' : '0'),

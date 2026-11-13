@@ -3,18 +3,32 @@ import { ReadOnlyViolationError, SemanticError, UnsupportedFeatureError } from '
 import { containsAggregate } from './aggregates.js';
 import { children } from './walk.js';
 
+/** The keyword of a clause that modifies the graph, or undefined for a reading clause. */
+export function writeClauseName(clause: ast.Clause): string | undefined {
+  switch (clause.type) {
+    case 'Create':
+      return 'CREATE';
+    case 'Set':
+      return 'SET';
+    case 'Remove':
+      return 'REMOVE';
+    case 'UnsupportedClause':
+      return clause.write ? clause.name : undefined;
+    default:
+      return undefined;
+  }
+}
+
 /** True when the query contains any clause that modifies the graph. */
 export function hasWriteClause(query: ast.Query): boolean {
-  return query.clauses.some(
-    (c) => c.type === 'Create' || (c.type === 'UnsupportedClause' && c.write),
-  );
+  return query.clauses.some((c) => writeClauseName(c) !== undefined);
 }
 
 /** Rejects every write clause. Runs before any feature check, so the error is always the same. */
 export function assertQueryReadOnly(query: ast.Query): void {
   for (const clause of query.clauses) {
-    if (clause.type === 'Create' || (clause.type === 'UnsupportedClause' && clause.write)) {
-      const name = clause.type === 'Create' ? 'CREATE' : clause.name;
+    const name = writeClauseName(clause);
+    if (name !== undefined) {
       throw new ReadOnlyViolationError(`${name} is not allowed on a read-only graph`, {
         position: clause.position,
         hint: 'Remove the write clause, or run the query on a graph created with readOnly: false.',
@@ -76,6 +90,14 @@ function clauseExpressions(clause: ast.Clause): { expr: ast.Expression; where: b
         clause.skip,
         clause.limit,
       ]);
+    case 'Set':
+      return plain(
+        clause.items.flatMap((i) =>
+          i.kind === 'property' ? [i.target, i.value] : i.kind === 'labels' ? [] : [i.value],
+        ),
+      );
+    case 'Remove':
+      return plain(clause.items.map((i) => (i.kind === 'property' ? i.target : undefined)));
     case 'UnsupportedClause':
       return [];
   }
@@ -110,9 +132,7 @@ function checkExpression(expr: ast.Expression, inWhere: boolean): void {
       break;
     case 'Exists':
       if (expr.query) {
-        const write = expr.query.clauses.find(
-          (c) => c.type === 'Create' || (c.type === 'UnsupportedClause' && c.write),
-        );
+        const write = expr.query.clauses.find((c) => writeClauseName(c) !== undefined);
         if (write) {
           throw new SemanticError('An EXISTS subquery cannot modify the graph', {
             position: write.position,

@@ -1,6 +1,7 @@
 import type * as ast from '../ast.js';
+import { ENTITY_TAG } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError } from '../errors.js';
-import type { ColumnSpec, PlanStep, ValueSource } from '../plan.js';
+import type { BindValue, ColumnSpec, PlanStep, ValueSource } from '../plan.js';
 import { containsAggregate, isAggregateCall } from './aggregates.js';
 import { ExprCompiler, orderTerm, type Expr, type VariableBinding } from './expr.js';
 import { constantValue, type SqlBuilder } from './sql-builder.js';
@@ -173,10 +174,14 @@ export class ReadScope {
   }
 
   /** The scope over the rows a write query wrote (see `planWrittenReturn`). */
-  public static written(b: SqlBuilder, variables: WrittenVariable[]): ReadScope {
+  public static written(
+    b: SqlBuilder,
+    variables: WrittenVariable[],
+    rows: BindValue = { kind: 'writtenRows' },
+  ): ReadScope {
     const d = b.dialect;
     const scope = new ReadScope(b);
-    const u = d.unwind(d.jsonInput(b.bind({ kind: 'writtenRows' })), scope.alias('r'));
+    const u = d.unwind(d.jsonInput(b.bind(rows)), scope.alias('r'));
     scope.addFrom(u.from);
     if (u.where) {
       scope.where.push(u.where);
@@ -186,7 +191,28 @@ export class ReadScope {
     for (const { name, kind } of variables) {
       const member = d.jsonMember(u.value, b.bind({ kind: 'sql', value: name }), name);
       if (kind === 'value') {
-        scope.bindings.set(name, { kind: 'value', sql: member });
+        // A value that is a node or relationship (from UNWIND or a list, say) is
+        // read again by its id, so that it shows the writes made to it. Lists of
+        // them keep the values they had.
+        const key = (k: string): string =>
+          d.jsonMember(member, b.bind({ kind: 'sql', value: k }), k);
+        const tag = d.fromJson(key(ENTITY_TAG), 'string');
+        const fresh = (['node', 'relationship'] as const).map((entity) => {
+          const alias = scope.alias(entity === 'node' ? 'n' : 'e');
+          const table = entity === 'node' ? 'nodes' : 'edges';
+          scope.from.push({
+            join:
+              `LEFT JOIN ${b.table(table)} AS ${alias} ON ${tag} = '${entity}' AND ` +
+              d.jsonIdEquals(`${alias}.${b.ident(b.mapping[table].id)}`, key('~id')),
+          });
+          return { alias, idColumn: `${alias}.${b.ident(b.mapping[table].id)}`, entity };
+        });
+        scope.bindings.set(name, {
+          kind: 'value',
+          sql:
+            `(CASE ${fresh.map((f) => `WHEN ${f.idColumn} IS NOT NULL THEN ${b.entityJson(f.entity, f.alias)}`).join(' ')} ` +
+            `ELSE ${member} END)`,
+        });
         continue;
       }
       const table = kind === 'node' ? 'nodes' : 'edges';
@@ -1120,8 +1146,9 @@ export function planWrittenReturn(
   variables: WrittenVariable[],
   reading: ast.RowClause[],
   ret: ast.ReturnClause,
+  rows?: BindValue,
 ): { step: PlanStep; columns: ColumnSpec[] } {
-  const scope = ReadScope.of(b, reading, ReadScope.written(b, variables));
+  const scope = ReadScope.of(b, reading, ReadScope.written(b, variables, rows));
   const result = planProjection(b, scope, ret, 'return');
   return { step: b.finish(result.sql), columns: result.columns };
 }
