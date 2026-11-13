@@ -65,4 +65,4 @@ Conformance is measured with the official [openCypher TCK](https://github.com/op
 
 ## License
 
-MIT
+[MIT](LICENSE)
