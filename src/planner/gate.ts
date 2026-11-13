@@ -104,7 +104,7 @@ function checkExpression(expr: ast.Expression, inWhere: boolean): void {
       if (!inWhere) {
         throw new SemanticError('A pattern can be used as a condition only in WHERE', {
           position: expr.position,
-          hint: 'Use EXISTS { (a)-->(b) } instead, or COUNT the matches with a pattern comprehension.',
+          hint: 'Use EXISTS { (a)-->(b) } instead, or count the matches with size([(a)-->(b) | 1]).',
         });
       }
       break;

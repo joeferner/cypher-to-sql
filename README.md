@@ -10,36 +10,15 @@ Run [openCypher](https://opencypher.org/) queries against a property graph store
 
 ## Usage
 
+Create the two tables ([PostgreSQL](examples/schema/postgres.sql), [SQLite](examples/schema/sqlite.sql)), copy an executor for your driver from [examples/executors](examples/executors), and create a graph:
+
 ```ts
-import Database from 'better-sqlite3';
-import { createGraph, sqlite, type SqlExecutor } from 'cypher-to-sql';
+import pg from 'pg';
+import { createGraph, postgres } from 'cypher-to-sql';
+import { pgExecutor } from './executors/pg.js'; // from examples/executors/pg.ts
 
-const db = new Database('graph.db');
-db.defaultSafeIntegers(true); // Cypher integers are 64-bit; they come back as bigint
-
-// A minimal executor. Run every step of a query in one transaction.
-const executor: SqlExecutor = {
-  async transaction(mode, fn) {
-    db.exec(mode === 'read' ? 'BEGIN DEFERRED' : 'BEGIN IMMEDIATE');
-    try {
-      const result = await fn({
-        query: async (sql, values) => {
-          const stmt = db.prepare(sql);
-          if (stmt.reader) return stmt.all(...values);
-          stmt.run(...values);
-          return [];
-        },
-      });
-      db.exec('COMMIT');
-      return result;
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
-  },
-};
-
-const graph = createGraph({ dialect: sqlite(), executor }); // readOnly: true by default
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const graph = createGraph({ dialect: postgres(), executor: pgExecutor(pool) }); // read-only by default
 
 const records = await graph.query('MATCH (p:Person) RETURN p, p.name AS name LIMIT $n', { n: 10 });
 
@@ -47,44 +26,26 @@ const records = await graph.query('MATCH (p:Person) RETURN p, p.name AS name LIM
 console.log(graph.compile('MATCH (p:Person) RETURN p LIMIT 5').explain());
 ```
 
-The test executor in [test/support/sqlite.ts](test/support/sqlite.ts) is a more complete example. For example, it sets `PRAGMA query_only` on read transactions.
+For SQLite, use `sqlite()` with the [`better-sqlite3`](examples/executors/better-sqlite3.ts) or [`node:sqlite`](examples/executors/node-sqlite.ts) executor.
 
-For PostgreSQL, use `postgres()` and an executor over your driver. [test/support/postgres.ts](test/support/postgres.ts) has one for `pg`. Read transactions use `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`, so every step of a query sees the same snapshot. The executor also runs `SET LOCAL jit = off`: expressions on JSON lists have high row estimates that can trigger JIT compilation, which then takes far longer than the query (hundreds of milliseconds instead of under one). The same file has the DDL for the storage layout with `jsonb` columns.
-
-### Writing
-
-`CREATE` works only on a graph created with `readOnly: false`. Use a separate executor and database role for that graph, and never pass it untrusted queries.
+`CREATE` works only on a graph created with `readOnly: false`. Use a separate executor and database role for that graph, and never pass it untrusted queries:
 
 ```ts
-const writer = createGraph({ dialect: sqlite(), executor, readOnly: false });
+const writer = createGraph({
+  dialect: postgres(),
+  executor: pgExecutor(writePool),
+  readOnly: false,
+});
 await writer.query("CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Alan'})");
 ```
 
-## Storage layout
+## Documentation
 
-The graph lives in one node table and one edge table. Labels and properties are stored as JSON. You can change the table and column names through the `mapping` option.
-
-```sql
-CREATE TABLE nodes (
-  id INTEGER PRIMARY KEY,
-  labels TEXT NOT NULL,      -- JSON array of strings
-  properties TEXT NOT NULL   -- JSON object
-);
-CREATE TABLE edges (
-  id INTEGER PRIMARY KEY,
-  start_id INTEGER NOT NULL REFERENCES nodes (id),
-  end_id INTEGER NOT NULL REFERENCES nodes (id),
-  type TEXT NOT NULL,
-  properties TEXT NOT NULL   -- JSON object
-);
-CREATE INDEX edges_start_id ON edges (start_id);
-CREATE INDEX edges_end_id ON edges (end_id);
-CREATE INDEX edges_type ON edges (type);
-```
-
-## Errors
-
-Every error the library raises on purpose extends `CypherError` and has a message, a source position, and an optional `hint`: `CypherSyntaxError`, `UnsupportedFeatureError`, `SemanticError`, `MappingError`, `LimitExceededError`, and `ReadOnlyViolationError`. Errors that depend on the data are found while the query runs: `CypherTypeError` (a value of the wrong type, for example `WHERE n.name` when `name` is a string) and `CypherArgumentError` (integer overflow, integer division by zero); both carry openCypher's detail `code`. The hints are written so that an automated retry loop (for example, an LLM generating queries) can fix the query.
+- [Executors](docs/executors.md): what an executor does, and tested ones for `pg`, `better-sqlite3`, and `node:sqlite`.
+- [Schema](docs/schema.md): the tables, the mapping, indexes, and declared property types.
+- [Safe execution](docs/safe-execution.md): running untrusted or generated queries, database roles, timeouts, and limits.
+- [Errors](docs/errors.md): the error classes, their hints, and a retry loop for generated queries.
+- [Design](DESIGN.md): how queries become SQL.
 
 ## Development
 

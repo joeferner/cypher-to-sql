@@ -5,15 +5,7 @@ import unusedImports from 'eslint-plugin-unused-imports';
 
 export default tseslint.config(
   {
-    ignores: [
-      'src/parser/generated/',
-      'vendor/',
-      'dist/',
-      'node_modules/',
-      'tmp/',
-      'examples/',
-      'docs/',
-    ],
+    ignores: ['src/parser/generated/', 'vendor/', 'dist/', 'node_modules/', 'tmp/', 'docs/'],
   },
   eslint.configs.recommended,
   {

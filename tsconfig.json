@@ -10,6 +10,8 @@
     "module": "nodenext",
     "target": "esnext",
     "types": ["node"],
+    // The examples import the package by name; check them against the source.
+    "paths": { "cypher-to-sql": ["./src/index.ts"] },
     // For nodejs:
     // "lib": ["esnext"],
     // "types": ["node"],

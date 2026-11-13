@@ -34,11 +34,7 @@ Cypher text
 
 ### Guidance for callers
 
-- Keep `readOnly: true` for any graph that runs user-supplied or generated queries. Give its executor a database role (PostgreSQL) or a read-only connection (SQLite, or `PRAGMA query_only`) that can only read the mapped tables.
-- For writes, make a separate graph with `readOnly: false` and a separate executor that can write. Never pass that graph untrusted queries.
-- Set a statement timeout in the executor (for example, PostgreSQL `statement_timeout`), and keep the library's limits at or below the defaults.
-- On PostgreSQL, turn JIT off in the executor (`SET LOCAL jit = off` after `BEGIN`, or for the role). The SQL for expressions on JSON lists uses set-returning functions and recursive CTEs with high row estimates, so JIT compilation can take hundreds of milliseconds for a query that runs in under one.
-- Treat the library's read-only gate as one layer of defense, not the only one.
+[docs/safe-execution.md](docs/safe-execution.md) has the details. In short: keep `readOnly: true` for any graph that runs untrusted queries, with a database role or connection that can only read; use a separate graph and executor for writes; set a statement timeout and turn PostgreSQL JIT off in the executor ([docs/executors.md](docs/executors.md)); keep the limits at or below the defaults. The library's read-only gate is one layer of defense, not the only one.
 
 ## Execution model
 
