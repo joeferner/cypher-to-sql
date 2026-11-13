@@ -11,7 +11,7 @@ import type { Dialect } from '../dialect/dialect.js';
 import type { GraphMapping } from '../mapping.js';
 import { planWrittenReturn, type RowSource, type WrittenVariable } from './read.js';
 import { constantValue, SqlBuilder } from './sql-builder.js';
-import { mapChildren } from './walk.js';
+import { children, mapChildren } from './walk.js';
 
 /** A column of an INSERT: name, value, and whether the column holds JSON. */
 type InsertColumn = [name: string, value: BindValue, json: boolean];
@@ -26,10 +26,10 @@ export interface CreateSource {
 }
 
 /** An entity a CREATE clause binds to a variable, by its entity number in the row. */
-export interface CreatedEntity {
-  kind: 'node' | 'relationship';
-  entity: number;
-}
+export type CreatedEntity =
+  | { kind: 'node' | 'relationship'; entity: number }
+  /** FOREACH's variable: its element's JSON, in the runner's entity slot `entity`. */
+  | { kind: 'slot'; entity: number };
 
 /**
  * The variables of a source row and the entities created for it so far, as a
@@ -63,15 +63,25 @@ export function rowVariables(
     }
   }
   for (const [name, entity] of created) {
-    written.push({ name, value: { kind: 'entity', entity: entity.entity } });
-    variables.push({ name, kind: entity.kind });
+    if (entity.kind === 'slot') {
+      written.push({ name, value: { kind: 'slot', entity: entity.entity } });
+      variables.push({ name, kind: 'value' });
+    } else {
+      written.push({ name, value: { kind: 'entity', entity: entity.entity } });
+      variables.push({ name, kind: entity.kind });
+    }
   }
   return { written, variables };
 }
 
 /** The clauses that change the graph. */
 export type UpdateClause =
-  ast.CreateClause | ast.SetClause | ast.RemoveClause | ast.DeleteClause | ast.MergeClause;
+  | ast.CreateClause
+  | ast.SetClause
+  | ast.RemoveClause
+  | ast.DeleteClause
+  | ast.MergeClause
+  | ast.ForeachClause;
 
 export type IdStrategy =
   | { kind: 'database' }
@@ -169,9 +179,28 @@ export class WritePlanner {
       return mapChildren(expr, (child, inner) => substituteCreated(child, [...local, ...inner]));
     };
 
+    /** True when `expr` uses a variable that the source rows do not have (FOREACH's). */
+    const foreign = (expr: ast.Expression, local: readonly string[] = []): boolean =>
+      (expr.type === 'Variable' &&
+        !local.includes(expr.name) &&
+        !(source.current?.scope.has(expr.name) ?? false)) ||
+      children(expr).some(({ child, local: inner }) => foreign(child, [...local, ...inner]));
+
+    let computed = 0;
     const valueOf = (expr: ast.Expression): ValueSource => {
       const value = substituteCreated(expr);
-      return constantValue(value) ?? source.need().valueColumn(value);
+      const constant = constantValue(value);
+      if (constant) {
+        return constant;
+      }
+      if (!foreign(value)) {
+        return source.need().valueColumn(value);
+      }
+      // Computed over the row as stored now, where FOREACH's variable is bound.
+      const index = computed++;
+      const { step, column } = this.computeValue(value, source.need(), created, index);
+      into.push(step);
+      return { kind: 'computed', index, column };
     };
 
     const newEntity = (): number => {
@@ -270,12 +299,64 @@ export class WritePlanner {
       }
     };
 
-    let computed = 0;
     let deletesNodes = false;
-    /** The index of each clause's first step, to tag steps with their clause. */
-    const starts: number[] = [];
-    for (const clause of clauses) {
-      starts.push(steps.length);
+    let slots = 0;
+
+    /** Steps tagged with their clause (the runner runs a clause for every row before the next). */
+    const tagged = (list: PlanStep[], starts: number[]): PlanStep[] =>
+      list.map((step, i) => ({
+        ...step,
+        clause: starts.findLastIndex((start) => start <= i),
+      }));
+
+    /** Plans one clause into `out`. */
+    const planClause = (clause: UpdateClause, out: PlanStep[]): void => {
+      const previous = into;
+      into = out;
+      try {
+        planInto(clause, out);
+      } finally {
+        into = previous;
+      }
+    };
+
+    const planInto = (clause: UpdateClause, steps: PlanStep[]): void => {
+      if (clause.type === 'Foreach') {
+        // The list, for each row; the inner clauses for each element, with the
+        // variable in an entity slot. Variables bound inside do not leave it.
+        const index = computed++;
+        const { step, column } = this.computeValue(
+          substituteCreated(clause.list),
+          source.need(),
+          created,
+          index,
+        );
+        const slot = -++slots;
+        const createdBefore = new Map(created);
+        const variablesBefore = new Map(variables);
+        created.set(clause.variable, { kind: 'slot', entity: slot });
+        const inner: PlanStep[] = [];
+        const starts: number[] = [];
+        for (const c of clause.clauses) {
+          starts.push(inner.length);
+          // The parser allows only updating clauses in FOREACH.
+          planClause(c as UpdateClause, inner);
+        }
+        created.clear();
+        createdBefore.forEach((v, k) => created.set(k, v));
+        variables.clear();
+        variablesBefore.forEach((v, k) => variables.set(k, v));
+        steps.push({
+          ...step,
+          foreach: {
+            slot,
+            column,
+            position: clause.position,
+            steps: tagged(inner, starts).map((s) => ({ ...s, perRow: true })),
+          },
+        });
+        return;
+      }
       if (clause.type === 'Merge') {
         steps.push(
           this.planMerge(
@@ -299,7 +380,7 @@ export class WritePlanner {
             (item) => this.planSetItem(item, 'Set', source.need(), created, computed++),
           ),
         );
-        continue;
+        return;
       }
       if (clause.type === 'Delete') {
         for (const expression of clause.expressions) {
@@ -310,7 +391,7 @@ export class WritePlanner {
         // After the clause ran for every row: its nodes without relationships go now.
         steps.push(this.deleteFreeNodes());
         deletesNodes = true;
-        continue;
+        return;
       }
       if (clause.type !== 'Create') {
         // REMOVE n.key is SET n.key = null.
@@ -325,7 +406,7 @@ export class WritePlanner {
         for (const item of items) {
           steps.push(...this.planSetItem(item, clause.type, source.need(), created, computed++));
         }
-        continue;
+        return;
       }
       for (const part of clause.pattern) {
         if (part.variable !== undefined) {
@@ -346,13 +427,56 @@ export class WritePlanner {
         }
         createPart(part);
       }
+    };
+
+    const starts: number[] = [];
+    for (const clause of clauses) {
+      starts.push(steps.length);
+      planClause(clause, steps);
     }
-    // Each step knows its clause (the runner runs a clause for every row before the next).
-    const clauseOf = (i: number): number => starts.findLastIndex((start) => start <= i);
-    const tagged = steps.map((step, i) => ({ ...step, clause: clauseOf(i) }));
+    const clauseSteps = tagged(steps, starts);
     // A source made for a computed value (after some INSERTs were planned) makes every step per-row.
-    const all = source.current ? tagged.map((step) => ({ ...step, perRow: true })) : tagged;
+    const all = source.current
+      ? clauseSteps.map((step) => ({ ...step, perRow: true }))
+      : clauseSteps;
     return { steps: deletesNodes ? [...all, ...this.deleteNodes()] : all, created };
+  }
+
+  /**
+   * A SELECT that computes `value` over the row as it is stored now (with
+   * FOREACH's variables bound); its row is kept as `computes: index`.
+   */
+  private computeValue(
+    value: ast.Expression,
+    source: RowSource,
+    created: Map<string, CreatedEntity>,
+    index: number,
+  ): { step: PlanStep; column: ColumnSpec } {
+    const position = value.position;
+    const { written, variables } = rowVariables(source, created, this.mapping, position);
+    const b = new SqlBuilder(this.dialect, this.mapping);
+    const { step, columns } = planWrittenReturn(
+      b,
+      variables,
+      [],
+      {
+        type: 'Return',
+        position,
+        distinct: false,
+        star: false,
+        items: [{ position, expression: value, alias: 'v', name: 'v' }],
+        orderBy: [],
+        skip: undefined,
+        limit: undefined,
+      },
+      { kind: 'currentRow', written },
+    );
+    if (b.searchSteps.length > 0) {
+      throw new UnsupportedFeatureError('shortestPath() in an updating clause is not supported', {
+        position,
+      });
+    }
+    return { step: { ...step, computes: index }, column: columns[0]! };
   }
 
   /**

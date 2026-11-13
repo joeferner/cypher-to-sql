@@ -185,6 +185,16 @@ class AstBuilder {
     if (remove) {
       return this.removeClause(remove);
     }
+    const foreach = ctx.oC_Foreach();
+    if (foreach) {
+      return {
+        type: 'Foreach',
+        position: pos(foreach),
+        variable: this.symbolicName(foreach.oC_Variable().oC_SymbolicName()),
+        list: this.expression(foreach.oC_Expression()),
+        clauses: foreach.oC_UpdatingClause().map((c) => this.updatingClause(c)),
+      };
+    }
     const del = ctx.oC_Delete();
     if (del) {
       return {

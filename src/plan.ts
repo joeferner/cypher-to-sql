@@ -10,7 +10,7 @@ import {
   SemanticError,
   type CypherError,
 } from './errors.js';
-import { parseCypherJson, stringifyCypherJson } from './json.js';
+import { parseCypherJson, stringifyCypherJson, stringifySqlJson } from './json.js';
 import { checkDeclaredType, type PropertyTypes } from './property-types.js';
 import { idsJson, pathsJson, shortestPaths } from './search.js';
 import type { Expression } from './ast.js';
@@ -157,6 +157,8 @@ export interface ParameterComparison {
 export type WrittenValue =
   /** The id of an entity created for the row. */
   | { kind: 'entity'; entity: number }
+  /** The JSON text the runner holds in entity slot `entity` (FOREACH's variable). */
+  | { kind: 'slot'; entity: number }
   /** An id column of the source row (a matched node or relationship). */
   | { kind: 'rowId'; column: string }
   /** A JSON text column of the source row. */
@@ -191,11 +193,16 @@ export interface ShortestPathSearch {
   expand: PlanStep;
 }
 
-/** A Cypher value known at compile time, a query parameter, or a JSON column of the current source row. */
+/**
+ * A Cypher value known at compile time, a query parameter, a JSON column of the
+ * current source row, or a column of the row a `computes` step returned (a value
+ * computed over the row as stored now, such as one that uses FOREACH's variable).
+ */
 export type ValueSource =
   | { kind: 'constant'; value: CypherValue }
   | { kind: 'parameter'; name: string; position: SourcePosition }
-  | { kind: 'row'; column: string };
+  | { kind: 'row'; column: string }
+  | { kind: 'computed'; index: number; column: ColumnSpec };
 
 export interface PlanStep {
   sql: string;
@@ -253,6 +260,13 @@ export interface PlanStep {
         onMatch: PlanStep[];
       }
     | undefined;
+  /**
+   * When set, the step is FOREACH's list (its row, column `column`): for each
+   * element, the element's JSON goes into entity slot `slot` and `steps` run
+   * (clause by clause, see `clause`); the row itself goes on unchanged.
+   */
+  foreach?:
+    { slot: number; column: ColumnSpec; steps: PlanStep[]; position: SourcePosition } | undefined;
 }
 
 /** A Cypher error that a step's SQL raises at run time, through `Dialect.raise`. */
@@ -302,7 +316,9 @@ export interface ExecuteOptions {
 }
 
 export function createPlan(steps: PlanStep[], columns: ColumnSpec[]): CompiledPlan {
-  const readOnly = steps.every((s) => s.creates === undefined && !s.updates && !s.merge);
+  const readOnly = steps.every(
+    (s) => s.creates === undefined && !s.updates && !s.merge && !s.foreach,
+  );
   return {
     readOnly,
     steps,
@@ -459,16 +475,46 @@ export async function executePlan(
         ids: new Map(entityIds),
         computed: new Map(state.computed),
       });
-      let contexts: Context[] = last.map((row) => ({ row, ids: new Map(), computed: new Map() }));
-      const clauses = [...new Set(perRow.map((s) => s.clause ?? 0))];
-      for (const clause of clauses) {
-        const clauseSteps = perRow.filter((s) => (s.clause ?? 0) === clause && !s.afterClause);
+      /** Runs `steps` clause by clause over `contexts`; returns the rows after them. */
+      const runClauses = async (steps: PlanStep[], start: Context[]): Promise<Context[]> => {
+        let contexts = start;
+        const clauses = [...new Set(steps.map((s) => s.clause ?? 0))];
+        for (const clause of clauses) {
+          contexts = await runClause(
+            steps.filter((s) => (s.clause ?? 0) === clause && !s.afterClause),
+            contexts,
+          );
+          for (const step of steps.filter((s) => (s.clause ?? 0) === clause && s.afterClause)) {
+            await run(step, undefined);
+          }
+        }
+        return contexts;
+      };
+      /** One clause's steps for every row; MERGE turns a row into one per match. */
+      const runClause = async (
+        clauseSteps: PlanStep[],
+        contexts: Context[],
+      ): Promise<Context[]> => {
         const next: Context[] = [];
         for (const context of contexts) {
           load(context);
           let expanded = false;
           for (const step of clauseSteps) {
             const matches = await run(step, context.row);
+            const foreach = step.foreach;
+            if (foreach) {
+              // The inner clauses for each element; the row goes on as it was.
+              const list = foreachList(state, step.computes!, foreach.column, foreach.position);
+              const before = save(context.row);
+              for (const element of list) {
+                load(before);
+                // SQL JSON: nodes and relationships stay tagged objects, as SQL made them.
+                entityIds.set(foreach.slot, stringifySqlJson(element));
+                await runClauses(foreach.steps, [save(context.row)]);
+              }
+              load(before);
+              continue;
+            }
             const merge = step.merge;
             if (!merge) {
               continue;
@@ -501,11 +547,12 @@ export async function executePlan(
             next.push(save(context.row));
           }
         }
-        for (const step of perRow.filter((s) => (s.clause ?? 0) === clause && s.afterClause)) {
-          await run(step, undefined);
-        }
-        contexts = next;
-      }
+        return next;
+      };
+      const contexts = await runClauses(
+        perRow,
+        last.map((row) => ({ row, ids: new Map(), computed: new Map() })),
+      );
       for (const context of contexts) {
         load(context);
         collect(context.row);
@@ -619,6 +666,8 @@ function writtenRow(
     let json: string;
     if (value.kind === 'entity') {
       json = idJsonOrNull(entityIds.get(value.entity));
+    } else if (value.kind === 'slot') {
+      json = (entityIds.get(value.entity) as string | undefined) ?? 'null';
     } else if (value.kind === 'rowId') {
       json = idJsonOrNull(requireRow(row)[value.column]);
     } else {
@@ -648,11 +697,11 @@ function resolveBind(
     case 'sql':
       return bind.value;
     case 'json':
-      return stringifyCypherJson(resolveValue(bind.value, options.params, row));
+      return stringifyCypherJson(resolveValue(bind.value, options.params, row, state));
     case 'properties': {
       const map: CypherMap = {};
       for (const { key, value } of bind.entries) {
-        const resolved = resolveValue(value, options.params, row);
+        const resolved = resolveValue(value, options.params, row, state);
         if (resolved !== null) {
           checkPropertyValue(key, resolved, bind.types);
           map[key] = resolved;
@@ -864,12 +913,19 @@ function resolveValue(
   source: ValueSource,
   params: Record<string, CypherValue>,
   row: Row | undefined,
+  state?: RunState,
 ): CypherValue {
   if (source.kind === 'constant') {
     return source.value;
   }
   if (source.kind === 'row') {
     return parseJsonColumn(requireRow(row)[source.column]);
+  }
+  if (source.kind === 'computed') {
+    if (!state) {
+      throw new Error('Internal error: a computed value is bound outside a write step');
+    }
+    return computedValue(state, source.index, source.column).value;
   }
   if (!Object.hasOwn(params, source.name)) {
     throw new SemanticError(`Missing parameter $${source.name}`, { position: source.position });
@@ -905,6 +961,33 @@ function computedValue(
   return column.kind === 'node' || column.kind === 'relationship'
     ? { value, raw: row[column.id] ?? null }
     : { value };
+}
+
+/**
+ * The elements of FOREACH's list, as SQL JSON (nodes and relationships still
+ * tagged objects); none for null.
+ */
+function foreachList(
+  state: RunState,
+  index: number,
+  column: ColumnSpec,
+  position: SourcePosition,
+): CypherValue[] {
+  const row = state.computed.get(index) ?? {};
+  const list =
+    column.kind === 'json'
+      ? parseJsonColumn(row[column.column])
+      : computedValue(state, index, column).value;
+  if (list === null) {
+    return [];
+  }
+  if (!Array.isArray(list)) {
+    throw new CypherTypeError('Type mismatch: FOREACH needs a list', {
+      code: 'InvalidArgumentType',
+      position,
+    });
+  }
+  return list;
 }
 
 /** The nodes and relationships (ids) a DELETE value stands for. */
@@ -1184,5 +1267,7 @@ function describeSource(source: ValueSource): string {
       return `row.${source.column}`;
     case 'constant':
       return stringifyCypherJson(source.value);
+    case 'computed':
+      return `computed ${source.index + 1}.${source.column.name}`;
   }
 }

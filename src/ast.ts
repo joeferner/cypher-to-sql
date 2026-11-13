@@ -23,6 +23,7 @@ export type Clause =
   | RemoveClause
   | DeleteClause
   | MergeClause
+  | ForeachClause
   | ReturnClause
   | UnsupportedClause;
 
@@ -51,6 +52,17 @@ export interface MergeClause extends Node {
   pattern: PatternPart;
   onCreate: SetItem[];
   onMatch: SetItem[];
+}
+
+/**
+ * `FOREACH (variable IN list | clauses)` (a Neo4j extension): the updating
+ * clauses run for each element of the list; the rows stay as they are.
+ */
+export interface ForeachClause extends Node {
+  type: 'Foreach';
+  variable: string;
+  list: Expression;
+  clauses: Clause[];
 }
 
 /** `REMOVE item, ...`: removes properties (`n.key`) or labels (`n:L`). */

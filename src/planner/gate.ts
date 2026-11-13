@@ -16,6 +16,8 @@ export function writeClauseName(clause: ast.Clause): string | undefined {
       return clause.detach ? 'DETACH DELETE' : 'DELETE';
     case 'Merge':
       return 'MERGE';
+    case 'Foreach':
+      return 'FOREACH';
     case 'UnsupportedClause':
       return clause.write ? clause.name : undefined;
     default:
@@ -104,6 +106,8 @@ function clauseExpressions(clause: ast.Clause): { expr: ast.Expression; where: b
       return plain(clause.items.map((i) => (i.kind === 'property' ? i.target : undefined)));
     case 'Delete':
       return plain(clause.expressions);
+    case 'Foreach':
+      return [...plain([clause.list]), ...clause.clauses.flatMap((c) => clauseExpressions(c))];
     case 'Merge':
       return plain([
         ...patternExpressions([clause.pattern]),

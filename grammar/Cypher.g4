@@ -69,7 +69,15 @@ oC_UpdatingClause
                   | oC_Delete
                   | oC_Set
                   | oC_Remove
+                  | oC_Foreach
                   ;
+
+// Implementation extension to Cypher, not part of openCypher 9 (cypher-to-sql):
+// FOREACH, as in Neo4j: `FOREACH (x IN list | CREATE (:N {v: x}))`.
+oC_Foreach
+       :  FOREACH SP? '(' SP? oC_Variable SP IN SP oC_Expression SP? '|' ( SP? oC_UpdatingClause )+ SP? ')' ;
+
+FOREACH : ( 'F' | 'f' ) ( 'O' | 'o' ) ( 'R' | 'r' ) ( 'E' | 'e' ) ( 'A' | 'a' ) ( 'C' | 'c' ) ( 'H' | 'h' ) ;
 
 oC_ReadingClause
              :  oC_Match

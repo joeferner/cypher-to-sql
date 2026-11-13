@@ -92,10 +92,18 @@ export function durationJson(d: Duration): Record<string, unknown> {
 
 /** Serializes a Cypher property value (scalars, lists, and maps of those) to JSON text. */
 export function stringifyCypherJson(value: CypherValue): string {
-  return JSON.stringify(toJsonable(value));
+  return JSON.stringify(toJsonable(value, false));
 }
 
-function toJsonable(value: CypherValue): unknown {
+/**
+ * Serializes a value as SQL JSON, where nodes, relationships, and paths are
+ * tagged objects (as they came from SQL; see ENTITY_TAG) and pass through.
+ */
+export function stringifySqlJson(value: CypherValue): string {
+  return JSON.stringify(toJsonable(value, true));
+}
+
+function toJsonable(value: CypherValue, tagged: boolean): unknown {
   if (typeof value === 'bigint') {
     return JSON.rawJSON(value.toString());
   }
@@ -109,7 +117,7 @@ function toJsonable(value: CypherValue): unknown {
     return Number.isInteger(value) ? JSON.rawJSON(`${BigInt(value)}.0`) : value;
   }
   if (Array.isArray(value)) {
-    return value.map(toJsonable);
+    return value.map((v) => toJsonable(v, tagged));
   }
   if (value instanceof CypherTemporal) {
     return temporalJson(parseTemporal(value.kind, value.text));
@@ -121,12 +129,12 @@ function toJsonable(value: CypherValue): unknown {
     if (!isCypherMap(value)) {
       throw new TypeError('Nodes, relationships, and paths cannot be stored as property values');
     }
-    if (Object.hasOwn(value, ENTITY_TAG)) {
+    if (!tagged && Object.hasOwn(value, ENTITY_TAG)) {
       throw new SemanticError(`The map key ${JSON.stringify(ENTITY_TAG)} is reserved`);
     }
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      out[k] = toJsonable(v);
+      out[k] = toJsonable(v, tagged);
     }
     return out;
   }
