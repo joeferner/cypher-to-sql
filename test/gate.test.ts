@@ -87,11 +87,19 @@ describe('feature gate', () => {
 
   it('rejects unsupported expressions anywhere in the query, at their position', () => {
     const cases: [string, string, number][] = [
-      ['RETURN 1 + CASE WHEN true THEN 1 END', 'CASE expressions', 11],
-      ['MATCH (n {k: CASE WHEN true THEN 1 END}) RETURN n', 'CASE expressions', 13],
-      ['UNWIND [x IN [] | CASE WHEN x THEN 1 END] AS x RETURN x', 'CASE expressions', 18],
+      ['RETURN 1 + EXISTS { () }', 'EXISTS subqueries', 11],
+      ['MATCH (n {k: EXISTS { () }}) RETURN n', 'EXISTS subqueries', 13],
+      [
+        'UNWIND [x IN [] | CASE WHEN EXISTS { () } THEN 1 END] AS x RETURN x',
+        'EXISTS subqueries',
+        28,
+      ],
       ['MATCH (n) WHERE all(x IN [] WHERE (n)-->()) RETURN n', 'pattern predicates', 34],
-      ['RETURN 1 ORDER BY [1][CASE WHEN true THEN 0 END]', 'CASE expressions', 22],
+      [
+        'RETURN 1 ORDER BY [1][CASE 0 WHEN 1 THEN [(a)-->() | a] END]',
+        'pattern comprehensions',
+        41,
+      ],
     ];
     for (const [cypher, description, column] of cases) {
       const error = errorOf(() => readGraph.compile(cypher));

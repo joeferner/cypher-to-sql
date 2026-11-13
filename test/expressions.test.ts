@@ -143,8 +143,76 @@ for (const backend of testBackends()) {
       expect(sql).toMatch(backend.name === 'postgres' ? /->> 'age'\)::bigint/ : /->> '\$\."age"'/);
     });
 
+    it('evaluates simple CASE with Cypher equality', async () => {
+      const simple = (value: string): Promise<CypherValue> =>
+        v(
+          `CASE ${value} WHEN 1 THEN 'one' WHEN 2.0 THEN 'two' WHEN null THEN 'null' ELSE 'other' END`,
+        );
+      expect(await simple('1')).toBe('one');
+      expect(await simple('2')).toBe('two');
+      expect(await simple("'1'")).toBe('other');
+      expect(await simple('null')).toBe('other');
+      expect(await v("CASE $x WHEN 1 THEN 'one' ELSE 'other' END", { x: '1' })).toBe('other');
+      expect(await v('CASE $x WHEN 1 THEN true END', { x: 1n })).toBe(true);
+      expect(await v('CASE $x WHEN 1 THEN true END', { x: 2n })).toBe(null);
+      expect(await v('CASE [1, 2] WHEN [1, 2] THEN 1 ELSE 0 END')).toBe(1n);
+    });
+
+    it('evaluates generic CASE, taking the first true condition', async () => {
+      expect(await v('CASE WHEN 1 > 2 THEN 1 WHEN 2 > 1 THEN 2 WHEN true THEN 3 END')).toBe(2n);
+      expect(await v('CASE WHEN null THEN 1 ELSE 2 END')).toBe(2n);
+      expect(await v('CASE WHEN false THEN 1 END')).toBe(null);
+      expect(
+        (
+          await graph.query(
+            `MATCH (n) RETURN n.name AS name,
+               CASE WHEN n.age >= 18 THEN 'adult' WHEN n.age < 18 THEN 'minor' ELSE 'unknown' END AS group
+             ORDER BY name`,
+          )
+        ).map((r) => r['group']),
+      ).toEqual(['adult', 'unknown', 'minor']);
+      expect(await names("CASE n.name WHEN 'Ada' THEN true ELSE n:Q END")).toEqual(['Ada', 'Cy']);
+    });
+
+    it('types CASE results from their branches', async () => {
+      // One native type, then mixed types as JSON (integers stay integers).
+      expect(await v('CASE WHEN true THEN 1 ELSE 2 END + 1')).toBe(2n);
+      expect(
+        await v("[CASE WHEN true THEN 1 ELSE 'a' END, CASE WHEN false THEN 1 ELSE 'a' END]"),
+      ).toEqual([1n, 'a']);
+      expect(await v('CASE WHEN true THEN 1.5 ELSE 1 END')).toBe(1.5);
+      expect(await v('CASE WHEN true THEN [1, 2] END[1]')).toBe(2n);
+      expect(await v('CASE WHEN true THEN null END')).toBe(null);
+      expect(
+        (
+          await graph.query(
+            `MATCH (n:P) RETURN CASE WHEN n.age > 10 THEN n END AS n ORDER BY n.name`,
+          )
+        ).map(
+          (r) =>
+            (r['n'] as { properties: Record<string, unknown> } | null)?.properties['name'] ?? null,
+        ),
+      ).toEqual(['Ada', null]);
+      expect(
+        await graph.query(
+          `MATCH (n) RETURN CASE WHEN count(*) > 2 THEN 'many' ELSE 'few' END AS size`,
+        ),
+      ).toEqual([{ size: 'many' }]);
+      expect(() => graph.compile("RETURN CASE WHEN true THEN 'a' END - 1 AS v")).toThrow(
+        SemanticError,
+      );
+    });
+
     it('rejects static type errors at compile time', () => {
-      for (const expr of ['1 AND true', '[] OR true', "NOT 'a'", "'a' - 1", 'true + 1', '1 IN 2']) {
+      for (const expr of [
+        '1 AND true',
+        '[] OR true',
+        "NOT 'a'",
+        "'a' - 1",
+        'true + 1',
+        '1 IN 2',
+        'CASE WHEN 1 THEN 2 END',
+      ]) {
         expect(() => graph.compile(`RETURN ${expr} AS v`), expr).toThrow(SemanticError);
       }
     });

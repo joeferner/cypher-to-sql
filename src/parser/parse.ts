@@ -643,10 +643,24 @@ class AstBuilder {
         ...this.filterExpression(quantifier.oC_FilterExpression()!),
       };
     }
+    const caseExpr = ctx.oC_CaseExpression();
+    if (caseExpr) {
+      // Direct expressions: the subject (simple form only), then ELSE's.
+      const exprs = caseExpr.oC_Expression();
+      const otherwise = caseExpr.ELSE() ? exprs.pop() : undefined;
+      return {
+        type: 'Case',
+        position: pos(ctx),
+        subject: exprs[0] ? this.expression(exprs[0]) : undefined,
+        alternatives: caseExpr.oC_CaseAlternative().map((alt) => ({
+          when: this.expression(alt.oC_Expression(0)!),
+          then: this.expression(alt.oC_Expression(1)!),
+        })),
+        otherwise: otherwise ? this.expression(otherwise) : undefined,
+      };
+    }
     let description: string;
-    if (ctx.oC_CaseExpression()) {
-      description = 'CASE expressions';
-    } else if (ctx.oC_PatternComprehension()) {
+    if (ctx.oC_PatternComprehension()) {
       description = 'pattern comprehensions';
     } else if (ctx.oC_PatternPredicate()) {
       description = 'pattern predicates';

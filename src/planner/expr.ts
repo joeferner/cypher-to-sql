@@ -237,6 +237,8 @@ export class ExprCompiler {
         return this.comprehension(expr);
       case 'Quantifier':
         return this.quantifier(expr);
+      case 'Case':
+        return this.caseExpression(expr);
       case 'UnsupportedExpression':
         throw new UnsupportedFeatureError(`${expr.description} are not supported yet`, {
           position: expr.position,
@@ -759,6 +761,59 @@ export class ExprCompiler {
           `THEN ${apply(d.fromJson(l!.sql, 'string'), d.fromJson(r!.sql, 'string'))} END)`,
       ),
     );
+  }
+
+  // ---- CASE --------------------------------------------------------------------
+
+  /**
+   * `CASE`. The generic form takes the first branch whose condition is true (a
+   * null condition is not). The simple form compares the subject with each
+   * value using Cypher equality, so a null subject or value matches nothing.
+   * When all branches that are not the null literal have one native type, the
+   * result has it; otherwise every branch is JSON.
+   */
+  private caseExpression(expr: ast.CaseExpression): Expr {
+    const d = this.b.dialect;
+    const results = [
+      ...expr.alternatives.map((a) => a.then),
+      ...(expr.otherwise ? [expr.otherwise] : []),
+    ].map((e) => this.compile(e));
+    const typed = results.filter((r) => r.type !== 'null');
+    if (typed.length === 0) {
+      return { sql: 'NULL', type: 'null', atomic: true };
+    }
+    const first = typed[0]!;
+    const native =
+      first.type !== 'json' &&
+      first.type !== 'node' &&
+      first.type !== 'relationship' &&
+      typed.every((r) => r.type === first.type);
+    const type: ExprType = native ? first.type : 'json';
+    const shapes = new Set(typed.map((r) => (r.type === 'json' ? r.shape : undefined)));
+    const shape =
+      type === 'json' && shapes.size === 1 && typed.every((r) => r.type === 'json')
+        ? first.shape
+        : undefined;
+    const value = (e: Expr): string => {
+      if (e.type === 'null') {
+        return type === 'json' ? d.jsonInput('NULL') : 'NULL';
+      }
+      return type === 'json' ? this.toJson(e) : e.sql;
+    };
+    const otherwise = expr.otherwise ? ` ELSE ${value(results.at(-1)!)}` : '';
+    const branches = (conditions: string[]): string =>
+      `(CASE ${conditions.map((c, i) => `WHEN ${c} THEN ${value(results[i]!)}`).join(' ')}${otherwise} END)`;
+
+    let sql: string;
+    if (expr.subject === undefined) {
+      sql = branches(expr.alternatives.map((a) => this.toBoolean(this.compile(a.when), a.when)));
+    } else {
+      const subject = this.compile(expr.subject);
+      sql = this.share([subject], ([s]) =>
+        branches(expr.alternatives.map((a) => this.compare('=', s!, this.compile(a.when), 0).sql)),
+      );
+    }
+    return { sql, type, atomic: false, shape };
   }
 
   // ---- lists -------------------------------------------------------------------

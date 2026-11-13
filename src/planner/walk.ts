@@ -50,6 +50,13 @@ export function mapChildren(
         where: optional(expr.where, expr.variable),
         projection: optional(expr.projection, expr.variable),
       };
+    case 'Case':
+      return {
+        ...expr,
+        subject: optional(expr.subject, undefined),
+        alternatives: expr.alternatives.map((a) => ({ when: outer(a.when), then: outer(a.then) })),
+        otherwise: optional(expr.otherwise, undefined),
+      };
     case 'Quantifier':
       return {
         ...expr,

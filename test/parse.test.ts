@@ -304,7 +304,6 @@ describe('parse: function calls', () => {
 
 describe('parse: unsupported expressions', () => {
   it.each([
-    ['CASE WHEN a THEN 1 END', 'CASE expressions'],
     ['[(a)-->(b) | b]', 'pattern comprehensions'],
     ['(a)-->()', 'pattern predicates'],
     ['EXISTS { (a)-->() }', 'EXISTS subqueries'],
@@ -317,7 +316,7 @@ describe('parse: unsupported expressions', () => {
   });
 
   it('keeps unsupported expressions nested inside supported ones', () => {
-    expect(expr('[1, a + [x IN b | CASE WHEN x THEN 1 END][0]]')).toMatchObject({
+    expect(expr('[1, a + [x IN b | EXISTS { (x) }][0]]')).toMatchObject({
       type: 'List',
       items: [
         { type: 'Literal' },
@@ -327,11 +326,31 @@ describe('parse: unsupported expressions', () => {
             type: 'Index',
             subject: {
               type: 'ListComprehension',
-              projection: { type: 'UnsupportedExpression', description: 'CASE expressions' },
+              projection: { type: 'UnsupportedExpression', description: 'EXISTS subqueries' },
             },
           },
         },
       ],
+    });
+  });
+});
+
+describe('parse: CASE', () => {
+  it('parses the simple and generic forms', () => {
+    expect(expr("CASE a WHEN 1 THEN 'x' WHEN 2 THEN 'y' ELSE 'z' END")).toMatchObject({
+      type: 'Case',
+      subject: { type: 'Variable', name: 'a' },
+      alternatives: [
+        { when: { value: 1n }, then: { value: 'x' } },
+        { when: { value: 2n }, then: { value: 'y' } },
+      ],
+      otherwise: { value: 'z' },
+    });
+    expect(expr('CASE WHEN a THEN 1 END')).toMatchObject({
+      type: 'Case',
+      subject: undefined,
+      alternatives: [{ when: { type: 'Variable' }, then: { value: 1n } }],
+      otherwise: undefined,
     });
   });
 });

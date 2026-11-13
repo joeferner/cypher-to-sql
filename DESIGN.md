@@ -216,6 +216,10 @@ joined with `v.s = a.id AND v.t = b.id`.
 
 Any other function is an `UnsupportedFeatureError` whose hint lists the supported ones. Path functions (`nodes`, `relationships`, `length`) are described in "Named paths". Temporal functions, `startNode`/`endNode`, and `round` with a precision are not supported yet. Known differences: string parsing in `toInteger`/`toFloat` accepts JSON number syntax on SQLite (so not `+1` or `.5`) and a slightly wider syntax on PostgreSQL; `toUpper`/`toLower` follow the database (SQLite changes ASCII letters only); `trim` removes spaces only.
 
+### CASE
+
+`CASE` is SQL `CASE`. The generic form (`CASE WHEN c THEN r ... END`) takes the first branch whose condition is true; a null condition is not. The simple form (`CASE x WHEN v THEN r ... END`) compares with Cypher `=`, so a null `x` or `v` matches nothing and values of different types never match. No ELSE means null. When every branch that is not the null literal has one native type, the result has that type; otherwise each branch becomes JSON (so `CASE WHEN c THEN 1 ELSE 'a' END` keeps both types).
+
 ### List expressions
 
 - **Indexing** `l[i]`: an integer index into a list (negative counts from the end; out of range is null), or a string key into a map, node, or relationship (`n['name']`, `n[$key]`). A constant key is a plain member access. A computed key is compared as data (`Dialect.jsonMemberAt`), never built into a SQLite JSON path.

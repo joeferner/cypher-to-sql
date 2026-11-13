@@ -130,7 +130,20 @@ export type Expression =
   | SliceExpression
   | ListComprehension
   | QuantifierExpression
+  | CaseExpression
   | UnsupportedExpression;
+
+/**
+ * `CASE subject WHEN value THEN result ... ELSE otherwise END` (simple form,
+ * values compared with `=`), or without `subject`, `CASE WHEN condition THEN
+ * result ... END` (generic form). No ELSE means ELSE null.
+ */
+export interface CaseExpression extends Node {
+  type: 'Case';
+  subject: Expression | undefined;
+  alternatives: { when: Expression; then: Expression }[];
+  otherwise: Expression | undefined;
+}
 
 /** `subject[index]`: a list element, or a map entry or property by key. */
 export interface IndexExpression extends Node {
