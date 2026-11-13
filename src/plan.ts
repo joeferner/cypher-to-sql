@@ -4,6 +4,7 @@ import type { Row, SqlExecutor } from './executor.js';
 import type { Limits } from './limits.js';
 import {
   CypherArgumentError,
+  CypherConstraintError,
   CypherTypeError,
   LimitExceededError,
   SemanticError,
@@ -75,6 +76,20 @@ export type BindValue =
   | { kind: 'shortestPaths'; search: number }
   /** The rows a write query wrote, as a JSON array of objects (see `PlanStep.written`). */
   | { kind: 'writtenRows' }
+  /**
+   * The ids (a JSON array) of the nodes (`part: 'nodes'`) or relationships of
+   * the value in column `column` of the row step `computes: index` returned: a
+   * node, a relationship, a path, or null. Any other value is a type error.
+   */
+  | {
+      kind: 'deleteIds';
+      index: number;
+      column: ColumnSpec;
+      part: 'nodes' | 'relationships';
+      position: SourcePosition;
+    }
+  /** The ids (a JSON array) of the nodes DELETE deleted, for the steps after the rows. */
+  | { kind: 'deletedNodes' }
   /**
    * A temporal function call, or temporal arithmetic, whose arguments are known
    * before the query runs (see `isKnownBeforeRun`), evaluated when the step is
@@ -207,12 +222,19 @@ export interface PlanStep {
   written?: { name: string; value: WrittenValue }[] | undefined;
   /** The run-time errors the SQL can raise (see `SqlBuilder.raise`), by index. */
   errors?: RaisedError[] | undefined;
+  /**
+   * When set (on a `computes` step of DELETE), the nodes in this column of the
+   * step's row are deleted after every row's steps ran (see `afterRows`).
+   */
+  deletesNodes?: ColumnSpec | undefined;
+  /** The step runs once, after the per-row steps (the deferred node deletions of DELETE). */
+  afterRows?: boolean | undefined;
 }
 
 /** A Cypher error that a step's SQL raises at run time, through `Dialect.raise`. */
 export interface RaisedError {
   /** `limit` raises a `LimitExceededError`, with `code` as its hint. */
-  kind: 'type' | 'argument' | 'limit';
+  kind: 'type' | 'argument' | 'limit' | 'constraint';
   /** openCypher's detail code, for example `InvalidArgumentType`. */
   code: string;
   message: string;
@@ -297,12 +319,14 @@ export async function executePlan(
     frontier: undefined,
     written: undefined,
     computed: new Map(),
+    deletedNodes: new Map(),
   };
   const entityIds = state.entityIds;
   let stepsRun = 0;
 
   const final = plan.steps.find((s) => s.written);
-  const steps = plan.steps.filter((s) => s !== final);
+  const afterRows = plan.steps.filter((s) => s.afterRows);
+  const steps = plan.steps.filter((s) => s !== final && !s.afterRows);
   const firstPerRow = steps.findIndex((s) => s.perRow);
   const once = firstPerRow < 0 ? steps : steps.slice(0, firstPerRow);
   const perRow = firstPerRow < 0 ? [] : steps.slice(firstPerRow);
@@ -347,6 +371,12 @@ export async function executePlan(
       }
       if (step.computes !== undefined) {
         state.computed.set(step.computes, result[0] ?? {});
+        if (step.deletesNodes) {
+          for (const id of deleteTargets(state, step.computes, step.deletesNodes, undefined)
+            .nodes) {
+            state.deletedNodes.set(String(id), id);
+          }
+        }
       }
       return result;
     };
@@ -393,6 +423,9 @@ export async function executePlan(
     } else if (final) {
       collect(undefined);
     }
+    for (const step of afterRows) {
+      await run(step, undefined);
+    }
     if (final) {
       state.written = `[${written.join(',')}]`;
       last = await run(final, undefined);
@@ -432,6 +465,9 @@ function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
         position: raised.position,
         hint: raised.code,
       });
+    }
+    if (raised.kind === 'constraint') {
+      return new CypherConstraintError(raised.message, options);
     }
     return raised.kind === 'type'
       ? new CypherTypeError(raised.message, options)
@@ -478,6 +514,8 @@ interface RunState {
   written: string | undefined;
   /** The first row of each `computes` step, for the current source row. */
   computed: Map<number, Row>;
+  /** The nodes DELETE deleted, by id text, deleted after the per-row steps. */
+  deletedNodes: Map<string, unknown>;
 }
 
 /** One written row as a JSON object: ids of created and matched entities, and JSON values. */
@@ -642,6 +680,10 @@ function resolveBind(
     }
     case 'propertyPatch':
       return propertyPatch(bind, computedValue(state, bind.index, bind.column).value);
+    case 'deleteIds':
+      return idsJson(deleteTargets(state, bind.index, bind.column, bind.position)[bind.part]);
+    case 'deletedNodes':
+      return idsJson([...state.deletedNodes.values()]);
     case 'parameterAs':
     case 'parameterFits': {
       const value = resolveValue(
@@ -767,6 +809,41 @@ function computedValue(
   return column.kind === 'node' || column.kind === 'relationship'
     ? { value, raw: row[column.id] ?? null }
     : { value };
+}
+
+/** The nodes and relationships (ids) a DELETE value stands for. */
+function deleteTargets(
+  state: RunState,
+  index: number,
+  column: ColumnSpec,
+  position: SourcePosition | undefined,
+): { nodes: unknown[]; relationships: unknown[] } {
+  const { value, raw } = computedValue(state, index, column);
+  if (raw !== undefined) {
+    const ids = raw === null ? [] : [raw];
+    return column.kind === 'node'
+      ? { nodes: ids, relationships: [] }
+      : { nodes: [], relationships: ids };
+  }
+  if (value === null) {
+    return { nodes: [], relationships: [] };
+  }
+  if (value instanceof CypherNode) {
+    return { nodes: [value.id], relationships: [] };
+  }
+  if (value instanceof CypherRelationship) {
+    return { nodes: [], relationships: [value.id] };
+  }
+  if (value instanceof CypherPath) {
+    return {
+      nodes: value.nodes.map((n) => n.id),
+      relationships: value.relationships.map((r) => r.id),
+    };
+  }
+  throw new CypherTypeError('Type mismatch: DELETE needs a node, relationship, or path', {
+    code: 'InvalidArgumentType',
+    position,
+  });
 }
 
 /** The JSON object of a `propertyPatch` bind, from the value SET computed. */
@@ -990,6 +1067,10 @@ function describeBind(bind: BindValue): string {
         : `temporal ${bind.expression.type === 'Binary' ? bind.expression.operator : 'value'}`;
     case 'computedId':
       return `id(computed ${bind.index + 1}.${bind.column.name}, ${bind.entity})`;
+    case 'deleteIds':
+      return `${bind.part}(computed ${bind.index + 1}.${bind.column.name})`;
+    case 'deletedNodes':
+      return 'deletedNodes';
     case 'propertyPatch':
       return `${bind.mode}${bind.key === undefined ? '' : ` ${bind.key}`}(computed ${bind.index + 1}.${bind.column.name})`;
     case 'parameterAs':

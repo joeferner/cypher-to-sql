@@ -101,7 +101,7 @@ export class WritePlanner {
    * Returns the steps and the entities the CREATE clauses bind to variables.
    */
   public planUpdates(
-    clauses: (ast.CreateClause | ast.SetClause | ast.RemoveClause)[],
+    clauses: (ast.CreateClause | ast.SetClause | ast.RemoveClause | ast.DeleteClause)[],
     limits: Limits,
     source: CreateSource,
   ): { steps: PlanStep[]; created: Map<string, CreatedEntity> } {
@@ -222,7 +222,17 @@ export class WritePlanner {
     };
 
     let computed = 0;
+    let deletesNodes = false;
     for (const clause of clauses) {
+      if (clause.type === 'Delete') {
+        for (const expression of clause.expressions) {
+          steps.push(
+            ...this.planDeleteItem(expression, clause.detach, source.need(), created, computed++),
+          );
+        }
+        deletesNodes = true;
+        continue;
+      }
       if (clause.type !== 'Create') {
         // REMOVE n.key is SET n.key = null.
         const items: ast.SetItem[] =
@@ -289,10 +299,8 @@ export class WritePlanner {
       }
     }
     // A source made for a computed value (after some INSERTs were planned) makes every step per-row.
-    return {
-      steps: source.current ? steps.map((step) => ({ ...step, perRow: true })) : steps,
-      created,
-    };
+    const all = source.current ? steps.map((step) => ({ ...step, perRow: true })) : steps;
+    return { steps: deletesNodes ? [...all, ...this.deleteNodes()] : all, created };
   }
 
   /**
@@ -409,6 +417,110 @@ export class WritePlanner {
       );
     }
     return steps;
+  }
+
+  /**
+   * One DELETE value, for each source row: a SELECT over the row as stored now
+   * computes it (a node, relationship, or path), then its relationships are
+   * deleted, and with DETACH every relationship of its nodes. Its nodes are
+   * collected and deleted after every row (see `deleteNodes`), so that a node
+   * whose relationships a later row deletes is not an error.
+   */
+  private planDeleteItem(
+    expression: ast.Expression,
+    detach: boolean,
+    source: RowSource,
+    created: Map<string, CreatedEntity>,
+    index: number,
+  ): PlanStep[] {
+    const position = expression.position;
+    if (expression.type === 'HasLabels') {
+      throw new SemanticError('DELETE cannot delete labels; use REMOVE n:Label', { position });
+    }
+    const { written, variables } = rowVariables(source, created, this.mapping, position);
+    const b = new SqlBuilder(this.dialect, this.mapping);
+    const { step, columns } = planWrittenReturn(
+      b,
+      variables,
+      [],
+      {
+        type: 'Return',
+        position,
+        distinct: false,
+        star: false,
+        items: [{ position, expression, alias: 't', name: 't' }],
+        orderBy: [],
+        skip: undefined,
+        limit: undefined,
+      },
+      { kind: 'currentRow', written },
+    );
+    const [t] = columns as [ColumnSpec];
+    if (t.kind === 'scalar') {
+      throw new SemanticError('DELETE needs a node, relationship, or path', { position });
+    }
+    const steps: PlanStep[] = [{ ...step, computes: index, deletesNodes: t }];
+    const edges = this.mapping.edges;
+    const deleteEdges = (part: 'nodes' | 'relationships', columnsToMatch: string[]): PlanStep => {
+      const u = new SqlBuilder(this.dialect, this.mapping);
+      const ids = this.dialect.jsonInput(
+        u.bind({ kind: 'deleteIds', index, column: t, part, position }),
+      );
+      const table = u.table('edges');
+      const conditions = columnsToMatch.map((c) =>
+        this.dialect.boundIdIn(u.ident(c), ids, table, edges.id),
+      );
+      return u.finish(`DELETE FROM ${table} WHERE ${conditions.join(' OR ')}`, { updates: true });
+    };
+    if (t.kind !== 'node') {
+      steps.push(deleteEdges('relationships', [edges.id]));
+    }
+    if (detach && t.kind !== 'relationship') {
+      steps.push(deleteEdges('nodes', [edges.startId, edges.endId]));
+    }
+    return steps;
+  }
+
+  /**
+   * The node deletions of DELETE, after every row: fails when a deleted node
+   * still has relationships (`DeleteConnectedNode`), then deletes the nodes.
+   */
+  private deleteNodes(): PlanStep[] {
+    const { nodes, edges } = this.mapping;
+    const check = new SqlBuilder(this.dialect, this.mapping);
+    const ids = this.dialect.jsonInput(check.bind({ kind: 'deletedNodes' }));
+    const edgeTable = check.table('edges');
+    const nodeTable = check.table('nodes');
+    const connected =
+      `EXISTS (SELECT 1 FROM ${edgeTable} WHERE ` +
+      `${this.dialect.boundIdIn(check.ident(edges.startId), ids, nodeTable, nodes.id)} OR ` +
+      `${this.dialect.boundIdIn(check.ident(edges.endId), ids, nodeTable, nodes.id)})`;
+    const raise = check.raise(
+      {
+        kind: 'constraint',
+        code: 'DeleteConnectedNode',
+        message: 'Cannot delete a node that still has relationships; use DETACH DELETE',
+        position: undefined,
+      },
+      'integer',
+    );
+    const remove = new SqlBuilder(this.dialect, this.mapping);
+    const removeIds = this.dialect.jsonInput(remove.bind({ kind: 'deletedNodes' }));
+    return [
+      check.finish(`SELECT (CASE WHEN ${connected} THEN ${raise} ELSE 1 END) AS ok`, {
+        afterRows: true,
+      }),
+      remove.finish(
+        `DELETE FROM ${remove.table('nodes')} WHERE ` +
+          this.dialect.boundIdIn(
+            remove.ident(nodes.id),
+            removeIds,
+            remove.table('nodes'),
+            nodes.id,
+          ),
+        { afterRows: true, updates: true },
+      ),
+    ];
   }
 
   private checkRelationship(rel: ast.RelationshipPattern): void {

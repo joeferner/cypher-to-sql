@@ -29,7 +29,7 @@ export interface GraphOptions {
   executor: SqlExecutor;
   /** Defaults to `defaultMapping` (tables `nodes` and `edges`). */
   mapping?: GraphMapping | undefined;
-  /** Defaults to true. With false, CREATE, SET, and REMOVE are allowed. */
+  /** Defaults to true. With false, CREATE, SET, REMOVE, and DELETE are allowed. */
   readOnly?: boolean | undefined;
   /** Graph-wide limits. Unset entries use `defaultLimits`. */
   limits?: Partial<Limits> | undefined;
@@ -104,7 +104,7 @@ function planQuery(
       // Unreachable while the gate works; kept so that a gate bug cannot reach SQL.
       throw new ReadOnlyViolationError('Write clauses are not allowed on a read-only graph');
     }
-    // Reading clauses, then CREATE, SET, and REMOVE clauses, then optionally
+    // Reading clauses, then CREATE, SET, REMOVE, and DELETE clauses, then optionally
     // reading clauses over the written rows and RETURN.
     const firstWrite = clauses.findIndex(isUpdateClause);
     const reading = clauses.slice(0, firstWrite);
@@ -120,7 +120,7 @@ function planQuery(
       tailReading.find((c) => !isRowClause(c));
     if (misplaced) {
       throw new UnsupportedFeatureError(
-        'A write query can be MATCH, UNWIND, and WITH, then CREATE, SET, and REMOVE, then MATCH, UNWIND, and WITH with RETURN for now (not writes again after them)',
+        'A write query can be MATCH, UNWIND, and WITH, then CREATE, SET, REMOVE, and DELETE, then MATCH, UNWIND, and WITH with RETURN for now (not writes again after them)',
         { position: misplaced.position },
       );
     }
@@ -140,7 +140,7 @@ function planQuery(
       createSource.need();
     }
     const { steps: inserts, created } = writer.planUpdates(
-      updates as (ast.CreateClause | ast.SetClause | ast.RemoveClause)[],
+      updates as (ast.CreateClause | ast.SetClause | ast.RemoveClause | ast.DeleteClause)[],
       limits,
       createSource,
     );
@@ -208,7 +208,12 @@ function planReturnAfterCreate(
 }
 
 function isUpdateClause(clause: ast.Clause): boolean {
-  return clause.type === 'Create' || clause.type === 'Set' || clause.type === 'Remove';
+  return (
+    clause.type === 'Create' ||
+    clause.type === 'Set' ||
+    clause.type === 'Remove' ||
+    clause.type === 'Delete'
+  );
 }
 
 function isRowClause(clause: ast.Clause): clause is ast.RowClause {

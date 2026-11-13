@@ -99,10 +99,17 @@ describe('parse: clauses', () => {
       name: 'MERGE',
       write: true,
     });
-    expect(parse('MATCH (n) DELETE n').clauses[1]).toMatchObject({ name: 'DELETE', write: true });
+    expect(parse('MATCH (n) DELETE n, m.k').clauses[1]).toMatchObject({
+      type: 'Delete',
+      detach: false,
+      expressions: [
+        { type: 'Variable', name: 'n' },
+        { type: 'PropertyAccess', key: 'k' },
+      ],
+    });
     expect(parse('MATCH (n) DETACH DELETE n').clauses[1]).toMatchObject({
-      name: 'DETACH DELETE',
-      write: true,
+      type: 'Delete',
+      detach: true,
     });
     expect(parse('MATCH (n) CALL db.labels() YIELD label RETURN label').clauses[1]).toMatchObject({
       type: 'UnsupportedClause',

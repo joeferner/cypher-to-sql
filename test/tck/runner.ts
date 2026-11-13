@@ -3,6 +3,7 @@ import {
   assertReadOnly,
   CypherArgumentError,
   CypherSyntaxError,
+  CypherConstraintError,
   CypherTypeError,
   createGraph,
   ReadOnlyViolationError,
@@ -216,6 +217,7 @@ const ERROR_TYPES: Record<string, (new (...args: never[]) => Error)[]> = {
   TypeError: [SemanticError, CypherTypeError],
   ArgumentError: [SemanticError, CypherArgumentError],
   ParameterMissing: [SemanticError],
+  ConstraintVerificationFailed: [CypherConstraintError],
 };
 
 function checkError(result: QueryResult, type: string, phase: string, detail: string): void {

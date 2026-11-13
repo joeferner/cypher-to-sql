@@ -21,6 +21,7 @@ export type Clause =
   | CreateClause
   | SetClause
   | RemoveClause
+  | DeleteClause
   | ReturnClause
   | UnsupportedClause;
 
@@ -28,6 +29,16 @@ export type Clause =
 export interface SetClause extends Node {
   type: 'Set';
   items: SetItem[];
+}
+
+/**
+ * `[DETACH] DELETE expr, ...`: each value a node, relationship, or path (or
+ * null). `detach` also deletes the relationships of deleted nodes.
+ */
+export interface DeleteClause extends Node {
+  type: 'Delete';
+  detach: boolean;
+  expressions: Expression[];
 }
 
 /** `REMOVE item, ...`: removes properties (`n.key`) or labels (`n:L`). */

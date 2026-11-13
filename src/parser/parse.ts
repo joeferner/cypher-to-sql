@@ -184,8 +184,16 @@ class AstBuilder {
     if (remove) {
       return this.removeClause(remove);
     }
-    const name = ctx.oC_Merge() ? 'MERGE' : ctx.oC_Delete()?.DETACH() ? 'DETACH DELETE' : 'DELETE';
-    return { type: 'UnsupportedClause', position: pos(ctx), name, write: true };
+    const del = ctx.oC_Delete();
+    if (del) {
+      return {
+        type: 'Delete',
+        position: pos(del),
+        detach: del.DETACH() !== null,
+        expressions: del.oC_Expression().map((e) => this.expression(e)),
+      };
+    }
+    return { type: 'UnsupportedClause', position: pos(ctx), name: 'MERGE', write: true };
   }
 
   private setClause(ctx: OC_SetContext): ast.SetClause {

@@ -12,6 +12,8 @@ export function writeClauseName(clause: ast.Clause): string | undefined {
       return 'SET';
     case 'Remove':
       return 'REMOVE';
+    case 'Delete':
+      return clause.detach ? 'DETACH DELETE' : 'DELETE';
     case 'UnsupportedClause':
       return clause.write ? clause.name : undefined;
     default:
@@ -98,6 +100,8 @@ function clauseExpressions(clause: ast.Clause): { expr: ast.Expression; where: b
       );
     case 'Remove':
       return plain(clause.items.map((i) => (i.kind === 'property' ? i.target : undefined)));
+    case 'Delete':
+      return plain(clause.expressions);
     case 'UnsupportedClause':
       return [];
   }

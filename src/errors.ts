@@ -64,6 +64,20 @@ export class CypherArgumentError extends CypherError {
   }
 }
 
+/**
+ * A write that would leave the graph inconsistent, found while the query ran:
+ * deleting a node that still has relationships without DETACH
+ * (`DeleteConnectedNode`).
+ */
+export class CypherConstraintError extends CypherError {
+  public readonly code: string;
+
+  public constructor(message: string, options: RuntimeErrorOptions) {
+    super(message, options);
+    this.code = options.code;
+  }
+}
+
 /** The graph mapping is invalid. */
 export class MappingError extends CypherError {}
 
