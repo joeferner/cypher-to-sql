@@ -119,18 +119,26 @@ export const CORPUS: DiffGroup[] = [
       // Pattern expressions
       q('MATCH (n) WHERE (n)-[:R]->() RETURN n.name AS name'),
       q('MATCH (n) WHERE NOT (n)<--() RETURN n.name AS name'),
-      {
-        cypher: 'MATCH (n) WHERE EXISTS { MATCH (n)-[:S]->(:A) } RETURN n.name AS name',
-        known: 'in the openCypher 9 grammar, a query in EXISTS { } ends with RETURN',
-      },
+      q('MATCH (n) WHERE EXISTS { MATCH (n)-[:S]->(:A) } RETURN n.name AS name'),
+      q(
+        'MATCH (n) WHERE EXISTS { MATCH (n)-->(m) WITH m WHERE m.n > 0 MATCH (m)-->(o) } ' +
+          'RETURN n.name AS name',
+      ),
+      q('MATCH (n) WHERE NOT EXISTS { UNWIND n.l AS x MATCH (m {n: x}) } RETURN n.name AS name'),
       q('MATCH (n) WHERE EXISTS { MATCH (n)-[:S]->(m:A) RETURN m } RETURN n.name AS name'),
       q('MATCH (n) WHERE EXISTS { (n)-[:S]->(:A) } RETURN n.name AS name'),
       q('MATCH (n) RETURN n.name AS name, size([(n)--() | 1]) AS degree'),
       q("MATCH (n {name: 'b'}) RETURN [(n)-[:R]->(m) | m.name] AS out"),
-      {
-        cypher: 'MATCH (n) RETURN n {.name, .n, x: 1} AS m',
-        known: 'map projections are not in the openCypher 9 grammar',
-      },
+      // Map projections (a Neo4j extension)
+      q('MATCH (n) RETURN n {.name, .n, x: 1} AS m'),
+      q('MATCH (n) RETURN n {.*} AS m'),
+      q("MATCH (n) RETURN n {.*, name: 'z', extra: n.n * 2, missing: null} AS m"),
+      q("MATCH (n {name: 'a'})-[r]->(b) RETURN r {.w, type: type(r)} AS m, b {.name, b} AS bb"),
+      q('MATCH (n) WITH n, n.name AS k RETURN n {k, .missing} AS m'),
+      q("MATCH (n {name: 'e'}) OPTIONAL MATCH (n)-[r]->(m) RETURN m {.name} AS m, r {.*} AS r"),
+      q('WITH {a: 1, b: [2]} AS map RETURN map {.a, .c, d: 3} AS m, map {.*, a: 0} AS n'),
+      q('MATCH (n) RETURN n.b AS b, collect(n {.name})[0] AS first ORDER BY b'),
+      q('MATCH (n) WITH n ORDER BY n.name RETURN collect(n {.name, .n}) AS l'),
 
       // Expressions without a graph
       q('RETURN 7 / 2 AS a, -7 / 2 AS b, 7 % -3 AS c, -7 % 3 AS d, 7.0 / 2 AS e, 2 ^ 3 AS f'),

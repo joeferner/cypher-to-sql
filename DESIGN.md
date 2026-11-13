@@ -240,9 +240,13 @@ SQLite's `upper()` and `lower()` change ASCII letters only, unless the ICU exten
 Pattern predicates (`WHERE (a)-[:T]->()`), `EXISTS { pattern WHERE c }`, `EXISTS { MATCH ... RETURN ... }`, and pattern comprehensions (`[p = (a)-->(b) WHERE c | e]`) are correlated subqueries. A new `ReadScope` (the subquery's) matches the pattern or runs the query; it resolves variables it does not bind through the enclosing scope (including list comprehension elements), so a bound node is the outer alias and only new variables add tables.
 
 - A pattern predicate is `EXISTS (SELECT 1 FROM <new tables> WHERE <pattern conditions>)`. It may not introduce variables, and may be used only in a WHERE (of MATCH, WITH, a list comprehension, or EXISTS), as in Cypher; elsewhere `EXISTS { }` does the same.
-- `EXISTS { query }` is `EXISTS (<query>)` and may use MATCH, UNWIND, and WITH, but not write clauses. A grouping key that uses only the enclosing query's variables is left out of GROUP BY (SQLite cannot group by an outer column; it is constant there), with `HAVING COUNT(*) > 0` when no key is left.
+- `EXISTS { query }` is `EXISTS (<query>)` and may use MATCH, UNWIND, and WITH, but not write clauses. The query may also end without RETURN (`EXISTS { MATCH (n)-->(m) }`, a Neo4j extension to the openCypher 9 grammar); the parser then adds `RETURN 1`. A grouping key that uses only the enclosing query's variables is left out of GROUP BY (SQLite cannot group by an outer column; it is constant there), with `HAVING COUNT(*) > 0` when no key is left.
 - A pattern comprehension is the JSON list (`jsonAggregate`) of its projection over the matches.
 - Aliases of a subquery's scope and expression compiler start with `q<n>_`, so that none hides an alias of the enclosing query. Relationship uniqueness applies within the subquery's pattern only. `shortestPath` inside one is not supported (its node-pair step runs on its own), nor are patterns in expressions after aggregation.
+
+### Map projections
+
+`n {.a, b: expr, c, .*}` (a Neo4j extension to the openCypher 9 grammar) is rewritten by the parser: `CASE WHEN n IS NULL THEN NULL ELSE {a: n.a, b: expr, c: c} END`. With `.*` the map starts from `properties(n)` and each entry is set over it in order (`MapProjection`, `Dialect.jsonSetKey`), so explicit entries win and keep null values. A later entry for a key replaces an earlier one. The subject may be a node, a relationship, or a map.
 
 ### CASE
 

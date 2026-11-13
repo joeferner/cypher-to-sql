@@ -33,6 +33,12 @@ export function mapChildren(
         ...expr,
         entries: expr.entries.map((e) => ({ key: e.key, value: outer(e.value) })),
       };
+    case 'MapProjection':
+      return {
+        ...expr,
+        base: outer(expr.base),
+        entries: expr.entries.map((e) => ({ key: e.key, value: outer(e.value) })),
+      };
     case 'PropertyAccess':
     case 'HasLabels':
       return { ...expr, subject: outer(expr.subject) };

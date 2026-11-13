@@ -382,8 +382,21 @@ oC_Atom
         | oC_ParenthesizedExpression
         | oC_FunctionInvocation
         | oC_ExistentialSubquery
+        | oC_MapProjection
         | oC_Variable
         ;
+
+// Implementation extension to Cypher, not part of openCypher 9 (cypher-to-sql):
+// map projections, as in Neo4j: `n {.name, .*, key: expr, variable}`.
+oC_MapProjection
+             :  oC_Variable SP? '{' SP? ( oC_MapProjectionItem ( SP? ',' SP? oC_MapProjectionItem )* )? SP? '}' ;
+
+oC_MapProjectionItem
+                 :  ( '.' SP? '*' )
+                     | oC_PropertyLookup
+                     | ( oC_PropertyKeyName SP? ':' SP? oC_Expression )
+                     | oC_Variable
+                     ;
 
 COUNT : ( 'C' | 'c' ) ( 'O' | 'o' ) ( 'U' | 'u' ) ( 'N' | 'n' ) ( 'T' | 't' ) ;
 
@@ -441,7 +454,12 @@ oC_FunctionName
             :  oC_Namespace oC_SymbolicName ;
 
 oC_ExistentialSubquery
-                   :  EXISTS SP? '{' SP? ( oC_RegularQuery | ( oC_Pattern ( SP? oC_Where )? ) ) SP? '}' ;
+                   :  EXISTS SP? '{' SP? ( oC_RegularQuery | oC_ExistentialQueryBody | ( oC_Pattern ( SP? oC_Where )? ) ) SP? '}' ;
+
+// Implementation extension to Cypher, not part of openCypher 9 (cypher-to-sql):
+// a query in EXISTS { } without RETURN, as in Neo4j: `EXISTS { MATCH (n)-->(m) }`.
+oC_ExistentialQueryBody
+                    :  ( ( oC_ReadingClause | oC_With ) SP? )* oC_ReadingClause ;
 
 EXISTS : ( 'E' | 'e' ) ( 'X' | 'x' ) ( 'I' | 'i' ) ( 'S' | 's' ) ( 'T' | 't' ) ( 'S' | 's' ) ;
 

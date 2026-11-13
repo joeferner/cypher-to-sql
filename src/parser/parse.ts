@@ -37,6 +37,7 @@ import {
   type OC_IntegerLiteralContext,
   type OC_LiteralContext,
   type OC_MapLiteralContext,
+  type OC_MapProjectionContext,
   type OC_MatchContext,
   type OC_MultiPartQueryContext,
   type OC_NodeLabelsContext,
@@ -228,6 +229,74 @@ class AstBuilder {
           labels: this.nodeLabels(item.oC_NodeLabels()),
         };
       }),
+    };
+  }
+
+  /**
+   * `n {.a, b: e, c, .*}` (a Neo4j extension) as the expressions it stands for:
+   * `CASE WHEN n IS NULL THEN NULL ELSE {a: n.a, b: e, c: c} END`, with `.*`
+   * the map is set over `properties(n)` (`MapProjection`). A later entry for a
+   * key replaces an earlier one.
+   */
+  private mapProjection(ctx: OC_MapProjectionContext): ast.Expression {
+    const position = pos(ctx);
+    const subject: ast.Variable = {
+      type: 'Variable',
+      position: pos(ctx.oC_Variable()),
+      name: this.symbolicName(ctx.oC_Variable().oC_SymbolicName()),
+    };
+    let all = false;
+    const entries = new Map<string, ast.Expression>();
+    for (const item of ctx.oC_MapProjectionItem()) {
+      const lookup = item.oC_PropertyLookup();
+      const key = item.oC_PropertyKeyName();
+      const variable = item.oC_Variable();
+      if (lookup) {
+        const name = this.schemaName(lookup.oC_PropertyKeyName()!.oC_SchemaName());
+        entries.delete(name);
+        entries.set(name, { type: 'PropertyAccess', position: pos(item), subject, key: name });
+      } else if (key) {
+        const name = this.schemaName(key.oC_SchemaName());
+        entries.delete(name);
+        entries.set(name, this.expression(item.oC_Expression()!));
+      } else if (variable) {
+        const name = this.symbolicName(variable.oC_SymbolicName());
+        entries.delete(name);
+        entries.set(name, { type: 'Variable', position: pos(item), name });
+      } else {
+        all = true;
+      }
+    }
+    const map: ast.MapExpression = {
+      type: 'Map',
+      position,
+      entries: [...entries].map(([key, value]) => ({ key, value })),
+    };
+    const projected: ast.Expression = all
+      ? {
+          type: 'MapProjection',
+          position,
+          base: {
+            type: 'FunctionCall',
+            position,
+            name: 'properties',
+            distinct: false,
+            args: [subject],
+          },
+          entries: map.entries,
+        }
+      : map;
+    return {
+      type: 'Case',
+      position,
+      subject: undefined,
+      alternatives: [
+        {
+          when: { type: 'IsNull', position, operand: subject, negated: false },
+          then: { type: 'Literal', position, value: null },
+        },
+      ],
+      otherwise: projected,
     };
   }
 
@@ -657,6 +726,10 @@ class AstBuilder {
     if (parameter) {
       return this.parameter(parameter);
     }
+    const projection = ctx.oC_MapProjection();
+    if (projection) {
+      return this.mapProjection(projection);
+    }
     const variable = ctx.oC_Variable();
     if (variable) {
       return {
@@ -766,6 +839,32 @@ class AstBuilder {
         pattern: undefined,
         where: undefined,
         query: this.query(regular.oC_SingleQuery()),
+      };
+    }
+    const body = exists.oC_ExistentialQueryBody();
+    if (body) {
+      // Without RETURN (a Neo4j extension): the query returns a constant.
+      const clauses = body.children
+        .filter((c) => c instanceof OC_ReadingClauseContext || c instanceof OC_WithContext)
+        .map((c) => (c instanceof OC_WithContext ? this.withClause(c) : this.readingClause(c)));
+      const position = pos(body);
+      const one: ast.Expression = { type: 'Literal', position, value: 1n };
+      clauses.push({
+        type: 'Return',
+        position,
+        distinct: false,
+        star: false,
+        items: [{ position, expression: one, alias: undefined, name: '1' }],
+        orderBy: [],
+        skip: undefined,
+        limit: undefined,
+      });
+      return {
+        type: 'Exists',
+        position: pos(ctx),
+        pattern: undefined,
+        where: undefined,
+        query: { type: 'Query', position, clauses },
       };
     }
     const where = exists.oC_Where();

@@ -40,8 +40,6 @@ Every engine's values become one text form ([values.ts](values.ts)): integers an
 
 ## Known differences
 
-The corpus marks these with `known`:
-
-- `EXISTS { MATCH ... }` without `RETURN` and map projections (`n {.name}`) are outside the openCypher 9 grammar, so they fail to parse here.
+None are marked `known` at the moment; the corpus marks a deliberate difference, or a bug with its issue, with `known`.
 
 Two results where only ArcadeDB differs: it returns `false` for an invalid regular expression (Neo4j and this library raise an error) and for `=~` on a value that is not a string (null in Neo4j and here).

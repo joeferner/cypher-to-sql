@@ -137,6 +137,15 @@ export function sqlite(options: SqliteOptions = {}): Dialect {
     changeCase: (string, to) =>
       options.functions ? `cypher_${to}(${string})` : `${to}(${string})`,
     // json() marks JSON text as JSON, so that it is nested rather than quoted.
+    jsonSetKey: (object, keyPlaceholder, key, value): string => {
+      // As in jsonMember: a `"` in the key would address another member.
+      if (key.includes('"')) {
+        throw new UnsupportedFeatureError(
+          `Map keys containing '"' are not supported on SQLite here: ${JSON.stringify(key)}`,
+        );
+      }
+      return `json_set(${object}, '$."' || ${keyPlaceholder} || '"', json(${value}))`;
+    },
     jsonArray: (items) => `json_array(${items.map((item) => `json(${item})`).join(', ')})`,
     jsonObject: (entries) =>
       `json_object(${entries.map((e) => `${e.keyPlaceholder}, json(${e.value})`).join(', ')})`,

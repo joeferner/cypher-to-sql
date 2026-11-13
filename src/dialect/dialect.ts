@@ -98,6 +98,12 @@ export interface Dialect {
   /** A string in upper or lower case (`toUpper`, `toLower`). */
   changeCase(string: string, to: 'upper' | 'lower'): string;
 
+  /**
+   * The JSON object `object` with member `key` set to the JSON value `value`
+   * (JSON null included); `keyPlaceholder` binds the key.
+   */
+  jsonSetKey(object: string, keyPlaceholder: string, key: string, value: string): string;
+
   /** A JSON list of JSON values. */
   jsonArray(items: string[]): string;
 

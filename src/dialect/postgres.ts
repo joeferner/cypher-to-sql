@@ -161,6 +161,8 @@ export function postgres(): Dialect {
     toJson: (value, type) => (type === 'float' ? floatToJsonb(value) : `to_jsonb(${value})`),
     floatToString,
     changeCase: (string, to) => `${to}(${string})`,
+    jsonSetKey: (object, keyPlaceholder, _key, value) =>
+      `(${object} || jsonb_build_object(${keyPlaceholder}::text, ${value}))`,
     jsonArray: (items) => `jsonb_build_array(${items.join(', ')})`,
     jsonObject: (entries) =>
       `jsonb_build_object(${entries.map((e) => `${e.keyPlaceholder}::text, ${e.value}`).join(', ')})`,

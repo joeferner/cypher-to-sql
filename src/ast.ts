@@ -158,6 +158,7 @@ export type Expression =
   | Literal
   | ListExpression
   | MapExpression
+  | MapProjection
   | Parameter
   | Variable
   | PropertyAccess
@@ -320,6 +321,16 @@ export interface ListExpression extends Node {
 
 export interface MapExpression extends Node {
   type: 'Map';
+  entries: { key: string; value: Expression }[];
+}
+
+/**
+ * The map `base` (a map, or null) with `entries` set over it, in order: what a
+ * map projection with `.*` (`n {.*, k: e}`) becomes. The parser makes it.
+ */
+export interface MapProjection extends Node {
+  type: 'MapProjection';
+  base: Expression;
   entries: { key: string; value: Expression }[];
 }
 

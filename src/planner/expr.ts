@@ -234,6 +234,23 @@ export class ExprCompiler {
         );
         return { sql, type: 'json', atomic: false, shape };
       }
+      case 'MapProjection': {
+        let sql = this.json(expr.base);
+        for (const { key, value } of expr.entries) {
+          if (key === ENTITY_TAG) {
+            throw new SemanticError(`The map key ${JSON.stringify(ENTITY_TAG)} is reserved`, {
+              position: value.position,
+            });
+          }
+          sql = b.dialect.jsonSetKey(
+            sql,
+            b.bind({ kind: 'sql', value: key }),
+            key,
+            this.json(value),
+          );
+        }
+        return { sql, type: 'json', atomic: false, shape: 'map' };
+      }
       case 'Variable': {
         const binding = this.resolve(expr);
         if (binding.kind === 'value') {

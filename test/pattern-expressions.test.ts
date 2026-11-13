@@ -65,6 +65,48 @@ for (const backend of testBackends()) {
       ]);
     });
 
+    it('evaluates EXISTS with a query without RETURN, as Neo4j does', async () => {
+      expect(await names('EXISTS { MATCH (n)-->(m) WHERE m.n = "c" }')).toEqual(['a', 'b']);
+      expect(
+        await names('EXISTS { MATCH (n)-->(m) WITH m WHERE m.k = 1 MATCH (x:N {k: m.k}) }'),
+      ).toEqual(['a']);
+      expect(await names("NOT EXISTS { UNWIND ['b', 'd'] AS t MATCH (n)-->({n: t}) }")).toEqual([
+        'b',
+        'c',
+        'd',
+        'e',
+      ]);
+    });
+
+    it('projects maps from nodes, relationships, and maps', async () => {
+      expect(
+        await graph.query(
+          `MATCH (n:N {n: 'a'})-[r:S]->(c)
+           RETURN n {.n, .k, .missing, c: c.n, two: 1 + 1} AS m, r {.*, t: type(r)} AS r,
+                  c {.*, n: null} AS c, {a: 1} AS map`,
+        ),
+      ).toEqual([
+        {
+          m: { n: 'a', k: 1n, missing: null, c: 'c', two: 2n },
+          r: { t: 'S' },
+          c: { n: null },
+          map: { a: 1n },
+        },
+      ]);
+      expect(
+        await graph.query(
+          `WITH {a: 1, b: 2} AS m OPTIONAL MATCH (x:Nope)
+           RETURN m {.a, .*, b: 3} AS m, x {.n} AS x`,
+        ),
+      ).toEqual([{ m: { a: 1n, b: 3n }, x: null }]);
+      expect(
+        await graph.query(
+          // The later `n` (the node) replaces `.n`.
+          `MATCH (n:N) WITH n ORDER BY n.n WITH collect(n {.n, n}) AS l RETURN l[0].n.n AS n, l[0].n.k AS k`,
+        ),
+      ).toEqual([{ n: 'a', k: 1n }]);
+    });
+
     it('builds lists with pattern comprehensions', async () => {
       expect(
         await graph.query(
