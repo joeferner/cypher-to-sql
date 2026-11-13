@@ -125,6 +125,41 @@ for (const backend of testBackends()) {
       ).toEqual([{ name: 'Ada', first: 'a' }]);
     });
 
+    it('sorts lists element by element, a prefix first', async () => {
+      const sorted = async (lists: string, direction = ''): Promise<CypherValue[]> =>
+        (await graph.query(`UNWIND ${lists} AS l RETURN l ORDER BY l ${direction}`)).map(
+          (r) => r['l']!,
+        );
+      expect(
+        await sorted("[[], ['a'], [null, 2], ['a', 1], [1, null], [1], [null, 1], [1, 'a']]"),
+      ).toEqual([[], ['a'], ['a', 1n], [1n], [1n, 'a'], [1n, null], [null, 1n], [null, 2n]]);
+      expect(
+        await sorted(
+          '[[2, 2], [2, -2], [1, 2], [1], [300, 0], [1, -20], [-1.5], [0.001], [1e300]]',
+        ),
+      ).toEqual([
+        [-1.5],
+        [0.001],
+        [1n],
+        [1n, -20n],
+        [1n, 2n],
+        [2n, -2n],
+        [2n, 2n],
+        [300n, 0n],
+        [1e300],
+      ]);
+      expect(await sorted("[[false], ['ab'], [true], ['b'], ['a', 'b']]", 'DESC')).toEqual([
+        [true],
+        [false],
+        ['b'],
+        ['ab'],
+        ['a', 'b'],
+      ]);
+      expect(
+        await graph.query('UNWIND [[1], [2], [2, 1]] AS x RETURN max(x) AS max, min(x) AS min'),
+      ).toEqual([{ max: [2n, 1n], min: [1n] }]);
+    });
+
     it('rejects type errors and misuse', async () => {
       await expect(v('true[0]')).rejects.toThrow(SemanticError);
       await expect(v('[1, 2][1.5]')).rejects.toThrow(SemanticError);

@@ -76,6 +76,21 @@ export function sqlite(): Dialect {
       `json_group_array(${distinct ? 'DISTINCT ' : ''}json(${value})` +
       `${orderBy.length > 0 ? ` ORDER BY ${orderBy.join(', ')}` : ''}) FILTER (WHERE ${filter})`,
     booleanAggregate: (kind, value) => `${kind}(${value})`,
+    stringAggregate: (value, orderBy) =>
+      `group_concat(${value}, ''${orderBy.length > 0 ? ` ORDER BY ${orderBy.join(', ')}` : ''})`,
+    // Sign class, a biased decimal exponent, and the mantissa in [1, 10) (for
+    // negative numbers both complemented, so that larger magnitudes sort first).
+    sortableNumber: (value) =>
+      `(SELECT CASE WHEN f = 0 THEN 'M' WHEN f > 1.7976931348623157e308 THEN 'O' ` +
+      `WHEN f < -1.7976931348623157e308 THEN 'K' ` +
+      `WHEN f > 0 THEN 'N' || printf('%03d', e + 400) || printf('%.15f', abs(f) / pow(10, e)) ` +
+      `ELSE 'L' || printf('%03d', 599 - e) || printf('%.15f', 10 - abs(f) / pow(10, e)) END ` +
+      `FROM (SELECT f, max(CASE WHEN abs(f) / pow(10, e0) >= 10 THEN e0 + 1 ` +
+      `WHEN abs(f) / pow(10, e0) < 1 THEN e0 - 1 ELSE e0 END, -300) AS e ` +
+      `FROM (SELECT f, max(CAST(floor(log10(CASE WHEN f = 0 OR abs(f) > 1.7976931348623157e308 THEN 1 ELSE abs(f) END)) AS INTEGER), -300) AS e0 ` +
+      `FROM (SELECT (${value}) AS f))))`,
+    // char(1) is escaped as char(1, 2) and the terminator is char(1, 1).
+    sortableString: (string) => `(replace(${string}, char(1), char(1, 2)) || char(1, 1))`,
     jsonRemoveKeys: (map, keys) =>
       `json_remove(${map}, ${keys.map((k) => sqlStringLiteral(`$."${k}"`)).join(', ')})`,
     jsonKeys: (map) =>

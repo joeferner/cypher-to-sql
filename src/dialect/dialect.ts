@@ -111,6 +111,20 @@ export interface Dialect {
     options: { distinct: boolean; orderBy: string[]; filter: string },
   ): string;
 
+  /** Aggregate: the texts of the group's rows concatenated in `orderBy` order; NULL for no rows. */
+  stringAggregate(value: string, orderBy: string[]): string;
+
+  // ---- sort keys (compared as text in byte order, see `orderString`) -------------
+
+  /**
+   * A text that sorts like the float `value`: `K` for -infinity, then negative
+   * numbers (`L...`), `M` for zero, positive numbers (`N...`), `O` for infinity.
+   * Fixed width within each sign, so a following key starts at the same place.
+   */
+  sortableNumber(value: string): string;
+  /** A text that sorts like `string` and ends in a terminator lower than any of its characters. */
+  sortableString(string: string): string;
+
   /** Aggregate: the smallest or largest boolean (false < true). */
   booleanAggregate(kind: 'min' | 'max', value: string): string;
 

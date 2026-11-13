@@ -122,6 +122,26 @@ export function postgres(): Dialect {
       `${orderBy.length > 0 ? ` ORDER BY ${orderBy.join(', ')}` : ''}) FILTER (WHERE ${filter}), '[]'::jsonb)`,
     // min() and max() are not defined for booleans.
     booleanAggregate: (kind, value) => `${kind === 'min' ? 'bool_and' : 'bool_or'}(${value})`,
+    stringAggregate: (value, orderBy) =>
+      `string_agg(${value}, ''${orderBy.length > 0 ? ` ORDER BY ${orderBy.join(', ')}` : ''})`,
+    // Sign class, a biased decimal exponent, and the mantissa in [1, 10) (for
+    // negative numbers both complemented, so that larger magnitudes sort first).
+    // log() of zero, infinity, or NaN is an error or useless, so those take
+    // log(1). The exponent stops at -300, so that power(10, e) never underflows
+    // to zero; below that the mantissa is less than 1, still in order.
+    sortableNumber: (value) =>
+      `(SELECT CASE WHEN f = 'NaN'::float8 THEN 'P' WHEN f = 0 THEN 'M' ` +
+      `WHEN f = 'Infinity'::float8 THEN 'O' WHEN f = '-Infinity'::float8 THEN 'K' ` +
+      `WHEN f > 0 THEN 'N' || to_char(e + 400, 'FM000') || to_char(abs(f) / power(10::float8, e), 'FM0.000000000000000') ` +
+      `ELSE 'L' || to_char(599 - e, 'FM000') || to_char(10 - abs(f) / power(10::float8, e), 'FM0.000000000000000') END ` +
+      `FROM (SELECT f, GREATEST(CASE WHEN abs(f) / power(10::float8, e0) >= 10 THEN e0 + 1 ` +
+      `WHEN abs(f) / power(10::float8, e0) < 1 THEN e0 - 1 ELSE e0 END, -300) AS e ` +
+      `FROM (SELECT f, GREATEST(floor(log(CASE WHEN f = 0 OR f IN ('Infinity'::float8, '-Infinity'::float8, 'NaN'::float8) ` +
+      `THEN 1 ELSE abs(f) END))::int, -300) AS e0 ` +
+      `FROM (SELECT (${value})::float8 AS f) AS x) AS y) AS z)`,
+    // chr(1) is escaped as chr(1) || chr(2) and the terminator is chr(1) || chr(1).
+    sortableString: (string) =>
+      `(replace(${string}, chr(1), chr(1) || chr(2)) || chr(1) || chr(1))`,
     // Set-returning JSON functions fail on the wrong type, so their inputs are
     // guarded (see fromJson).
     jsonRemoveKeys: (map, keys) => `(${map} - ARRAY[${keys.map(sqlStringLiteral).join(', ')}])`,

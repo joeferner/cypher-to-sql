@@ -336,8 +336,8 @@ export class ExprCompiler {
    * ORDER BY terms that sort a value in Cypher's order: across types
    * map < node < relationship < list < string < boolean < number < null
    * (ascending; descending reverses it, so nulls come first), and within a type
-   * by value. Lists and maps sort by their JSON text within their type, which
-   * is not Cypher's element-wise order. Apply a direction with `orderTerm`.
+   * by value. Lists sort element by element (see `listSortKey`); maps and
+   * entities by their JSON text. Apply a direction with `orderTerm`.
    */
   public sortKeys(e: Expr): SortKey[] {
     const d = this.b.dialect;
@@ -370,12 +370,47 @@ export class ExprCompiler {
           when(NUMBER_TYPES, d.fromJson(e.sql, 'number')),
           when(`('string')`, d.orderString(d.fromJson(e.sql, 'string'))),
           when(`('boolean')`, d.fromJson(e.sql, 'boolean')),
-          when(`('list', 'map', 'node', 'relationship', 'path')`, d.jsonText(e.sql)),
+          {
+            // Lists element by element; maps and entities by their JSON text.
+            sql:
+              `(CASE WHEN ${t} = 'list' THEN ${d.orderString(this.listSortKey(e.sql))} ` +
+              `WHEN ${t} IN ('map', 'node', 'relationship', 'path') ` +
+              `THEN ${d.orderString(d.jsonText(e.sql))} END)`,
+            nulls: false,
+          },
         ];
       }
       default:
         return [{ sql: e.sql, nulls: true }];
     }
+  }
+
+  /**
+   * A text key that sorts JSON lists in Cypher's order: element by element (each
+   * by type rank, then value), a list that is a prefix of another first. Each
+   * element is a type letter (map B, node C, relationship D, list E, path F,
+   * string G, boolean H, number I, null J) and its value; the list ends in `A`,
+   * which is below every type letter. Nested lists, maps, and entities inside
+   * the list use their JSON text, so they are not in Cypher's order among
+   * themselves. Numbers are compared as floats.
+   */
+  private listSortKey(list: string): string {
+    const d = this.b.dialect;
+    const u = d.unwind(list, `lk${this.nextAlias()}`);
+    const v = 'lkv.v';
+    const t = 'lkv.t';
+    const element =
+      `(CASE WHEN ${t} IN ${NUMBER_TYPES} THEN 'I' || ${d.sortableNumber(d.fromJson(v, 'float'))} ` +
+      `WHEN ${t} = 'string' THEN 'G' || ${d.sortableString(d.fromJson(v, 'string'))} ` +
+      `WHEN ${t} = 'boolean' THEN 'H' || (CASE WHEN ${d.fromJson(v, 'boolean')} THEN '1' ELSE '0' END) ` +
+      `WHEN ${t} = 'null' THEN 'J' ` +
+      `ELSE (CASE ${t} WHEN 'map' THEN 'B' WHEN 'node' THEN 'C' WHEN 'relationship' THEN 'D' ` +
+      `WHEN 'list' THEN 'E' ELSE 'F' END) || ${d.sortableString(d.jsonText(v))} END)`;
+    return (
+      `(SELECT COALESCE(${d.stringAggregate(element, ['lkv.o'])}, '') || 'A' ` +
+      `FROM (SELECT ${u.value} AS v, ${d.jsonType(u.value)} AS t, ${u.order} AS o FROM ${u.from}` +
+      `${u.where ? ` WHERE ${u.where}` : ''}) AS lkv)`
+    );
   }
 
   // ---- values ------------------------------------------------------------------
