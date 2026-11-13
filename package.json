@@ -32,6 +32,7 @@
     "test:tck:all": "npm run generate:parser && TCK_ALL=1 vitest run test/tck",
     "tck:allow-list": "node --experimental-strip-types --no-warnings test/tck/update-allow-list.ts",
     "test:watch": "vitest",
+    "bench": "npm run generate:parser && tsx bench/run.ts",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down -v",
     "lint": "eslint .",
@@ -59,6 +60,7 @@
     "eslint-plugin-unused-imports": "^4.4.1",
     "pg": "8.23.1",
     "prettier": "^3.10.1",
+    "tsx": "4.23.15",
     "typescript": "6.x",
     "typescript-eslint": "^8.72.2",
     "vitest": "^5.1.0"

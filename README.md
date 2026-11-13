@@ -56,6 +56,7 @@ npm run db:up                 # PostgreSQL in Docker (compose.yaml), on localhos
 npm test                      # unit tests + allow-listed TCK scenarios, on SQLite and PostgreSQL
 npm run test:tck:all          # every TCK scenario; passing ids go to tmp/tck-passing-*.json
 npm run pre-commit            # format, lint, typecheck, test
+npm run bench                 # benchmarks on reference graphs (bench/README.md)
 npm run db:down               # remove the PostgreSQL container
 ```
 
