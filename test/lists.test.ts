@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createGraph, SemanticError, type CypherValue, type Graph } from '../src/index.js';
+import {
+  createGraph,
+  CypherTypeError,
+  SemanticError,
+  type CypherValue,
+  type Graph,
+} from '../src/index.js';
 import { testBackends } from './support/backends.js';
 
 for (const backend of testBackends()) {
@@ -32,7 +38,7 @@ for (const backend of testBackends()) {
       expect(await v('$l[$i]', { l: ['x', 'y'], i: 1n })).toBe('y');
       expect(await v('[1, 2][null]')).toBe(null);
       expect(await v('null[0]')).toBe(null);
-      expect(await v('$l[$i]', { l: ['x'], i: 'a' })).toBe(null);
+      await expect(v('$l[$i]', { l: ['x'], i: 'a' })).rejects.toThrow(CypherTypeError);
     });
 
     it('looks up maps, nodes, and relationships by key', async () => {

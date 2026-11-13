@@ -532,11 +532,12 @@ export class ExprCompiler {
         if (e.shape) {
           throw typeError('a boolean', e.shape, source.position);
         }
-        // A non-boolean value is a type error in Cypher; here it is null.
         return this.share(
           [e],
           ([j]) =>
-            `(CASE WHEN ${j!.jsonType} = 'boolean' THEN ${d.fromJson(j!.sql, 'boolean')} END)`,
+            `(CASE WHEN ${j!.jsonType} = 'boolean' THEN ${d.fromJson(j!.sql, 'boolean')} ` +
+            `WHEN ${isNullType(j!.jsonType)} THEN NULL ` +
+            `ELSE ${this.b.typeError('Type mismatch: expected a boolean', source.position, 'boolean')} END)`,
         );
       default:
         throw typeError('a boolean', e.type, source.position);
@@ -550,7 +551,8 @@ export class ExprCompiler {
     }
     const b = this.b;
     if (subject.type === 'json' && subject.shape === undefined) {
-      // A node held in a JSON value: check its `~labels`; anything else gives null.
+      // A node held in a JSON value: check its `~labels`; null gives null, and
+      // any other value is a type error.
       return boolean(
         this.share([subject], ([s]) => {
           const labels = b.dialect.jsonMember(
@@ -561,7 +563,11 @@ export class ExprCompiler {
           const checks = expr.labels
             .map((l) => b.dialect.hasLabel(labels, b.bind({ kind: 'sql', value: l })))
             .join(' AND ');
-          return `(CASE WHEN ${s!.jsonType} = 'node' THEN (${checks}) END)`;
+          return (
+            `(CASE WHEN ${s!.jsonType} = 'node' THEN (${checks}) ` +
+            `WHEN ${isNullType(s!.jsonType)} THEN NULL ` +
+            `ELSE ${b.typeError('Type mismatch: a label predicate needs a node', expr.position, 'boolean')} END)`
+          );
         }),
       );
     }
@@ -808,7 +814,8 @@ export class ExprCompiler {
         const e = d.unwind(r!.sql, `in${n}`);
         const eq = this.compare('=', l!, json(e.value, false), 0).sql;
         return (
-          `(CASE WHEN ${r!.jsonType} IS NULL OR ${r!.jsonType} <> 'list' THEN NULL ` +
+          `(CASE WHEN ${isNullType(r!.jsonType)} THEN NULL ` +
+          `WHEN ${r!.jsonType} <> 'list' THEN ${this.b.typeError('Type mismatch: IN needs a list', expr.right.position, 'boolean')} ` +
           `ELSE (SELECT ${this.anyAll('eq', 'any')} FROM (SELECT ${eq} AS eq FROM ${e.from}` +
           `${e.where ? ` WHERE ${e.where}` : ''}) AS q${n}) END)`
         );
@@ -914,7 +921,7 @@ export class ExprCompiler {
    * `subject[index]`: the element of a list at an integer index (negative counts
    * from the end, out of range is null), or the value of a map, node, or
    * relationship under a string key. Other combinations are type errors when
-   * the types are known, and null at run time otherwise (#30).
+   * the types are known, and `CypherTypeError`s at run time otherwise.
    */
   private index(expr: ast.IndexExpression): Expr {
     const b = this.b;
@@ -955,7 +962,11 @@ export class ExprCompiler {
     }
     return json(
       this.share([subject, index], ([s, i]) => {
-        const arms: string[] = [];
+        const nulls = [isNullType(s!.jsonType)];
+        if (index.type === 'json') {
+          nulls.push(isNullType(i!.jsonType));
+        }
+        const arms = [`WHEN ${nulls.join(' OR ')} THEN NULL`];
         const indexIs = (type: string): string =>
           index.type === 'json' ? ` AND ${i!.jsonType} = '${type}'` : '';
         if (lists && index.type !== 'string') {
@@ -971,7 +982,27 @@ export class ExprCompiler {
               `THEN ${d.jsonMemberAt(s!.sql, k)}`,
           );
         }
-        return `(CASE ${arms.join(' ')} END)`;
+        // What is left is a type error.
+        const position = expr.index.position;
+        if (maps) {
+          const message = 'Type mismatch: a map, node, or relationship is indexed by a string key';
+          arms.push(
+            `WHEN ${s!.jsonType} IN ('map', 'node', 'relationship') THEN ` +
+              b.typeError(message, position, 'json', 'MapElementAccessByNonString'),
+          );
+        }
+        if (lists) {
+          arms.push(
+            `WHEN ${s!.jsonType} = 'list' THEN ` +
+              b.typeError('Type mismatch: a list index must be an integer', position, 'json'),
+          );
+        }
+        const notIndexable = b.typeError(
+          'Type mismatch: only a list, map, node, or relationship can be indexed',
+          expr.subject.position,
+          'json',
+        );
+        return `(CASE ${arms.join(' ')} ELSE ${notIndexable} END)`;
       }),
       false,
     );
@@ -999,7 +1030,11 @@ export class ExprCompiler {
     const given = bounds.filter((bound) => bound !== undefined).map((bound) => bound.expr);
     const sql = this.share([list, ...given], ([l, ...shared]) => {
       const length = d.listLength(l!.sql);
-      const conditions = [`${l!.jsonType} = 'list'`];
+      /** Conditions that make the slice null, and type errors, in order. */
+      const nulls = [isNullType(l!.jsonType)];
+      const errors = [
+        `WHEN ${l!.jsonType} <> 'list' THEN ${this.b.typeError('Type mismatch: only a list can be sliced', expr.subject.position, 'json')}`,
+      ];
       let next = 0;
       const position = (bound: (typeof bounds)[number], open: string): string => {
         if (!bound) {
@@ -1008,10 +1043,17 @@ export class ExprCompiler {
         const s = shared[next++]!;
         let value = s.sql;
         if (s.type === 'json') {
-          // A bound that is not an integer is a type error in Cypher; here it gives null.
+          errors.push(
+            `WHEN NOT ${isNullType(s.jsonType)} AND ${s.jsonType} <> 'integer' THEN ` +
+              this.b.typeError(
+                'Type mismatch: a slice bound must be an integer',
+                bound.position,
+                'json',
+              ),
+          );
           value = `(CASE WHEN ${s.jsonType} = 'integer' THEN ${d.fromJson(s.sql, 'integer')} END)`;
         }
-        conditions.push(`${value} IS NOT NULL`);
+        nulls.push(`${value} IS NULL`);
         return `(CASE WHEN ${value} < 0 THEN ${length} + ${value} ELSE ${value} END)`;
       };
       const from = position(bounds[0], '0');
@@ -1023,12 +1065,22 @@ export class ExprCompiler {
         orderBy: [u.order],
         filter: `${u.index} >= ${from} AND ${u.index} < ${to}`,
       });
+      // A null list gives null before its type is checked; then the bounds' types.
       return (
-        `(CASE WHEN ${conditions.join(' AND ')} THEN (SELECT ${elements} FROM ${u.from}` +
-        `${u.where ? ` WHERE ${u.where}` : ''}) END)`
+        `(CASE WHEN ${nulls[0]} THEN NULL ${errors.join(' ')} ` +
+        `WHEN ${nulls.slice(1).join(' OR ') || d.booleanLiteral(false)} THEN NULL ` +
+        `ELSE (SELECT ${elements} FROM ${u.from}${u.where ? ` WHERE ${u.where}` : ''}) END)`
       );
     });
     return { ...json(sql, false), shape: 'list' };
+  }
+
+  /** `CASE` arms for an operand that must be a list: null for null, else a type error. */
+  private notAList(type: string, position: SourcePosition, result: 'json' | 'boolean'): string {
+    return (
+      `WHEN ${isNullType(type)} THEN NULL ` +
+      `ELSE ${this.b.typeError('Type mismatch: expected a list', position, result)}`
+    );
   }
 
   /** `[x IN list WHERE condition | projection]`: a list in the order of `list`. */
@@ -1047,7 +1099,7 @@ export class ExprCompiler {
       const elements = d.jsonAggregate(value, { distinct: false, orderBy: [u.order], filter });
       return (
         `(CASE WHEN ${l!.jsonType} = 'list' THEN (SELECT ${elements} FROM ${u.from}` +
-        `${u.where ? ` WHERE ${u.where}` : ''}) END)`
+        `${u.where ? ` WHERE ${u.where}` : ''}) ${this.notAList(l!.jsonType, expr.list.position, 'json')} END)`
       );
     });
     return { ...json(sql, false), shape: 'list' };
@@ -1080,7 +1132,8 @@ export class ExprCompiler {
         );
         return (
           `(CASE WHEN ${l!.jsonType} = 'list' THEN (SELECT ${this.quantify('p', expr.quantifier)} ` +
-          `FROM (SELECT ${condition} AS p FROM ${u.from}${u.where ? ` WHERE ${u.where}` : ''}) AS q${n}) END)`
+          `FROM (SELECT ${condition} AS p FROM ${u.from}${u.where ? ` WHERE ${u.where}` : ''}) AS q${n}) ` +
+          `${this.notAList(l!.jsonType, expr.list.position, 'boolean')} END)`
         );
       }),
     );
@@ -1115,7 +1168,12 @@ export class ExprCompiler {
     if (e.type === 'null') {
       return e;
     }
-    if (e.type === 'integer' || e.type === 'float') {
+    const negated = (integer: string): string =>
+      d.checkedInteger(`(-${integer})`, this.overflow(expr.position));
+    if (e.type === 'integer') {
+      return { sql: this.share([e], ([v]) => negated(v!.sql)), type: e.type, atomic: false };
+    }
+    if (e.type === 'float') {
       return { sql: `(-${e.sql})`, type: e.type, atomic: false };
     }
     if (e.type !== 'json' || e.shape) {
@@ -1125,10 +1183,25 @@ export class ExprCompiler {
       this.share(
         [e],
         ([j]) =>
-          `(CASE ${j!.jsonType} WHEN 'integer' THEN ${d.toJson(`(-${d.fromJson(j!.sql, 'integer')})`, 'integer')} ` +
-          `WHEN 'float' THEN ${d.toJson(`(-${d.fromJson(j!.sql, 'float')})`, 'float')} END)`,
+          `(CASE WHEN ${isNullType(j!.jsonType)} THEN NULL ` +
+          `WHEN ${j!.jsonType} = 'integer' THEN ${d.toJson(negated(d.fromJson(j!.sql, 'integer')), 'integer')} ` +
+          `WHEN ${j!.jsonType} = 'float' THEN ${d.toJson(`(-${d.fromJson(j!.sql, 'float')})`, 'float')} ` +
+          `ELSE ${this.b.typeError('Type mismatch: expected a number', expr.operand.position, 'json')} END)`,
       ),
       false,
+    );
+  }
+
+  /** `Dialect.raise` for an integer result that does not fit in 64 bits. */
+  private overflow(position: SourcePosition): string {
+    return this.b.raise(
+      {
+        kind: 'argument',
+        code: 'NumberOutOfRange',
+        message: 'Integer overflow: the result does not fit in 64 bits',
+        position,
+      },
+      'integer',
     );
   }
 
@@ -1154,7 +1227,9 @@ export class ExprCompiler {
       const type =
         op !== '^' && left.type === 'integer' && right.type === 'integer' ? 'integer' : 'float';
       return {
-        sql: this.share([left, right], ([l, r]) => this.numericOp(op, l!.sql, r!.sql, type)),
+        sql: this.share([left, right], ([l, r]) =>
+          this.numericOp(op, l!.sql, r!.sql, type, expr.position),
+        ),
         type,
         atomic: false,
       };
@@ -1165,7 +1240,7 @@ export class ExprCompiler {
     return {
       ...json(
         this.share([this.asJson(left), this.asJson(right)], ([l, r]) =>
-          this.jsonArithmetic(op, l!, r!),
+          this.jsonArithmetic(op, l!, r!, expr.position),
         ),
         false,
       ),
@@ -1174,7 +1249,12 @@ export class ExprCompiler {
   }
 
   /** Arithmetic on two JSON values (cheap to repeat), dispatching on their types. */
-  private jsonArithmetic(op: ast.ArithmeticOperator, l: Shared, r: Shared): string {
+  private jsonArithmetic(
+    op: ast.ArithmeticOperator,
+    l: Shared,
+    r: Shared,
+    position: SourcePosition,
+  ): string {
     const d = this.b.dialect;
     const lt = l.jsonType;
     const rt = r.jsonType;
@@ -1185,6 +1265,7 @@ export class ExprCompiler {
         d.fromJson(l.sql, 'integer'),
         d.fromJson(r.sql, 'integer'),
         'integer',
+        position,
       );
       arms.push(`WHEN ${lt} = 'integer' AND ${rt} = 'integer' THEN ${d.toJson(ints, 'integer')}`);
     }
@@ -1193,6 +1274,7 @@ export class ExprCompiler {
       d.fromJson(l.sql, 'float'),
       d.fromJson(r.sql, 'float'),
       'float',
+      position,
     );
     arms.push(
       `WHEN ${lt} IN ${NUMBER_TYPES} AND ${rt} IN ${NUMBER_TYPES} THEN ${d.toJson(floats, 'float')}`,
@@ -1207,8 +1289,15 @@ export class ExprCompiler {
         `WHEN ${lt} = 'list' OR ${rt} = 'list' THEN ${d.concatLists(asList(l, lt), asList(r, rt))}`,
       );
     }
-    // Other combinations are type errors in Cypher; here they are null.
-    return `(CASE WHEN ${lt} = 'null' OR ${rt} = 'null' THEN NULL ${arms.join(' ')} END)`;
+    const mismatch = this.b.typeError(
+      `Type mismatch: cannot apply \`${op}\` to these values`,
+      position,
+      'json',
+    );
+    return (
+      `(CASE WHEN ${isNullType(lt)} OR ${isNullType(rt)} THEN NULL ${arms.join(' ')} ` +
+      `ELSE ${mismatch} END)`
+    );
   }
 
   /**
@@ -1216,24 +1305,38 @@ export class ExprCompiler {
    * one side is already a float (double precision / REAL), so the operation is
    * done in floating point, as in Cypher. Integer `/` truncates toward zero in
    * both databases, as in Cypher; float `%` is computed because SQLite's `%`
-   * works on integers only.
+   * works on integers only. Integer overflow and integer division by zero are
+   * errors (`CypherArgumentError`).
    */
   private numericOp(
     op: ast.ArithmeticOperator,
     left: string,
     right: string,
     type: 'integer' | 'float',
+    position: SourcePosition,
   ): string {
+    const d = this.b.dialect;
     if (op === '^') {
-      return this.b.dialect.power(left, right);
+      return d.power(left, right);
     }
     if (type === 'float' && op === '/') {
-      return this.b.dialect.floatDivide(left, right);
+      return d.floatDivide(left, right);
     }
     if (type === 'float' && op === '%') {
       return `(${left} - trunc(${left} / ${right}) * ${right})`;
     }
-    return `(${left} ${op} ${right})`;
+    if (type === 'float') {
+      return `(${left} ${op} ${right})`;
+    }
+    const result = d.checkedInteger(`(${left} ${op} ${right})`, this.overflow(position));
+    if (op === '/' || op === '%') {
+      const zero = this.b.raise(
+        { kind: 'argument', code: 'DivisionByZero', message: 'Division by zero', position },
+        'integer',
+      );
+      return `(CASE WHEN ${right} = 0 THEN ${zero} ELSE ${result} END)`;
+    }
+    return result;
   }
 }
 
@@ -1289,6 +1392,11 @@ function literalElementType(list: ast.Expression): ScalarType | undefined {
   );
   const [type] = types;
   return types.size === 1 ? type : undefined;
+}
+
+/** Condition: a JSON type (see `Dialect.jsonType`) is a null value (SQL NULL or JSON null). */
+export function isNullType(type: string): string {
+  return `(${type} IS NULL OR ${type} = 'null')`;
 }
 
 function json(sql: string, atomic: boolean): Expr {

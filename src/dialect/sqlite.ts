@@ -204,6 +204,11 @@ export function sqlite(): Dialect {
     idListsOverlap: (left, right) =>
       `EXISTS (SELECT 1 FROM json_each(${left}) AS vl JOIN json_each(${right}) AS vr ON vl.value = vr.value)`,
     idListLength: (list) => `json_array_length(${list})`,
+    // An invalid JSON path is an error that quotes the path. random() keeps the
+    // call from being evaluated once up front.
+    raise: (marker) => `json_extract('{}', '${marker}' || substr(random(), 1, 0))`,
+    checkedInteger: (expr, overflow) =>
+      `(CASE WHEN typeof(${expr}) = 'real' THEN ${overflow} ELSE ${expr} END)`,
     jsonId: (json) => `(${json} ->> '$')`,
     // JSON numbers and strings compare with the id column's affinity.
     boundIdIn: (column, json) => `${column} IN (SELECT value FROM json_each(${json}))`,

@@ -84,7 +84,7 @@ CREATE INDEX edges_type ON edges (type);
 
 ## Errors
 
-Every error the library raises on purpose extends `CypherError` and has a message, a source position, and an optional `hint`: `CypherSyntaxError`, `UnsupportedFeatureError`, `SemanticError`, `MappingError`, `LimitExceededError`, and `ReadOnlyViolationError`. The hints are written so that an automated retry loop (for example, an LLM generating queries) can fix the query.
+Every error the library raises on purpose extends `CypherError` and has a message, a source position, and an optional `hint`: `CypherSyntaxError`, `UnsupportedFeatureError`, `SemanticError`, `MappingError`, `LimitExceededError`, and `ReadOnlyViolationError`. Errors that depend on the data are found while the query runs: `CypherTypeError` (a value of the wrong type, for example `WHERE n.name` when `name` is a string) and `CypherArgumentError` (integer overflow, integer division by zero); both carry openCypher's detail `code`. The hints are written so that an automated retry loop (for example, an LLM generating queries) can fix the query.
 
 ## Development
 

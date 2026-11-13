@@ -257,6 +257,21 @@ export interface Dialect {
     edges: { table: string; id: string },
   ): string;
 
+  // ---- run-time errors ------------------------------------------------------------
+
+  /**
+   * An expression of `type` that fails when it is evaluated, with `marker`
+   * (letters, digits, `!`, and `:`) in the database's error message. It is
+   * never evaluated early (constant folding), so it can sit in a CASE branch.
+   */
+  raise(marker: string, type: ScalarType | 'json'): string;
+  /**
+   * The integer result `expr` of `+`, `-`, or `*`, or `overflow` (a `raise`)
+   * where the database would not fail on overflow itself (SQLite turns the
+   * result into a float).
+   */
+  checkedInteger(expr: string, overflow: string): string;
+
   /** A LIMIT value meaning no limit (an OFFSET without LIMIT needs it on SQLite). */
   readonly limitAll: string;
 

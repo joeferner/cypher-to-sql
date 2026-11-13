@@ -1,12 +1,37 @@
 import type * as ast from '../ast.js';
 import { RESERVED_KEYS, type ScalarType } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError } from '../errors.js';
-import { typeError, type Expr, type ExprCompiler, type ExprType, type Shared } from './expr.js';
+import {
+  isNullType,
+  typeError,
+  type Expr,
+  type ExprCompiler,
+  type ExprType,
+  type Shared,
+} from './expr.js';
 
 // Scalar, string, list, and math functions. Each function checks the argument
 // types it can see at compile time (a SemanticError for a wrong type) and checks
-// JSON arguments at run time (null for a wrong type, where Cypher would raise a
-// type error; see #30). A null argument gives null, except in coalesce().
+// JSON arguments at run time (a CypherTypeError for a wrong type; null for the
+// ...OrNull conversions). A null argument gives null, except in coalesce().
+
+/** A run-time type error for an argument of `call` (see `SqlBuilder.raise`). */
+function argumentError(call: Call, type: ScalarType | 'json'): string {
+  const name = call.node.name;
+  return call.c.b.typeError(
+    `Type mismatch: invalid argument type for ${name}()`,
+    call.node.position,
+    type,
+    name.toLowerCase().startsWith('to') ? 'InvalidArgumentValue' : 'InvalidArgumentType',
+  );
+}
+
+/** The SQL result type of an expression type, for `argumentError`. */
+function sqlType(type: ExprType): ScalarType | 'json' {
+  return type === 'integer' || type === 'float' || type === 'string' || type === 'boolean'
+    ? type
+    : 'json';
+}
 
 /** What a function argument must be. `float` accepts integers and converts them. */
 type Kind = 'string' | 'integer' | 'float' | 'boolean' | 'list' | 'map';
@@ -79,7 +104,8 @@ function result(sql: string, type: ExprType, shape?: 'list' | 'map'): Expr {
 /**
  * Applies `body` to the arguments as values of the given kinds: native SQL
  * values for scalars, JSON for lists and maps. Arguments whose type is only
- * known at run time are checked then, and a mismatch gives null.
+ * known at run time are checked then: null gives null, another type is a
+ * `CypherTypeError`.
  */
 function apply(
   call: Call,
@@ -105,11 +131,13 @@ function apply(
   });
   const sql = c.share(args, (refs) => {
     const checks: string[] = [];
+    const nulls: string[] = [];
     const values = refs.map((ref, i) => {
       const kind = kinds[i]!;
       if (ref.type !== 'json') {
         return kind === 'float' && ref.type === 'integer' ? d.toFloat(ref.sql) : ref.sql;
       }
+      nulls.push(isNullType(ref.jsonType));
       checks.push(`${ref.jsonType} IN ${JSON_TYPES[kind]}`);
       if (kind === 'list' || kind === 'map') {
         return ref.sql;
@@ -119,7 +147,10 @@ function apply(
         : d.fromJson(ref.sql, kind);
     });
     const value = body(values);
-    return checks.length > 0 ? `(CASE WHEN ${checks.join(' AND ')} THEN ${value} END)` : value;
+    return checks.length > 0
+      ? `(CASE WHEN ${nulls.join(' OR ')} THEN NULL WHEN ${checks.join(' AND ')} THEN ${value} ` +
+          `ELSE ${argumentError(call, sqlType(type))} END)`
+      : value;
   });
   return result(sql, type, shape);
 }
@@ -160,14 +191,21 @@ function dispatch(
       shape,
     );
   }
-  // Known only at run time: one CASE arm per accepted type.
+  // Known only at run time: one CASE arm per accepted type. Any other type is
+  // an error, or null for the ...OrNull conversions.
+  const otherwise = node.name.toLowerCase().endsWith('ornull')
+    ? 'NULL'
+    : argumentError(call, resultType);
   const sql = c.share([arg], ([a]) => {
     const arms = Object.entries(cases).map(([type, f]) => {
       const value =
         type === 'list' || type === 'map' ? a!.sql : d.fromJson(a!.sql, type as ScalarType);
-      return `WHEN '${type}' THEN ${finish(type, f(value))}`;
+      return `WHEN ${a!.jsonType} = '${type}' THEN ${finish(type, f(value))}`;
     });
-    return `(CASE ${a!.jsonType} ${arms.join(' ')} END)`;
+    return (
+      `(CASE WHEN ${isNullType(a!.jsonType)} THEN NULL ${arms.join(' ')} ` +
+      `ELSE ${otherwise} END)`
+    );
   });
   return result(sql, resultType, shape);
 }
@@ -219,7 +257,9 @@ function tagged(
   const accepted = types.map((t) => `'${t}'`).join(', ');
   const sql = call.c.share(
     [arg],
-    ([a]) => `(CASE WHEN ${a!.jsonType} IN (${accepted}) THEN ${body(a!.sql)} END)`,
+    ([a]) =>
+      `(CASE WHEN ${a!.jsonType} IN (${accepted}) THEN ${body(a!.sql)} ` +
+      `WHEN ${isNullType(a!.jsonType)} THEN NULL ELSE ${argumentError(call, sqlType(type))} END)`,
   );
   return result(sql, type, shape);
 }
@@ -254,7 +294,8 @@ function entityOrMap(call: Call, body: (map: string) => string, shape: 'list' | 
     arg.shape === 'map'
       ? body(a!.sql)
       : `(CASE WHEN ${a!.jsonType} = 'map' THEN ${body(a!.sql)} ` +
-        `WHEN ${a!.jsonType} IN ('node', 'relationship') THEN ${body(taggedProperties(call, a!.sql))} END)`,
+        `WHEN ${a!.jsonType} IN ('node', 'relationship') THEN ${body(taggedProperties(call, a!.sql))} ` +
+        `WHEN ${isNullType(a!.jsonType)} THEN NULL ELSE ${argumentError(call, 'json')} END)`,
   );
   return result(sql, 'json', shape);
 }
@@ -385,7 +426,22 @@ const FUNCTIONS: Record<string, FunctionDef> = {
       call,
       call.args.map((): Kind => 'integer'),
       'json',
-      ([start, end, step]) => call.c.b.dialect.range(start!, end!, step ?? '1'),
+      ([start, end, step]) => {
+        const range = call.c.b.dialect.range(start!, end!, step ?? '1');
+        if (step === undefined) {
+          return range;
+        }
+        const zero = call.c.b.raise(
+          {
+            kind: 'argument',
+            code: 'NumberOutOfRange',
+            message: 'range() step must not be zero',
+            position: call.node.position,
+          },
+          'json',
+        );
+        return `(CASE WHEN ${step} = 0 THEN ${zero} ELSE ${range} END)`;
+      },
       'list',
     ),
   ),

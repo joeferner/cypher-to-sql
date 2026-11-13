@@ -241,6 +241,24 @@ export function postgres(): Dialect {
     idListHas: (list, id) => `(${id} = ANY(${list}))`,
     idListsOverlap: (left, right) => `(${left} && ${right})`,
     idListLength: (list) => `cardinality(${list})::bigint`,
+    // A failed cast to integer quotes the text. random() keeps PostgreSQL from
+    // folding the cast at plan time, which it does to constants even in CASE
+    // branches that never run.
+    raise: (marker, type): string => {
+      const failed = `(('${marker}' || CASE WHEN random() >= 0 THEN '' END)::int)`;
+      switch (type) {
+        case 'json':
+          return `to_jsonb(${failed})`;
+        case 'boolean':
+          return `(${failed} = 0)`;
+        case 'string':
+          return `(${failed})::text`;
+        default:
+          return `(${failed})::${SQL_TYPES[type]}`;
+      }
+    },
+    // bigint arithmetic raises its own error on overflow (mapped by the plan runner).
+    checkedInteger: (expr) => expr,
     jsonId: (json, table, id) => typedId(json, table, id),
     // = ANY(ARRAY(...)) runs the subquery once and lets the column's index be used.
     boundIdIn: (column, json, table, id) =>

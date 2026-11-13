@@ -1,7 +1,9 @@
 import type { PickleStep } from '@cucumber/messages';
 import {
   assertReadOnly,
+  CypherArgumentError,
   CypherSyntaxError,
+  CypherTypeError,
   createGraph,
   ReadOnlyViolationError,
   SemanticError,
@@ -211,8 +213,8 @@ function checkResult(
 const ERROR_TYPES: Record<string, (new (...args: never[]) => Error)[]> = {
   SyntaxError: [CypherSyntaxError, SemanticError],
   SemanticError: [SemanticError],
-  TypeError: [SemanticError],
-  ArgumentError: [SemanticError],
+  TypeError: [SemanticError, CypherTypeError],
+  ArgumentError: [SemanticError, CypherArgumentError],
   ParameterMissing: [SemanticError],
 };
 

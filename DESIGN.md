@@ -94,11 +94,21 @@ Rules:
 `src/planner/expr.ts` compiles expressions (in `WHERE`, `RETURN`, `UNWIND`, and property maps) with a static type for each one: a native SQL value (boolean, integer, float, string), a JSON value whose Cypher type is known only at run time, null, or an entity.
 
 - **Both types known** (literals, declared properties, results of typed operations): plain SQL, for example `(properties ->> 'age')::bigint > $1`.
-- **A JSON operand:** the SQL checks its run-time type (`Dialect.jsonType`) and gives null for values of a different type, as Cypher does. Operands used more than once are computed once in a scalar subquery with an optimization fence (`Dialect.noFlatten`); without the fence, the planners copy the expression into every use, which grows exponentially with nesting.
+- **A JSON operand:** the SQL checks its run-time type (`Dialect.jsonType`): a comparison with a value of a different type is false or null, as in Cypher, and an operation that cannot take the type raises a type error (see "Run-time errors"). Operands used more than once are computed once in a scalar subquery with an optimization fence (`Dialect.noFlatten`); without the fence, the planners copy the expression into every use, which grows exponentially with nesting.
 - **Lists and maps:** `=` walks both values with a recursive CTE (`Dialect.jsonDeepEquals`), so nesting depth does not change the SQL size. List ordering is lexicographic at the top level; ordering nested lists or maps is null.
 - **Sorting lists** (ORDER BY, `min`, `max`): a list sorts by a text key that compares in byte order like the list does in Cypher: per element a type letter and an order-preserving value (`Dialect.sortableNumber`, `sortableString`), then an end letter below every type letter, so a prefix comes first. Only list values compute it (it is one branch of the sort key's CASE). Numbers in it compare as floats, and nested lists, maps, and entities by their JSON text.
 - **Results:** a native value is selected in its SQL type and converted by the assembler, so floats stay exact. Floats converted to JSON keep a fraction (`2.0`); on SQLite this goes through the shortest of 15 to 17 significant digits, because `json_quote` rounds to 15.
-- **Type errors:** a type error the compiler can see (`1 AND true`, `'a' - 1`, `[] OR x`) is a `SemanticError` at compile time. A type error that depends on data is null at run time instead of an error (#30).
+- **Type errors:** a type error the compiler can see (`1 AND true`, `'a' - 1`, `[] OR x`) is a `SemanticError` at compile time. A type error that depends on data is a `CypherTypeError` at run time (see "Run-time errors").
+
+### Run-time errors
+
+A plain SELECT cannot raise a custom error, and the library cannot register functions on the caller's connection. So the SQL fails on purpose: `SqlBuilder.raise` records the error (kind, openCypher code, message, source position) on the step and emits `Dialect.raise`, an expression whose own error message quotes a marker `!cypher:<n>`. On PostgreSQL that is a failed cast of text to integer; on SQLite an invalid JSON path. The plan runner turns a driver error with a marker into the recorded `CypherTypeError` or `CypherArgumentError`.
+
+- `Dialect.raise` mixes in `random()`, so that neither database evaluates it early: PostgreSQL folds constant expressions even in CASE branches that never run.
+- Each check sits in a CASE after the null arm, so null stays null: `WHERE n.name` raises for a string and gives null for a missing property.
+- `CypherTypeError`: a boolean condition that is not a boolean, arithmetic or negation on values that do not support it, label predicates on non-nodes, indexing and slicing with wrong types (`MapElementAccessByNonString` for a map indexed by a non-string), comprehensions, quantifiers, and `IN` over a non-list, and function arguments of the wrong type (the `...OrNull` conversions give null instead).
+- `CypherArgumentError`: integer overflow (`NumberOutOfRange`; checked with `Dialect.checkedInteger` on SQLite, where it becomes a float, and mapped from PostgreSQL's own error), integer division or modulo by zero (`DivisionByZero`), and `range()` with step 0.
+- Comparisons of values of different types are not errors (they are false or null, as in Cypher). Property access on a value that is not a map, node, or relationship gives null, not an error.
 - **PostgreSQL constant folding:** PostgreSQL may evaluate a CASE branch early when its input is a constant (a bound parameter), even if the branch is not taken. Casts out of JSON are therefore guarded so that they never fail.
 
 ### Entities as values
@@ -206,7 +216,7 @@ joined with `v.s = a.id AND v.t = b.id`.
 
 ### Functions
 
-`src/planner/functions.ts` compiles function calls (names are case-insensitive). Arguments of a known wrong type are a `SemanticError` at compile time; JSON arguments of the wrong type give null at run time (#30); a null argument gives null.
+`src/planner/functions.ts` compiles function calls (names are case-insensitive). Arguments of a known wrong type are a `SemanticError` at compile time; JSON arguments of the wrong type are a `CypherTypeError` at run time (null for the `...OrNull` conversions); a null argument gives null.
 
 | Group      | Functions                                                                                                                                       |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -238,7 +248,7 @@ Pattern predicates (`WHERE (a)-[:T]->()`), `EXISTS { pattern WHERE c }`, `EXISTS
 - **List comprehensions** `[x IN l WHERE c | e]` and **quantifiers** `all`, `any`, `none`, `single` (`(x IN l WHERE c)`) are correlated subqueries over `Dialect.unwind(l)`: a comprehension aggregates the projected elements with `jsonAggregate` in list order, filtered by `c`; a quantifier aggregates `c` with three-valued logic (a null condition makes the result null unless the other elements decide it). `x` hides an outer variable of the same name, in the expression compiler and in every walk over the AST (`src/planner/walk.ts`).
 - `x` is a JSON value, except over a list literal of literals of one type, where it has that type, so that `none(x IN ['a'] WHERE x % 2 = 0)` is a compile-time type error.
 - Aggregates inside a comprehension's WHERE or projection are a `SemanticError`; a quantifier needs WHERE. `[x IN l]` without WHERE or `|` is a list literal holding `x IN l`, as the grammar reads it.
-- Known types that do not fit (`true[0]`, `[1][1.5]`, `[x IN 5 | x]`) are compile-time type errors; values known only at run time give null (#30).
+- Known types that do not fit (`true[0]`, `[1][1.5]`, `[x IN 5 | x]`) are compile-time type errors; values known only at run time raise a `CypherTypeError`.
 
 ## Ids (write mode)
 
@@ -304,10 +314,10 @@ The defaults are starting values, not measured ones (#16).
 - **Failed casts** return null in Cypher. Use safe-cast helpers in both dialects.
 - **Numbers.** Integer division truncates, and integer overflow is an error. Map both exactly in each dialect.
 - **Mixed-type comparisons** return null in Cypher; SQL raises an error or converts.
-- **Sort order.** Cypher defines a global order across types: map < node < relationship < list < string < boolean < number < null, ascending. Typed values use `NULLS LAST` (ascending) or `NULLS FIRST` (descending) explicitly; JSON values sort by a type rank first, with null ranked last. Within lists and maps the sort is by JSON text, not element-wise (#32). Within ORDER BY ties, UNWIND order is kept.
+- **Sort order.** Cypher defines a global order across types: map < node < relationship < list < string < boolean < number < null, ascending. Typed values use `NULLS LAST` (ascending) or `NULLS FIRST` (descending) explicitly; JSON values sort by a type rank first, with null ranked last. Lists sort element by element; maps by their JSON text. Within ORDER BY ties, UNWIND order is kept.
 - **Strings.** Comparison is case sensitive and by code point: `COLLATE "C"` on PostgreSQL, the default BINARY collation on SQLite. `STARTS WITH`, `ENDS WITH`, and `CONTAINS` never use `LIKE` (case-insensitive on SQLite, and `%`/`_` are wildcards).
 - **NaN.** SQLite has no NaN (`0.0 / 0.0` is null there), and PostgreSQL treats `NaN = NaN` as true and NaN as larger than every number. NaN comparisons do not match Cypher on either dialect.
-- **Integer errors on SQLite.** Integer overflow becomes a float and integer division by zero gives null, where Cypher raises an error (#30). PostgreSQL raises its own errors for both.
+- **Integer errors.** SQLite turns integer overflow into a float and integer division by zero into null; the SQL checks for both and raises a `CypherArgumentError`, as PostgreSQL's own errors become (see "Run-time errors").
 - **Unbounded paths.** `[*]` without an upper bound is capped by `maxPathDepth`.
 - **Row order.** `MATCH` order is undefined, but `UNWIND` order is defined, so plans with `UNWIND` order by every FROM item in clause order (nested-loop order).
 

@@ -32,6 +32,38 @@ export class UnsupportedFeatureError extends CypherError {}
 /** The query is well formed but not meaningful (for example, an undefined variable). */
 export class SemanticError extends CypherError {}
 
+export interface RuntimeErrorOptions extends CypherErrorOptions {
+  /** openCypher's detail code, for example `InvalidArgumentType`. */
+  code: string;
+}
+
+/**
+ * A value of the wrong type, found while the query ran (for example
+ * `WHERE n.name` when `name` is a string). Types known when the query is
+ * compiled give a `SemanticError` instead.
+ */
+export class CypherTypeError extends CypherError {
+  public readonly code: string;
+
+  public constructor(message: string, options: RuntimeErrorOptions) {
+    super(message, options);
+    this.code = options.code;
+  }
+}
+
+/**
+ * An argument with a value the operation cannot take, found while the query
+ * ran: integer overflow, integer division by zero, `range()` with step 0.
+ */
+export class CypherArgumentError extends CypherError {
+  public readonly code: string;
+
+  public constructor(message: string, options: RuntimeErrorOptions) {
+    super(message, options);
+    this.code = options.code;
+  }
+}
+
 /** The graph mapping is invalid. */
 export class MappingError extends CypherError {}
 

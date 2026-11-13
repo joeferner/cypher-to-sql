@@ -1,6 +1,7 @@
-import type { Dialect, EntityColumns } from '../dialect/dialect.js';
+import type { Dialect, EntityColumns, ScalarType } from '../dialect/dialect.js';
 import type * as ast from '../ast.js';
-import type { BindValue, PlanStep, ValueSource } from '../plan.js';
+import type { SourcePosition } from '../errors.js';
+import type { BindValue, PlanStep, RaisedError, ValueSource } from '../plan.js';
 import type { GraphMapping } from '../mapping.js';
 import type { CypherMap, CypherValue } from '../values.js';
 
@@ -19,6 +20,27 @@ export class SqlBuilder {
    */
   public readonly searchSteps: PlanStep[] = [];
   private subqueries = 0;
+  private readonly errors: RaisedError[] = [];
+
+  /**
+   * An expression of `type` that raises `error` when it is evaluated (a Cypher
+   * error found at run time). The plan runner turns the database's error back
+   * into it.
+   */
+  public raise(error: RaisedError, type: ScalarType | 'json'): string {
+    this.errors.push(error);
+    return this.dialect.raise(`!cypher:${this.errors.length - 1}`, type);
+  }
+
+  /** `raise` for a value of the wrong type (TypeError, InvalidArgumentType). */
+  public typeError(
+    message: string,
+    position: SourcePosition | undefined,
+    type: ScalarType | 'json',
+    code = 'InvalidArgumentType',
+  ): string {
+    return this.raise({ kind: 'type', code, message, position }, type);
+  }
 
   /** A number for a new subquery scope, unique in the statement (for its alias prefix). */
   public nextSubquery(): number {
@@ -95,7 +117,12 @@ export class SqlBuilder {
       values.push(this.binds[Number(index)]!);
       return this.dialect.placeholder(values.length);
     });
-    return { sql: text, values, ...extra };
+    return {
+      sql: text,
+      values,
+      ...(this.errors.length > 0 ? { errors: [...this.errors] } : {}),
+      ...extra,
+    };
   }
 }
 

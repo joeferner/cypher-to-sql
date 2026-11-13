@@ -2,7 +2,13 @@ import type { ScalarType } from './dialect/dialect.js';
 import type { SourcePosition } from './errors.js';
 import type { Row, SqlExecutor } from './executor.js';
 import type { Limits } from './limits.js';
-import { LimitExceededError, SemanticError } from './errors.js';
+import {
+  CypherArgumentError,
+  CypherTypeError,
+  LimitExceededError,
+  SemanticError,
+  type CypherError,
+} from './errors.js';
 import { parseCypherJson, stringifyCypherJson } from './json.js';
 import { checkDeclaredType, type PropertyTypes } from './property-types.js';
 import { idsJson, pathsJson, shortestPaths } from './search.js';
@@ -128,6 +134,17 @@ export interface PlanStep {
    * JSON object, and the `writtenRows` bind gives the array of them.
    */
   written?: { name: string; value: WrittenValue }[] | undefined;
+  /** The run-time errors the SQL can raise (see `SqlBuilder.raise`), by index. */
+  errors?: RaisedError[] | undefined;
+}
+
+/** A Cypher error that a step's SQL raises at run time, through `Dialect.raise`. */
+export interface RaisedError {
+  kind: 'type' | 'argument';
+  /** openCypher's detail code, for example `InvalidArgumentType`. */
+  code: string;
+  message: string;
+  position: SourcePosition | undefined;
 }
 
 /** How to build one result column from the SQL columns of the final step. */
@@ -240,7 +257,12 @@ export async function executePlan(
         entityIds.set(step.generatedId.entity, options.idGenerator(step.generatedId.kind));
       }
       const values = step.values.map((v) => resolveBind(v, options, state, row));
-      const result = await tx.query(step.sql, values);
+      let result: Row[];
+      try {
+        result = await tx.query(step.sql, values);
+      } catch (error) {
+        throw runtimeError(error, step) ?? error;
+      }
       if (result.length > limits.maxRowsPerStep) {
         throw new LimitExceededError(
           `A SQL step returned more than ${limits.maxRowsPerStep} rows (maxRowsPerStep)`,
@@ -311,6 +333,37 @@ export async function executePlan(
     );
   }
   return rows.map((row) => assembleRecord(row, plan.columns));
+}
+
+/**
+ * The Cypher error for a database error, or undefined for any other error: an
+ * error the SQL raised on purpose (its marker names one of the step's
+ * `errors`), or the database's own integer overflow or division by zero.
+ */
+function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: unknown } | null)?.code;
+  const marker = /!cypher:(\d+)/.exec(message);
+  if (marker) {
+    const raised = step.errors?.[Number(marker[1])];
+    if (!raised) {
+      return undefined;
+    }
+    const options = { code: raised.code, position: raised.position };
+    return raised.kind === 'type'
+      ? new CypherTypeError(raised.message, options)
+      : new CypherArgumentError(raised.message, options);
+  }
+  // PostgreSQL: numeric_value_out_of_range, division_by_zero. SQLite: integer overflow.
+  if (code === '22003' || /integer overflow/.test(message)) {
+    return new CypherArgumentError('Integer overflow: the result does not fit in 64 bits', {
+      code: 'NumberOutOfRange',
+    });
+  }
+  if (code === '22012') {
+    return new CypherArgumentError('Division by zero', { code: 'DivisionByZero' });
+  }
+  return undefined;
 }
 
 /** Values that earlier steps of a running plan produced. */
