@@ -32,6 +32,8 @@ const readQueries = [
   'MATCH (a:A)-[r:T*1..3 {k: 1}]->(b)-[s]-(c) RETURN r, b',
   'MATCH (a)-[*]-(b), (b)<-[*0..2]-(c) RETURN count(*)',
   'MATCH p = (a)-[r]->(b)-[*1..2]->(c) RETURN p, length(p), nodes(p)',
+  'MATCH (a:A {k: 1}), (b:B) MATCH p = shortestPath((a)-[:T* {w: 1}]->(b)) RETURN p',
+  'MATCH (a), (b) WHERE a.k < b.k MATCH p = allShortestPaths((a)-[*..4]-(b)) RETURN length(p)',
 ];
 
 const writeQueries = [

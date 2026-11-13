@@ -217,6 +217,25 @@ export interface Dialect {
   /** Number of ids in the list, as an integer. */
   idListLength(list: string): string;
 
+  // ---- bound ids (shortest path searches) ---------------------------------------
+  //
+  // Ids found by an earlier step come back as a bound JSON array (`json`, already
+  // passed through `jsonInput`). JSON has no id type, so each id is converted to
+  // the type of the id column `id` (its unquoted name) of `table`.
+
+  /** Condition: `column` is one of the ids in the JSON array `json`. */
+  boundIdIn(column: string, json: string, table: string, id: string): string;
+  /**
+   * The rows of a JSON array of found paths `[{"s", "t", "r": [...], "n": [...]}]`
+   * as `SELECT s, t, path, nodes`: the start and end node ids, and the id lists
+   * (see above) of the relationships and of the nodes after the start.
+   */
+  boundPaths(
+    json: string,
+    nodes: { table: string; id: string },
+    edges: { table: string; id: string },
+  ): string;
+
   /** A LIMIT value meaning no limit (an OFFSET without LIMIT needs it on SQLite). */
   readonly limitAll: string;
 

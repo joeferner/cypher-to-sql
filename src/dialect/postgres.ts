@@ -41,6 +41,17 @@ function entityObject(kind: 'node' | 'relationship', alias: string, table: Entit
  * PostgreSQL dialect. JSON columns are `jsonb`. Works on managed PostgreSQL
  * (RDS, Aurora, and others) because it needs no extensions.
  */
+/**
+ * A JSON id (number or string) as a value of the type of the id column `id` of
+ * `table`, which the planner does not know: a record of the table's row type
+ * gets the column from the JSON, through the column type's input function.
+ * Mapping names are plain identifiers (validateMapping), so `id` is safe as a
+ * string literal.
+ */
+function typedId(json: string, table: string, id: string): string {
+  return `(jsonb_populate_record(NULL::${table}, jsonb_build_object('${id}', ${json})))."${id}"`;
+}
+
 export function postgres(): Dialect {
   return {
     name: 'postgres',
@@ -208,6 +219,20 @@ export function postgres(): Dialect {
     idListHas: (list, id) => `(${id} = ANY(${list}))`,
     idListsOverlap: (left, right) => `(${left} && ${right})`,
     idListLength: (list) => `cardinality(${list})::bigint`,
+    // = ANY(ARRAY(...)) runs the subquery once and lets the column's index be used.
+    boundIdIn: (column, json, table, id) =>
+      `${column} = ANY(ARRAY(SELECT ${typedId('x.value', table, id)} ` +
+      `FROM jsonb_array_elements(${json}) AS x))`,
+    boundPaths: (json, nodes, edges): string => {
+      const list = (key: string, t: { table: string; id: string }): string =>
+        `ARRAY(SELECT ${typedId('x.value', t.table, t.id)} FROM jsonb_array_elements(j.value -> '${key}') ` +
+        `WITH ORDINALITY AS x(value, i) ORDER BY x.i)`;
+      return (
+        `SELECT ${typedId(`j.value -> 's'`, nodes.table, nodes.id)} AS s, ` +
+        `${typedId(`j.value -> 't'`, nodes.table, nodes.id)} AS t, ` +
+        `${list('r', edges)} AS path, ${list('n', nodes)} AS nodes FROM jsonb_array_elements(${json}) AS j`
+      );
+    },
     noFlatten: ' OFFSET 0',
     limitAll: 'ALL',
     unwind: (listExpr, alias) => ({

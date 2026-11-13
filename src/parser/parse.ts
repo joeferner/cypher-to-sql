@@ -233,12 +233,32 @@ class AstBuilder {
   private pattern(ctx: OC_PatternContext): ast.PatternPart[] {
     return ctx.oC_PatternPart().map((part) => {
       const variable = part.oC_Variable();
+      const anonymous = part.oC_AnonymousPatternPart()!;
+      const shortest = anonymous.oC_ShortestPathPattern();
       return {
         position: pos(part),
         variable: variable ? this.symbolicName(variable.oC_SymbolicName()) : undefined,
-        elements: this.patternElement(part.oC_AnonymousPatternPart()!.oC_PatternElement()),
+        elements: this.patternElement(
+          shortest ? shortest.oC_PatternElement() : anonymous.oC_PatternElement()!,
+        ),
+        shortest: shortest ? this.shortestKind(shortest.oC_SymbolicName()) : undefined,
       };
     });
+  }
+
+  /** The function name of `shortestPath(...)` or `allShortestPaths(...)` (any case). */
+  private shortestKind(ctx: OC_SymbolicNameContext): 'one' | 'all' {
+    const name = this.symbolicName(ctx).toLowerCase();
+    if (name === 'shortestpath') {
+      return 'one';
+    }
+    if (name === 'allshortestpaths') {
+      return 'all';
+    }
+    throw new CypherSyntaxError(
+      `Invalid Cypher: a pattern can only be wrapped in shortestPath() or allShortestPaths(), not ${this.symbolicName(ctx)}()`,
+      { position: pos(ctx) },
+    );
   }
 
   private patternElement(ctx: OC_PatternElementContext): ast.PatternElement[] {

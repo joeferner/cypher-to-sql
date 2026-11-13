@@ -220,7 +220,15 @@ oC_PatternPart
                ;
 
 oC_AnonymousPatternPart
-                    :  oC_PatternElement ;
+                    :  oC_ShortestPathPattern
+                        | oC_PatternElement
+                        ;
+
+// Implementation extension to Cypher, not part of openCypher (cypher-to-sql):
+// `shortestPath(...)` and `allShortestPaths(...)`. The name is a symbolic name,
+// checked by the parser, so that neither word becomes reserved.
+oC_ShortestPathPattern
+                   :  oC_SymbolicName SP? '(' SP? oC_PatternElement SP? ')' ;
 
 oC_PatternElement
               :  ( oC_NodePattern ( SP? oC_PatternElementChain )* )

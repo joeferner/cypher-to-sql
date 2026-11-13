@@ -184,6 +184,11 @@ export function sqlite(): Dialect {
     idListsOverlap: (left, right) =>
       `EXISTS (SELECT 1 FROM json_each(${left}) AS vl JOIN json_each(${right}) AS vr ON vl.value = vr.value)`,
     idListLength: (list) => `json_array_length(${list})`,
+    // JSON numbers and strings compare with the id column's affinity.
+    boundIdIn: (column, json) => `${column} IN (SELECT value FROM json_each(${json}))`,
+    boundPaths: (json) =>
+      `SELECT j.value ->> '$.s' AS s, j.value ->> '$.t' AS t, j.value -> '$.r' AS path, ` +
+      `j.value -> '$.n' AS nodes FROM json_each(${json}) AS j`,
     // SQLite does not flatten a subquery that has an OFFSET.
     noFlatten: ' LIMIT -1 OFFSET 0',
     limitAll: '-1',

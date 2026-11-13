@@ -87,6 +87,8 @@ export interface PatternPart extends Node {
   variable: string | undefined;
   /** Alternating node and relationship patterns, starting and ending with a node. */
   elements: PatternElement[];
+  /** `shortestPath(...)` (`'one'`) or `allShortestPaths(...)` (`'all'`) around the pattern. */
+  shortest: 'one' | 'all' | undefined;
 }
 
 export type PatternElement = NodePattern | RelationshipPattern;

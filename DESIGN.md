@@ -22,7 +22,7 @@ Cypher text
   → Executor (one transaction) → Result assembler → Cypher values
 ```
 
-- Never parse Cypher with regular expressions. The grammar is pinned in `grammar/Cypher.g4` and regenerated on purpose.
+- Never parse Cypher with regular expressions. The grammar is pinned in `grammar/Cypher.g4` and regenerated on purpose. It has one implementation extension, marked in the file: `shortestPath(...)` and `allShortestPaths(...)` around a pattern part. Their names are symbolic names checked by the parser, so neither word becomes reserved.
 - The planner never writes database-specific SQL. All dialect-specific syntax goes through the `Dialect` interface. Supporting two dialects from the start keeps that boundary honest.
 - One package. The TCK harness and the test executors live under `test/` and are not published.
 
@@ -52,7 +52,7 @@ A query compiles to a plan of one or more SQL steps (`graph.compile(cypher).expl
 Rules:
 
 - All steps of a query run in **one transaction**, so every step sees the same data. PostgreSQL uses `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY` for reads. SQLite uses one read transaction on a read-only connection (or with `PRAGMA query_only`).
-- Intermediate results pass to the next step as **bound arrays**, never temp tables, because PostgreSQL does not allow `CREATE TEMP TABLE` in a read-only transaction. PostgreSQL uses `= ANY($1)`; SQLite uses `IN (SELECT value FROM json_each(?))`.
+- Intermediate results pass to the next step as **bound JSON arrays**, never temp tables, because PostgreSQL does not allow `CREATE TEMP TABLE` in a read-only transaction. SQLite uses `IN (SELECT value FROM json_each(?))`. PostgreSQL uses `= ANY(ARRAY(SELECT ... FROM jsonb_array_elements($1)))`; the planner does not know the id column's type, so each JSON id becomes that type through `jsonb_populate_record(NULL::<table>, ...)`. JSON keeps the binding the same for every driver.
 - **Results are assembled in TypeScript.** Each step selects whatever column shape is easiest (ids, JSON text). The assembler builds the Cypher values. JSON values always cross the driver boundary as JSON text, so the int/float distinction survives on every driver.
 
 ## Storage layout (generic)
@@ -187,6 +187,21 @@ joined with `v.s = a.id AND v.t = b.id`.
 - `r` in `[r*]` binds the id list. WITH carries the list itself; `count(r)`, `size(r)`, and `r IS NULL` use it directly; any other use loads it as a JSON list of tagged relationships, in path order (see "Entities as values"). A pattern whose list variable is already bound is unsupported for now.
 - For a named path, the CTE also keeps the ids of the nodes it reaches.
 
+### Shortest paths
+
+`MATCH p = shortestPath((a)-[r:T*min..max]-(b))` (or `allShortestPaths`) is a breadth-first search that runs as steps before the main statement (`src/search.ts`):
+
+1. **Node pairs:** `SELECT DISTINCT a.id AS s, b.id AS t` over the FROM and WHERE of the scope at that point, which include both nodes' filters and every earlier clause. Later parts of the MATCH can only remove pairs, so this is a superset of the pairs the statement joins.
+2. **One step per depth:** the edges next to the frontier (`f`, `r`, `t`: from node, edge, to node), with the type and property filters, ordered by edge id. All start nodes search together: a step expands the union of their frontiers, each start node keeps its own visited nodes and parents in TypeScript, and a start node stops once it has reached all of its targets. The search ends at the first depth that reaches every target, or when no frontier is left, or at the upper bound (`maxPathDepth` when there is none).
+3. **The statement** reads the paths found from a bound JSON array (`Dialect.boundPaths`) as a derived table with the same columns as a variable-length pattern's CTE (`s`, `t`, `path`, `nodes`), so named paths, `r`, path functions, WITH, and OPTIONAL MATCH work the same.
+
+- `shortestPath` keeps one path per pair: the one through the lowest edge ids at each depth. `allShortestPaths` keeps every path of the shortest length.
+- Shortest paths never repeat a node, so relationship uniqueness holds without a check.
+- The pattern must have exactly one relationship, variable-length, with a lower bound of 0 or 1. With 0, a node's shortest path to itself has length 0; with 1, there is none.
+- A condition in the MATCH's WHERE on the path or its relationships applies during the search in Cypher. That is not supported (`UnsupportedFeatureError`); a later `WITH ... WHERE` filters the paths found instead.
+- Each search depth counts against `maxSteps`, as it runs. The nodes carried to the next depth, summed over start nodes, count against `maxFrontierSize`. `allShortestPaths` may return at most `maxRowsPerStep` paths.
+- The node-pair query and the statement both evaluate the earlier clauses, in the same transaction. Not done yet: searching from both ends, and comparing against a recursive CTE that stops at the first depth (#15).
+
 ### Functions
 
 `src/planner/functions.ts` compiles function calls (names are case-insensitive). Arguments of a known wrong type are a `SemanticError` at compile time; JSON arguments of the wrong type give null at run time (#30); a null argument gives null.
@@ -199,7 +214,7 @@ joined with `v.s = a.id AND v.t = b.id`.
 | Strings    | `size`, `substring`, `left`, `right`, `toUpper`/`upper`, `toLower`/`lower`, `trim`, `ltrim`, `rtrim`, `replace`, `split`, `reverse`             |
 | Numbers    | `abs`, `sign`, `round`, `ceil`, `floor`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `pi`, `e`, `rand` |
 
-Any other function is an `UnsupportedFeatureError` whose hint lists the supported ones. Temporal functions, path functions (`nodes`, `relationships`, `length`), `startNode`/`endNode`, and `round` with a precision are not supported yet. Known differences: string parsing in `toInteger`/`toFloat` accepts JSON number syntax on SQLite (so not `+1` or `.5`) and a slightly wider syntax on PostgreSQL; `toUpper`/`toLower` follow the database (SQLite changes ASCII letters only); `trim` removes spaces only.
+Any other function is an `UnsupportedFeatureError` whose hint lists the supported ones. Path functions (`nodes`, `relationships`, `length`) are described in "Named paths". Temporal functions, `startNode`/`endNode`, and `round` with a precision are not supported yet. Known differences: string parsing in `toInteger`/`toFloat` accepts JSON number syntax on SQLite (so not `+1` or `.5`) and a slightly wider syntax on PostgreSQL; `toUpper`/`toLower` follow the database (SQLite changes ASCII letters only); `trim` removes spaces only.
 
 ## Ids (write mode)
 
@@ -216,8 +231,8 @@ Set for each graph; a query can lower them but never raise them. Exceeding a lim
 | `maxPathDepth`       | 10      | Upper bound for `[*]` and `[*n..]`. An explicit upper bound above it is rejected.                  |
 | `maxRowsPerStep`     | 100,000 | Each step runs with `LIMIT maxRowsPerStep + 1`; getting the extra row means the limit is exceeded. |
 | `maxResultRows`      | 10,000  | Final records. The hint suggests adding `LIMIT`.                                                   |
-| `maxFrontierSize`    | 100,000 | Ids carried from one breadth-first search step to the next.                                        |
-| `maxSteps`           | 32      | SQL steps in one read plan, including breadth-first search depths.                                 |
+| `maxFrontierSize`    | 100,000 | Nodes carried from one breadth-first search depth to the next, summed over the start nodes.        |
+| `maxSteps`           | 32      | SQL steps in one read plan, including breadth-first search depths (counted as they run).           |
 | `timeoutMs`          | 30,000  | Total wall-clock time, checked between steps. Timeouts for single statements belong to the caller. |
 | `maxCreatedEntities` | 100,000 | Nodes plus relationships created by one query, checked against all source rows before any insert.  |
 
@@ -238,7 +253,7 @@ The defaults are starting values, not measured ones (#16).
 | `DISTINCT` with `ORDER BY`                                        | `SELECT * FROM (SELECT DISTINCT ..., <sort keys>) AS d ORDER BY d.k0, ...`; the keys may use only projected values              |
 | Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`)       | Two levels: SQL aggregates grouped by the non-aggregated items, then the items over those columns (see "Aggregation")           |
 | Variable length `[*1..n]`                                         | Recursive CTE with an edge-id list per path, capped by `maxPathDepth` (see "Variable-length patterns")                          |
-| `shortestPath` / `allShortestPaths`                               | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                     |
+| `shortestPath` / `allShortestPaths`                               | Breadth-first search, one step per depth, joined back as bound paths (see "Shortest paths")                                     |
 | Named path `p = ...`, `nodes(p)`, `relationships(p)`, `length(p)` | A JSON path value of tagged entities (see "Named paths")                                                                        |
 | `OPTIONAL MATCH`                                                  | `LEFT JOIN (<new tables>) ON <pattern conditions and WHERE>` on both dialects (see "OPTIONAL MATCH")                            |
 | `WITH`                                                            | A derived table per stage (see "WITH stages"); a separate step for large stages later (#14)                                     |

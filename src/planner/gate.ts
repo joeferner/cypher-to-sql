@@ -1,5 +1,5 @@
 import type * as ast from '../ast.js';
-import { ReadOnlyViolationError, UnsupportedFeatureError } from '../errors.js';
+import { ReadOnlyViolationError, SemanticError, UnsupportedFeatureError } from '../errors.js';
 
 /** True when the query contains any clause that modifies the graph. */
 export function hasWriteClause(query: ast.Query): boolean {
@@ -27,6 +27,13 @@ export function assertSupported(query: ast.Query): void {
     if (clause.type === 'UnsupportedClause') {
       throw new UnsupportedFeatureError(`${clause.name} is not supported yet`, {
         position: clause.position,
+      });
+    }
+    const shortest =
+      clause.type === 'Create' ? clause.pattern.find((p) => p.shortest !== undefined) : undefined;
+    if (shortest) {
+      throw new SemanticError('shortestPath() and allShortestPaths() can only be used in MATCH', {
+        position: shortest.position,
       });
     }
     for (const expr of clauseExpressions(clause)) {

@@ -5,6 +5,7 @@ import type { Limits } from './limits.js';
 import { LimitExceededError, SemanticError } from './errors.js';
 import { parseCypherJson, stringifyCypherJson } from './json.js';
 import { checkDeclaredType, type PropertyTypes } from './property-types.js';
+import { idsJson, pathsJson, shortestPaths } from './search.js';
 import { ENTITY_TAG, RESERVED_KEYS } from './dialect/dialect.js';
 import {
   CypherNode,
@@ -17,8 +18,8 @@ import {
 
 /**
  * A value bound to a SQL placeholder. Most are known when the query is compiled;
- * the rest are resolved just before a step runs (query parameters, ids created by
- * earlier steps, and limits that can be lowered per query).
+ * the rest are resolved just before a step runs (query parameters, ids created or
+ * found by earlier steps, and limits that can be lowered per query).
  */
 export type BindValue =
   /** A plain SQL value (string or number), for example a label or a property key. */
@@ -54,7 +55,40 @@ export type BindValue =
    * The largest number of hops of a variable-length pattern: its upper bound, or
    * `maxPathDepth` when it has none. A bound above `maxPathDepth` is an error.
    */
-  | { kind: 'pathDepth'; min: number; max: number | undefined; position: SourcePosition };
+  | PathDepthBind
+  /** The node ids of the current breadth-first search frontier, as a JSON array. */
+  | { kind: 'frontier' }
+  /** The paths found by shortest path search `search`, as JSON (see Dialect.boundPaths). */
+  | { kind: 'shortestPaths'; search: number };
+
+/**
+ * The largest number of hops of a variable-length pattern: its upper bound, or
+ * `maxPathDepth` when it has none. A bound above `maxPathDepth` is an error.
+ */
+export interface PathDepthBind {
+  kind: 'pathDepth';
+  min: number;
+  max: number | undefined;
+  position: SourcePosition;
+}
+
+/**
+ * A breadth-first search for the shortest paths between pairs of nodes. The step
+ * that carries it selects the pairs (columns `s` and `t`); the search runs right
+ * after that step, one `expand` step per depth, and stops at the depth where it
+ * reaches every target.
+ */
+export interface ShortestPathSearch {
+  /** Its number in the plan; `shortestPaths` binds refer to it. */
+  index: number;
+  /** True for allShortestPaths: every path of the shortest length, not one. */
+  all: boolean;
+  /** The lower bound of the pattern: 0 or 1. */
+  min: number;
+  maxDepth: PathDepthBind;
+  /** The edges next to the `frontier` nodes, as rows `(f, r, t)`: from node, edge, to node. */
+  expand: PlanStep;
+}
 
 /** A Cypher value known at compile time, a query parameter, or a JSON column of the current source row. */
 export type ValueSource =
@@ -75,6 +109,8 @@ export interface PlanStep {
    * each row. Steps after them do not exist yet.
    */
   perRow?: boolean | undefined;
+  /** When set, the step selects the node pairs of this shortest path search, which runs next. */
+  search?: ShortestPathSearch | undefined;
 }
 
 /** How to build one result column from the SQL columns of the final step. */
@@ -121,10 +157,22 @@ export function createPlan(steps: PlanStep[], columns: ColumnSpec[]): CompiledPl
     columns,
     explain: () =>
       steps
-        .map(
-          (s, i) =>
-            `-- step ${i + 1}${s.perRow ? ' (for each source row)' : ''}\n${s.sql}\n-- values: ${s.values.map(describeBind).join(', ')}`,
-        )
+        .map((s, i) => {
+          const note = s.perRow
+            ? ' (for each source row)'
+            : s.search
+              ? ` (node pairs of shortest path search ${s.search.index + 1})`
+              : '';
+          let text = `-- step ${i + 1}${note}\n${describeStep(s)}`;
+          if (s.search) {
+            const { all, min, maxDepth } = s.search;
+            text +=
+              `\n-- search ${s.search.index + 1}: breadth-first, one step per depth ` +
+              `(${all ? 'all shortest paths' : 'one shortest path'} per pair, depth ${min}..` +
+              `${describeBind(maxDepth)})\n${describeStep(s.search.expand)}`;
+          }
+          return text;
+        })
         .join('\n'),
   };
 }
@@ -135,7 +183,9 @@ export async function executePlan(
 ): Promise<Record<string, CypherValue>[]> {
   const { executor, limits } = options;
   const deadline = Date.now() + limits.timeoutMs;
-  const entityIds = new Map<number, unknown>();
+  const state: RunState = { entityIds: new Map(), searches: new Map(), frontier: undefined };
+  const entityIds = state.entityIds;
+  let stepsRun = 0;
 
   const firstPerRow = plan.steps.findIndex((s) => s.perRow);
   const once = firstPerRow < 0 ? plan.steps : plan.steps.slice(0, firstPerRow);
@@ -146,10 +196,17 @@ export async function executePlan(
       if (Date.now() > deadline) {
         throw new LimitExceededError(`Query exceeded the time limit of ${limits.timeoutMs} ms`);
       }
+      // Breadth-first searches add steps at run time; compile time checked the rest.
+      if (plan.readOnly && ++stepsRun > limits.maxSteps) {
+        throw new LimitExceededError(
+          `The query needs more than ${limits.maxSteps} SQL steps (maxSteps)`,
+          { hint: 'Give shortest path patterns a smaller upper bound.' },
+        );
+      }
       if (step.generatedId && options.idGenerator) {
         entityIds.set(step.generatedId.entity, options.idGenerator(step.generatedId.kind));
       }
-      const values = step.values.map((v) => resolveBind(v, options, entityIds, row));
+      const values = step.values.map((v) => resolveBind(v, options, state, row));
       const result = await tx.query(step.sql, values);
       if (result.length > limits.maxRowsPerStep) {
         throw new LimitExceededError(
@@ -166,6 +223,25 @@ export async function executePlan(
     let last: Row[] = [];
     for (const step of once) {
       last = await run(step, undefined);
+      const search = step.search;
+      if (search) {
+        const found = await shortestPaths(last, {
+          all: search.all,
+          min: search.min,
+          maxDepth: resolvePathDepth(search.maxDepth, limits),
+          maxFrontierSize: limits.maxFrontierSize,
+          maxPaths: limits.maxRowsPerStep,
+          expand: async (frontier) => {
+            state.frontier = idsJson(frontier);
+            try {
+              return await run(search.expand, undefined);
+            } finally {
+              state.frontier = undefined;
+            }
+          },
+        });
+        state.searches.set(search.index, pathsJson(found));
+      }
     }
     if (perRow.length > 0) {
       const perRowEntities = perRow.filter((s) => s.creates).length;
@@ -197,12 +273,23 @@ export async function executePlan(
   return rows.map((row) => assembleRecord(row, plan.columns));
 }
 
+/** Values that earlier steps of a running plan produced. */
+interface RunState {
+  /** Ids of created entities, by entity number. */
+  entityIds: Map<number, unknown>;
+  /** JSON text of the paths each shortest path search found. */
+  searches: Map<number, string>;
+  /** JSON text of the frontier while a search step runs. */
+  frontier: string | undefined;
+}
+
 function resolveBind(
   bind: BindValue,
   options: ExecuteOptions,
-  entityIds: Map<number, unknown>,
+  state: RunState,
   row: Row | undefined,
 ): unknown {
+  const { entityIds } = state;
   switch (bind.kind) {
     case 'sql':
       return bind.value;
@@ -265,18 +352,33 @@ function resolveBind(
       return rowCount(bind.skip, 'SKIP', options, row);
     case 'stageLimit':
       return rowCount(bind.limit, 'LIMIT', options, row);
-    case 'pathDepth': {
-      const limit = options.limits.maxPathDepth;
-      const bound = bind.max ?? bind.min;
-      if (bound > limit) {
-        throw new LimitExceededError(
-          `Variable-length pattern bound ${bound} exceeds maxPathDepth (${limit})`,
-          { position: bind.position, hint: 'Use a smaller bound, or raise maxPathDepth.' },
-        );
+    case 'pathDepth':
+      return resolvePathDepth(bind, options.limits);
+    case 'frontier':
+      if (state.frontier === undefined) {
+        throw new Error('Internal error: a frontier is bound outside a search step');
       }
-      return bind.max ?? limit;
+      return state.frontier;
+    case 'shortestPaths': {
+      const found = state.searches.get(bind.search);
+      if (found === undefined) {
+        throw new Error(`Internal error: shortest path search ${bind.search} has not run`);
+      }
+      return found;
     }
   }
+}
+
+function resolvePathDepth(bind: PathDepthBind, limits: Limits): number {
+  const limit = limits.maxPathDepth;
+  const bound = bind.max ?? bind.min;
+  if (bound > limit) {
+    throw new LimitExceededError(
+      `Variable-length pattern bound ${bound} exceeds maxPathDepth (${limit})`,
+      { position: bind.position, hint: 'Use a smaller bound, or raise maxPathDepth.' },
+    );
+  }
+  return bind.max ?? limit;
 }
 
 /** A SKIP or LIMIT value, which must be a non-negative integer. */
@@ -458,6 +560,10 @@ function parseJsonColumn(raw: unknown): CypherValue {
   return parseCypherJson(raw);
 }
 
+function describeStep(step: PlanStep): string {
+  return `${step.sql}\n-- values: ${step.values.map(describeBind).join(', ')}`;
+}
+
 function describeBind(bind: BindValue): string {
   switch (bind.kind) {
     case 'sql':
@@ -482,6 +588,10 @@ function describeBind(bind: BindValue): string {
       return `limit(${describeSource(bind.limit)})`;
     case 'pathDepth':
       return bind.max === undefined ? 'maxPathDepth' : `depth(${bind.max})`;
+    case 'frontier':
+      return 'frontier';
+    case 'shortestPaths':
+      return `shortestPaths(search ${bind.search + 1})`;
   }
 }
 

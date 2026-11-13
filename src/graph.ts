@@ -110,11 +110,13 @@ function planQuery(
         limits,
       );
     }
-    const source = new RowSource(
-      ReadScope.of(new SqlBuilder(dialect, mapping), reading as ast.RowClause[]),
-    );
+    const builder = new SqlBuilder(dialect, mapping);
+    const source = new RowSource(ReadScope.of(builder, reading as ast.RowClause[]));
     const inserts = writer.planCreate(creates as ast.CreateClause[], limits, source);
-    return checkSteps(createPlan([source.finish(), ...inserts], []), limits);
+    return checkSteps(
+      createPlan([...builder.searchSteps, source.finish(), ...inserts], []),
+      limits,
+    );
   }
 
   const ret = clauses.at(-1);
@@ -131,12 +133,9 @@ function planQuery(
       });
     }
   }
-  const { step, columns } = planRead(
-    new SqlBuilder(dialect, mapping),
-    reading as ast.RowClause[],
-    ret,
-  );
-  return checkSteps(createPlan([step], columns), limits);
+  const builder = new SqlBuilder(dialect, mapping);
+  const { step, columns } = planRead(builder, reading as ast.RowClause[], ret);
+  return checkSteps(createPlan([...builder.searchSteps, step], columns), limits);
 }
 
 function isRowClause(clause: ast.Clause): clause is ast.RowClause {

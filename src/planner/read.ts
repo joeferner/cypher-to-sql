@@ -226,6 +226,9 @@ export class ReadScope {
           position: part.position,
         });
       }
+      if (part.shortest) {
+        checkShortestPath(part, match.where);
+      }
     }
     for (const part of match.pattern) {
       const named = part.variable !== undefined;
@@ -241,9 +244,11 @@ export class ReadScope {
       for (let i = 1; i < part.elements.length; i += 2) {
         const right = this.matchNode(part.elements[i + 1] as ast.NodePattern);
         const rel = part.elements[i] as ast.RelationshipPattern;
-        const matched: Matched = rel.range
-          ? this.matchVariableLength(rel, left, right, boundHere, named)
-          : { kind: 'one', alias: this.matchRelationship(rel, left, right, boundHere) };
+        const matched: Matched = part.shortest
+          ? this.matchShortestPath(rel, left, right, boundHere, part.shortest)
+          : rel.range
+            ? this.matchVariableLength(rel, left, right, boundHere, named)
+            : { kind: 'one', alias: this.matchRelationship(rel, left, right, boundHere) };
         relationships.push(matched);
         segments.push({ rel: matched, node: right });
         left = right;
@@ -508,34 +513,7 @@ export class ReadScope {
   ): Matched & { kind: 'list' } {
     const b = this.b;
     const d = b.dialect;
-    const existing = rel.variable !== undefined ? this.bindings.get(rel.variable) : undefined;
-    if (existing?.kind === 'node' || existing?.kind === 'relationship') {
-      throw new SemanticError(`Variable \`${rel.variable}\` is not a list of relationships`, {
-        position: rel.position,
-      });
-    }
-    if (existing && boundHere.has(rel.variable!)) {
-      throw new SemanticError(
-        `Relationship variable \`${rel.variable}\` is used for more than one relationship in the same MATCH`,
-        { position: rel.position },
-      );
-    }
-    if (existing) {
-      throw new UnsupportedFeatureError(
-        `A variable-length pattern with the bound variable \`${rel.variable}\` is not supported yet`,
-        { position: rel.position },
-      );
-    }
-    if (rel.properties?.type === 'Map') {
-      for (const { value } of rel.properties.entries) {
-        if (freeVariables(value).length > 0) {
-          throw new UnsupportedFeatureError(
-            'Property values that use variables in a variable-length pattern are not supported yet',
-            { position: value.position },
-          );
-        }
-      }
-    }
+    this.checkListPattern(rel, boundHere);
     const min = rel.range!.min ?? 1;
     const max = rel.range!.max;
     const depth = b.bind({ kind: 'pathDepth', min, max, position: rel.position });
@@ -581,7 +559,104 @@ export class ReadScope {
       ` UNION ALL SELECT ${p}.s, ${next}, ${p}.d + 1, ${d.idListAppend(`${p}.path`, `${e}.${edges.id}`)}` +
       `${nodes.append} FROM ${p} JOIN ${edges.table} AS ${e} ON ${adjacent} WHERE ${step.join(' AND ')})` +
       ` SELECT s, t, path${nodes.column} FROM ${p} WHERE d >= ${min}`;
-    this.addFrom(`(${cte}) AS ${v}`);
+    return this.joinPaths(`(${cte}) AS ${v}`, v, rel, left, right, boundHere, withNodes);
+  }
+
+  /**
+   * Matches `shortestPath((a)-[r*min..max]-(b))` (or allShortestPaths) between
+   * the nodes `left` and `right` with a breadth-first search that runs as steps
+   * before this statement:
+   *
+   * 1. A step selects every pair of nodes that `left` and `right` can be in the
+   *    rows so far: the FROM and WHERE of this scope at this point, which
+   *    include both nodes' filters. Later conditions of the MATCH cannot add
+   *    pairs, so this is a superset of the pairs the statement joins.
+   * 2. One step per depth selects the edges next to the frontier (see
+   *    `shortestPaths` in src/search.ts).
+   * 3. The statement reads the paths found from a bound JSON value and joins
+   *    them like the paths of a variable-length pattern.
+   */
+  private matchShortestPath(
+    rel: ast.RelationshipPattern,
+    left: string,
+    right: string,
+    boundHere: Set<string>,
+    kind: 'one' | 'all',
+  ): Matched & { kind: 'list' } {
+    const b = this.b;
+    const d = b.dialect;
+    this.checkListPattern(rel, boundHere);
+    const nodeId = b.ident(b.mapping.nodes.id);
+    const index = b.searchSteps.length;
+    const pairs = finishSelect(
+      b,
+      this.selectBase([`${left}.${nodeId} AS s`, `${right}.${nodeId} AS t`], true),
+      {},
+    );
+
+    const e = this.alias('e');
+    const edges = b.columns('edges');
+    const frontier = d.jsonInput(b.bind({ kind: 'frontier' }));
+    const filters = this.relationshipFilters(rel, e);
+    const half = (from: string, to: string): string =>
+      `SELECT ${e}.${from} AS f, ${e}.${edges.id} AS r, ${e}.${to} AS t FROM ${edges.table} AS ${e} WHERE ` +
+      [
+        d.boundIdIn(`${e}.${from}`, frontier, b.table('nodes'), b.mapping.nodes.id),
+        ...filters,
+      ].join(' AND ');
+    const halves =
+      rel.direction === 'right'
+        ? [half(edges.startId!, edges.endId!)]
+        : rel.direction === 'left'
+          ? [half(edges.endId!, edges.startId!)]
+          : [half(edges.startId!, edges.endId!), half(edges.endId!, edges.startId!)];
+    // Ordered, so that shortestPath picks the same path every time.
+    const expand = finishSelect(b, `SELECT f, r, t FROM (${halves.join(' UNION ALL ')}) AS x`, {
+      implicitOrder: ['r', 'f'],
+    });
+
+    b.searchSteps.push(
+      b.finish(pairs, {
+        search: {
+          index,
+          all: kind === 'all',
+          min: rel.range!.min ?? 1,
+          maxDepth: {
+            kind: 'pathDepth',
+            min: rel.range!.min ?? 1,
+            max: rel.range!.max,
+            position: rel.position,
+          },
+          expand: b.finish(expand),
+        },
+      }),
+    );
+
+    const v = this.alias('v');
+    const found = d.boundPaths(
+      d.jsonInput(b.bind({ kind: 'shortestPaths', search: index })),
+      { table: b.table('nodes'), id: b.mapping.nodes.id },
+      { table: edges.table, id: b.mapping.edges.id },
+    );
+    return this.joinPaths(`(${found}) AS ${v}`, v, rel, left, right, boundHere, true);
+  }
+
+  /**
+   * Joins a derived table `v` of paths (columns s, t, path, and nodes when
+   * `withNodes`) between the nodes `left` and `right`, and binds the pattern's
+   * relationship variable to its id list.
+   */
+  private joinPaths(
+    table: string,
+    v: string,
+    rel: ast.RelationshipPattern,
+    left: string,
+    right: string,
+    boundHere: Set<string>,
+    withNodes: boolean,
+  ): Matched & { kind: 'list' } {
+    const nodeId = this.b.ident(this.b.mapping.nodes.id);
+    this.addFrom(table);
     this.order.push(`${v}.path`);
     this.where.push(`${v}.s = ${left}.${nodeId}`, `${v}.t = ${right}.${nodeId}`);
     const path = `${v}.path`;
@@ -590,6 +665,38 @@ export class ReadScope {
       boundHere.add(rel.variable);
     }
     return { kind: 'list', path, nodes: withNodes ? `${v}.nodes` : undefined };
+  }
+
+  /** Checks the variable and inline properties of a variable-length relationship pattern. */
+  private checkListPattern(rel: ast.RelationshipPattern, boundHere: Set<string>): void {
+    const existing = rel.variable !== undefined ? this.bindings.get(rel.variable) : undefined;
+    if (existing?.kind === 'node' || existing?.kind === 'relationship') {
+      throw new SemanticError(`Variable \`${rel.variable}\` is not a list of relationships`, {
+        position: rel.position,
+      });
+    }
+    if (existing && boundHere.has(rel.variable!)) {
+      throw new SemanticError(
+        `Relationship variable \`${rel.variable}\` is used for more than one relationship in the same MATCH`,
+        { position: rel.position },
+      );
+    }
+    if (existing) {
+      throw new UnsupportedFeatureError(
+        `A variable-length pattern with the bound variable \`${rel.variable}\` is not supported yet`,
+        { position: rel.position },
+      );
+    }
+    if (rel.properties?.type === 'Map') {
+      for (const { value } of rel.properties.entries) {
+        if (freeVariables(value).length > 0) {
+          throw new UnsupportedFeatureError(
+            'Property values that use variables in a variable-length pattern are not supported yet',
+            { position: value.position },
+          );
+        }
+      }
+    }
   }
 
   /** Condition: two relationship patterns of one MATCH bind different relationships. */
@@ -1210,6 +1317,46 @@ function replaceProjected(expr: ast.Expression, items: ast.ProjectionItem[]): as
 }
 
 /** The names of the variables an expression uses. */
+/**
+ * Checks a `shortestPath(...)` or `allShortestPaths(...)` pattern part: one
+ * variable-length relationship with a lower bound of 0 or 1. Conditions of the
+ * MATCH's WHERE on the path or its relationships apply during the search in
+ * Cypher, which the search here does not do, so they are rejected.
+ */
+function checkShortestPath(part: ast.PatternPart, where: ast.Expression | undefined): void {
+  const name = part.shortest === 'all' ? 'allShortestPaths' : 'shortestPath';
+  if (part.elements.length !== 3) {
+    throw new SemanticError(`${name}() requires a pattern with exactly one relationship`, {
+      position: part.position,
+    });
+  }
+  const rel = part.elements[1] as ast.RelationshipPattern;
+  if (!rel.range) {
+    throw new UnsupportedFeatureError(
+      `${name}() with a single relationship (no *) is not supported yet`,
+      { position: rel.position, hint: 'Use a variable-length relationship, for example [*].' },
+    );
+  }
+  if ((rel.range.min ?? 1) > 1) {
+    throw new SemanticError(`${name}() requires a lower bound of 0 or 1`, {
+      position: rel.position,
+    });
+  }
+  const used = where ? freeVariables(where) : [];
+  const variable = [part.variable, rel.variable].find((v) => v !== undefined && used.includes(v));
+  if (variable !== undefined) {
+    throw new UnsupportedFeatureError(
+      `A WHERE that uses \`${variable}\` of ${name}() in the same MATCH is not supported yet`,
+      {
+        position: where!.position,
+        hint:
+          `Cypher applies such a condition during the search. To filter the paths found instead, ` +
+          `use WITH ... WHERE after the MATCH.`,
+      },
+    );
+  }
+}
+
 function freeVariables(expr: ast.Expression): string[] {
   if (expr.type === 'Variable') {
     return [expr.name];

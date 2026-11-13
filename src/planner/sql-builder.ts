@@ -13,6 +13,11 @@ const MARKER = new RegExp(`${MARK}(\\d+)${MARK}`, 'g');
 
 export class SqlBuilder {
   private readonly binds: BindValue[] = [];
+  /**
+   * Steps that must run before the main statement: the node-pair steps of
+   * shortest path searches, in the order the statement needs their results.
+   */
+  public readonly searchSteps: PlanStep[] = [];
 
   public constructor(
     public readonly dialect: Dialect,
