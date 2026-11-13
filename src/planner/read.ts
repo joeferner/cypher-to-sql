@@ -143,6 +143,36 @@ export class ReadScope {
     return scope;
   }
 
+  /** The scope over the rows a write query wrote (see `planWrittenReturn`). */
+  public static written(b: SqlBuilder, variables: WrittenVariable[]): ReadScope {
+    const d = b.dialect;
+    const scope = new ReadScope(b);
+    const u = d.unwind(d.jsonInput(b.bind({ kind: 'writtenRows' })), scope.alias('r'));
+    scope.addFrom(u.from);
+    if (u.where) {
+      scope.where.push(u.where);
+    }
+    scope.order.push(u.order);
+    scope.ordered = true;
+    for (const { name, kind } of variables) {
+      const member = d.jsonMember(u.value, b.bind({ kind: 'sql', value: name }), name);
+      if (kind === 'value') {
+        scope.bindings.set(name, { kind: 'value', sql: member });
+        continue;
+      }
+      const table = kind === 'node' ? 'nodes' : 'edges';
+      const alias = scope.alias(kind === 'node' ? 'n' : 'e');
+      const idName = b.mapping[table].id;
+      // LEFT JOIN: a node from OPTIONAL MATCH may be null.
+      scope.from.push(
+        `LEFT JOIN ${b.table(table)} AS ${alias} ON ${alias}.${b.ident(idName)} = ` +
+          d.jsonId(member, b.table(table), idName),
+      );
+      scope.bindings.set(name, { kind, alias });
+    }
+    return scope;
+  }
+
   /** The scope after `WITH`: the projected rows as the derived table `w0`. */
   private project(w: ast.WithClause): ReadScope {
     const filterFirst = w.where !== undefined && this.whereBeforeProjection(w);
@@ -955,6 +985,30 @@ export function planRead(
   ret: ast.ReturnClause,
 ): { step: PlanStep; columns: ColumnSpec[] } {
   const result = planProjection(b, ReadScope.of(b, clauses), ret, 'return');
+  return { step: b.finish(result.sql), columns: result.columns };
+}
+
+/** A variable of the rows a write query wrote (see `PlanStep.written`). */
+export interface WrittenVariable {
+  name: string;
+  /** Nodes and relationships are ids in the rows; other values are JSON. */
+  kind: 'node' | 'relationship' | 'value';
+}
+
+/**
+ * Plans the reading clauses and RETURN after the CREATE of a write query, over
+ * the rows it wrote: a bound JSON array with one object per source row, in
+ * source order. Entities are joined back by id, so created ones are read as
+ * stored, and a MATCH there sees them.
+ */
+export function planWrittenReturn(
+  b: SqlBuilder,
+  variables: WrittenVariable[],
+  reading: ast.RowClause[],
+  ret: ast.ReturnClause,
+): { step: PlanStep; columns: ColumnSpec[] } {
+  const scope = ReadScope.of(b, reading, ReadScope.written(b, variables));
+  const result = planProjection(b, scope, ret, 'return');
   return { step: b.finish(result.sql), columns: result.columns };
 }
 

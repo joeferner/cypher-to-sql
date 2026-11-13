@@ -7,6 +7,25 @@ INSERT INTO "nodes" ("labels", "properties") VALUES (($1::jsonb), ($2::jsonb)) R
 -- values: [], {}"
 `;
 
+exports[`postgres > create with database ids: CREATE (a {v: 1 + 2})-[r:T]->(b {w: a.v}) WITH a, r, b WHERE a.v > 1 RETURN a, r, b.w 1`] = `
+"CREATE (a {v: 1 + 2})-[r:T]->(b {w: a.v}) WITH a, r, b WHERE a.v > 1 RETURN a, r, b.w
+-- step 1
+SELECT (to_jsonb((($1::bigint) + ($2::bigint))))::text AS r0, (to_jsonb((($1::bigint) + ($2::bigint))))::text AS r1 LIMIT $3
+-- values: "1", "2", limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "nodes" ("labels", "properties") VALUES (($1::jsonb), ($2::jsonb)) RETURNING "id" AS id
+-- values: [], {v: row.r0}
+-- step 3 (for each source row)
+INSERT INTO "nodes" ("labels", "properties") VALUES (($1::jsonb), ($2::jsonb)) RETURNING "id" AS id
+-- values: [], {w: row.r1}
+-- step 4 (for each source row)
+INSERT INTO "edges" ("start_id", "end_id", "type", "properties") VALUES ($1, $2, $3, ($4::jsonb)) RETURNING "id" AS id
+-- values: id(entity 0), id(entity 1), "T", {}
+-- step 5 (after the writes, over the written rows: a, b, r)
+SELECT n1."id" AS c0_id, (n1."labels")::text AS c0_labels, (n1."properties")::text AS c0_props, e2."id" AS c1_id, e2."type" AS c1_type, e2."start_id" AS c1_start, e2."end_id" AS c1_end, (e2."properties")::text AS c1_props, ((n3."properties" -> $1::text))::text AS c2 FROM (SELECT s.*, row_number() OVER () AS o FROM (SELECT n1."id" AS c0, e3."id" AS c1, n2."id" AS c2 FROM LATERAL (SELECT e.value, e.ord FROM jsonb_array_elements(CASE WHEN jsonb_typeof(($2::jsonb)) = 'array' THEN ($2::jsonb) END) WITH ORDINALITY AS e(value, ord) UNION ALL SELECT ($2::jsonb), 1 WHERE jsonb_typeof(($2::jsonb)) NOT IN ('array', 'null')) AS r0 LEFT JOIN "nodes" AS n1 ON n1."id" = (jsonb_populate_record(NULL::"nodes", jsonb_build_object('id', (r0.value -> $3::text))))."id" LEFT JOIN "nodes" AS n2 ON n2."id" = (jsonb_populate_record(NULL::"nodes", jsonb_build_object('id', (r0.value -> $4::text))))."id" LEFT JOIN "edges" AS e3 ON e3."id" = (jsonb_populate_record(NULL::"edges", jsonb_build_object('id', (r0.value -> $5::text))))."id" ORDER BY r0.ord) AS s) AS w0 LEFT JOIN "nodes" AS n1 ON n1."id" = w0.c0 LEFT JOIN "edges" AS e2 ON e2."id" = w0.c1 LEFT JOIN "nodes" AS n3 ON n3."id" = w0.c2 WHERE (SELECT (CASE WHEN s0.t0 IS NULL OR s0.t0 = 'null' OR ($6::bigint) IS NULL THEN NULL WHEN s0.t0 IN ('integer', 'float') THEN ((CASE WHEN jsonb_typeof((n1."properties" -> $7::text)) = 'number' THEN (n1."properties" -> $7::text) END)::numeric > ($6::bigint)) ELSE CAST(NULL AS boolean) END) FROM (SELECT (CASE jsonb_typeof((n1."properties" -> $7::text)) WHEN 'number' THEN CASE WHEN ((n1."properties" -> $7::text))::text ~ '^-?[0-9]+$' AND ((n1."properties" -> $7::text))::numeric BETWEEN -9223372036854775808 AND 9223372036854775807 THEN 'integer' ELSE 'float' END WHEN 'string' THEN 'string' WHEN 'boolean' THEN 'boolean' WHEN 'array' THEN 'list' WHEN 'object' THEN COALESCE(((n1."properties" -> $7::text)) ->> '~cypher', 'map') WHEN 'null' THEN 'null' END) AS t0 OFFSET 0) AS s0) ORDER BY w0.o LIMIT $8
+-- values: "w", writtenRows, "a", "b", "r", "1", "v", limit(maxRowsPerStep + 1)"
+`;
+
 exports[`postgres > create with database ids: CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a) 1`] = `
 "CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a)
 -- step 1
@@ -54,6 +73,25 @@ exports[`postgres > create with generated ids: CREATE () 1`] = `
 -- step 1
 INSERT INTO "nodes" ("id", "labels", "properties") VALUES ($1, ($2::jsonb), ($3::jsonb))
 -- values: id(entity 0), [], {}"
+`;
+
+exports[`postgres > create with generated ids: CREATE (a {v: 1 + 2})-[r:T]->(b {w: a.v}) WITH a, r, b WHERE a.v > 1 RETURN a, r, b.w 1`] = `
+"CREATE (a {v: 1 + 2})-[r:T]->(b {w: a.v}) WITH a, r, b WHERE a.v > 1 RETURN a, r, b.w
+-- step 1
+SELECT (to_jsonb((($1::bigint) + ($2::bigint))))::text AS r0, (to_jsonb((($1::bigint) + ($2::bigint))))::text AS r1 LIMIT $3
+-- values: "1", "2", limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES ($1, ($2::jsonb), ($3::jsonb))
+-- values: id(entity 0), [], {v: row.r0}
+-- step 3 (for each source row)
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES ($1, ($2::jsonb), ($3::jsonb))
+-- values: id(entity 1), [], {w: row.r1}
+-- step 4 (for each source row)
+INSERT INTO "edges" ("id", "start_id", "end_id", "type", "properties") VALUES ($1, $2, $3, $4, ($5::jsonb))
+-- values: id(entity 2), id(entity 0), id(entity 1), "T", {}
+-- step 5 (after the writes, over the written rows: a, b, r)
+SELECT n1."id" AS c0_id, (n1."labels")::text AS c0_labels, (n1."properties")::text AS c0_props, e2."id" AS c1_id, e2."type" AS c1_type, e2."start_id" AS c1_start, e2."end_id" AS c1_end, (e2."properties")::text AS c1_props, ((n3."properties" -> $1::text))::text AS c2 FROM (SELECT s.*, row_number() OVER () AS o FROM (SELECT n1."id" AS c0, e3."id" AS c1, n2."id" AS c2 FROM LATERAL (SELECT e.value, e.ord FROM jsonb_array_elements(CASE WHEN jsonb_typeof(($2::jsonb)) = 'array' THEN ($2::jsonb) END) WITH ORDINALITY AS e(value, ord) UNION ALL SELECT ($2::jsonb), 1 WHERE jsonb_typeof(($2::jsonb)) NOT IN ('array', 'null')) AS r0 LEFT JOIN "nodes" AS n1 ON n1."id" = (jsonb_populate_record(NULL::"nodes", jsonb_build_object('id', (r0.value -> $3::text))))."id" LEFT JOIN "nodes" AS n2 ON n2."id" = (jsonb_populate_record(NULL::"nodes", jsonb_build_object('id', (r0.value -> $4::text))))."id" LEFT JOIN "edges" AS e3 ON e3."id" = (jsonb_populate_record(NULL::"edges", jsonb_build_object('id', (r0.value -> $5::text))))."id" ORDER BY r0.ord) AS s) AS w0 LEFT JOIN "nodes" AS n1 ON n1."id" = w0.c0 LEFT JOIN "edges" AS e2 ON e2."id" = w0.c1 LEFT JOIN "nodes" AS n3 ON n3."id" = w0.c2 WHERE (SELECT (CASE WHEN s0.t0 IS NULL OR s0.t0 = 'null' OR ($6::bigint) IS NULL THEN NULL WHEN s0.t0 IN ('integer', 'float') THEN ((CASE WHEN jsonb_typeof((n1."properties" -> $7::text)) = 'number' THEN (n1."properties" -> $7::text) END)::numeric > ($6::bigint)) ELSE CAST(NULL AS boolean) END) FROM (SELECT (CASE jsonb_typeof((n1."properties" -> $7::text)) WHEN 'number' THEN CASE WHEN ((n1."properties" -> $7::text))::text ~ '^-?[0-9]+$' AND ((n1."properties" -> $7::text))::numeric BETWEEN -9223372036854775808 AND 9223372036854775807 THEN 'integer' ELSE 'float' END WHEN 'string' THEN 'string' WHEN 'boolean' THEN 'boolean' WHEN 'array' THEN 'list' WHEN 'object' THEN COALESCE(((n1."properties" -> $7::text)) ->> '~cypher', 'map') WHEN 'null' THEN 'null' END) AS t0 OFFSET 0) AS s0) ORDER BY w0.o LIMIT $8
+-- values: "w", writtenRows, "a", "b", "r", "1", "v", limit(maxRowsPerStep + 1)"
 `;
 
 exports[`postgres > create with generated ids: CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a) 1`] = `
@@ -327,6 +365,25 @@ INSERT INTO "nodes" ("labels", "properties") VALUES (?, ?) RETURNING "id" AS id
 -- values: [], {}"
 `;
 
+exports[`sqlite > create with database ids: CREATE (a {v: 1 + 2})-[r:T]->(b {w: a.v}) WITH a, r, b WHERE a.v > 1 RETURN a, r, b.w 1`] = `
+"CREATE (a {v: 1 + 2})-[r:T]->(b {w: a.v}) WITH a, r, b WHERE a.v > 1 RETURN a, r, b.w
+-- step 1
+SELECT json_quote((? + ?)) AS r0, json_quote((? + ?)) AS r1 LIMIT ?
+-- values: "1", "2", "1", "2", limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "nodes" ("labels", "properties") VALUES (?, ?) RETURNING "id" AS id
+-- values: [], {v: row.r0}
+-- step 3 (for each source row)
+INSERT INTO "nodes" ("labels", "properties") VALUES (?, ?) RETURNING "id" AS id
+-- values: [], {w: row.r1}
+-- step 4 (for each source row)
+INSERT INTO "edges" ("start_id", "end_id", "type", "properties") VALUES (?, ?, ?, ?) RETURNING "id" AS id
+-- values: id(entity 0), id(entity 1), "T", {}
+-- step 5 (after the writes, over the written rows: a, b, r)
+SELECT n1."id" AS c0_id, n1."labels" AS c0_labels, n1."properties" AS c0_props, e2."id" AS c1_id, e2."type" AS c1_type, e2."start_id" AS c1_start, e2."end_id" AS c1_end, e2."properties" AS c1_props, (n3."properties" -> ('$."' || ? || '"')) AS c2 FROM (SELECT s.*, row_number() OVER () AS o FROM (SELECT n1."id" AS c0, e3."id" AS c1, n2."id" AS c2 FROM json_each(?) AS r0 LEFT JOIN "nodes" AS n1 ON n1."id" = (((CASE r0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN r0.value WHEN 'object' THEN r0.value WHEN 'real' THEN (SELECT CASE WHEN s IS NULL THEN NULL WHEN s GLOB '*[^0-9-]*' THEN s ELSE s || '.0' END FROM (SELECT CASE WHEN f IS NULL OR abs(f) > 1.7976931348623157e308 THEN NULL ELSE CASE WHEN CAST(printf('%.15g', f) AS REAL) = f THEN printf('%.15g', f) WHEN CAST(printf('%.16g', f) AS REAL) = f THEN printf('%.16g', f) ELSE printf('%.17g', f) END END AS s FROM (SELECT r0.value AS f))) ELSE json_quote(r0.value) END) -> ('$."' || ? || '"')) ->> '$') LEFT JOIN "nodes" AS n2 ON n2."id" = (((CASE r0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN r0.value WHEN 'object' THEN r0.value WHEN 'real' THEN (SELECT CASE WHEN s IS NULL THEN NULL WHEN s GLOB '*[^0-9-]*' THEN s ELSE s || '.0' END FROM (SELECT CASE WHEN f IS NULL OR abs(f) > 1.7976931348623157e308 THEN NULL ELSE CASE WHEN CAST(printf('%.15g', f) AS REAL) = f THEN printf('%.15g', f) WHEN CAST(printf('%.16g', f) AS REAL) = f THEN printf('%.16g', f) ELSE printf('%.17g', f) END END AS s FROM (SELECT r0.value AS f))) ELSE json_quote(r0.value) END) -> ('$."' || ? || '"')) ->> '$') LEFT JOIN "edges" AS e3 ON e3."id" = (((CASE r0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN r0.value WHEN 'object' THEN r0.value WHEN 'real' THEN (SELECT CASE WHEN s IS NULL THEN NULL WHEN s GLOB '*[^0-9-]*' THEN s ELSE s || '.0' END FROM (SELECT CASE WHEN f IS NULL OR abs(f) > 1.7976931348623157e308 THEN NULL ELSE CASE WHEN CAST(printf('%.15g', f) AS REAL) = f THEN printf('%.15g', f) WHEN CAST(printf('%.16g', f) AS REAL) = f THEN printf('%.16g', f) ELSE printf('%.17g', f) END END AS s FROM (SELECT r0.value AS f))) ELSE json_quote(r0.value) END) -> ('$."' || ? || '"')) ->> '$') WHERE NOT (r0.key IS NULL AND r0.type = 'null') ORDER BY r0.key) AS s) AS w0 LEFT JOIN "nodes" AS n1 ON n1."id" = w0.c0 LEFT JOIN "edges" AS e2 ON e2."id" = w0.c1 LEFT JOIN "nodes" AS n3 ON n3."id" = w0.c2 WHERE (SELECT (CASE WHEN s0.t0 IS NULL OR s0.t0 = 'null' OR ? IS NULL THEN NULL WHEN s0.t0 IN ('integer', 'float') THEN (((n1."properties" -> ('$."' || ? || '"')) ->> '$') > ?) ELSE NULL END) FROM (SELECT (CASE json_type((n1."properties" -> ('$."' || ? || '"'))) WHEN 'integer' THEN 'integer' WHEN 'real' THEN 'float' WHEN 'text' THEN 'string' WHEN 'true' THEN 'boolean' WHEN 'false' THEN 'boolean' WHEN 'array' THEN 'list' WHEN 'object' THEN COALESCE(json_extract((n1."properties" -> ('$."' || ? || '"')), '$."~cypher"'), 'map') WHEN 'null' THEN 'null' END) AS t0 LIMIT -1 OFFSET 0) AS s0) ORDER BY w0.o LIMIT ?
+-- values: "w", writtenRows, "a", "b", "r", "1", "v", "1", "v", "v", limit(maxRowsPerStep + 1)"
+`;
+
 exports[`sqlite > create with database ids: CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a) 1`] = `
 "CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a)
 -- step 1
@@ -374,6 +431,25 @@ exports[`sqlite > create with generated ids: CREATE () 1`] = `
 -- step 1
 INSERT INTO "nodes" ("id", "labels", "properties") VALUES (?, ?, ?)
 -- values: id(entity 0), [], {}"
+`;
+
+exports[`sqlite > create with generated ids: CREATE (a {v: 1 + 2})-[r:T]->(b {w: a.v}) WITH a, r, b WHERE a.v > 1 RETURN a, r, b.w 1`] = `
+"CREATE (a {v: 1 + 2})-[r:T]->(b {w: a.v}) WITH a, r, b WHERE a.v > 1 RETURN a, r, b.w
+-- step 1
+SELECT json_quote((? + ?)) AS r0, json_quote((? + ?)) AS r1 LIMIT ?
+-- values: "1", "2", "1", "2", limit(maxRowsPerStep + 1)
+-- step 2 (for each source row)
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES (?, ?, ?)
+-- values: id(entity 0), [], {v: row.r0}
+-- step 3 (for each source row)
+INSERT INTO "nodes" ("id", "labels", "properties") VALUES (?, ?, ?)
+-- values: id(entity 1), [], {w: row.r1}
+-- step 4 (for each source row)
+INSERT INTO "edges" ("id", "start_id", "end_id", "type", "properties") VALUES (?, ?, ?, ?, ?)
+-- values: id(entity 2), id(entity 0), id(entity 1), "T", {}
+-- step 5 (after the writes, over the written rows: a, b, r)
+SELECT n1."id" AS c0_id, n1."labels" AS c0_labels, n1."properties" AS c0_props, e2."id" AS c1_id, e2."type" AS c1_type, e2."start_id" AS c1_start, e2."end_id" AS c1_end, e2."properties" AS c1_props, (n3."properties" -> ('$."' || ? || '"')) AS c2 FROM (SELECT s.*, row_number() OVER () AS o FROM (SELECT n1."id" AS c0, e3."id" AS c1, n2."id" AS c2 FROM json_each(?) AS r0 LEFT JOIN "nodes" AS n1 ON n1."id" = (((CASE r0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN r0.value WHEN 'object' THEN r0.value WHEN 'real' THEN (SELECT CASE WHEN s IS NULL THEN NULL WHEN s GLOB '*[^0-9-]*' THEN s ELSE s || '.0' END FROM (SELECT CASE WHEN f IS NULL OR abs(f) > 1.7976931348623157e308 THEN NULL ELSE CASE WHEN CAST(printf('%.15g', f) AS REAL) = f THEN printf('%.15g', f) WHEN CAST(printf('%.16g', f) AS REAL) = f THEN printf('%.16g', f) ELSE printf('%.17g', f) END END AS s FROM (SELECT r0.value AS f))) ELSE json_quote(r0.value) END) -> ('$."' || ? || '"')) ->> '$') LEFT JOIN "nodes" AS n2 ON n2."id" = (((CASE r0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN r0.value WHEN 'object' THEN r0.value WHEN 'real' THEN (SELECT CASE WHEN s IS NULL THEN NULL WHEN s GLOB '*[^0-9-]*' THEN s ELSE s || '.0' END FROM (SELECT CASE WHEN f IS NULL OR abs(f) > 1.7976931348623157e308 THEN NULL ELSE CASE WHEN CAST(printf('%.15g', f) AS REAL) = f THEN printf('%.15g', f) WHEN CAST(printf('%.16g', f) AS REAL) = f THEN printf('%.16g', f) ELSE printf('%.17g', f) END END AS s FROM (SELECT r0.value AS f))) ELSE json_quote(r0.value) END) -> ('$."' || ? || '"')) ->> '$') LEFT JOIN "edges" AS e3 ON e3."id" = (((CASE r0.type WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' WHEN 'array' THEN r0.value WHEN 'object' THEN r0.value WHEN 'real' THEN (SELECT CASE WHEN s IS NULL THEN NULL WHEN s GLOB '*[^0-9-]*' THEN s ELSE s || '.0' END FROM (SELECT CASE WHEN f IS NULL OR abs(f) > 1.7976931348623157e308 THEN NULL ELSE CASE WHEN CAST(printf('%.15g', f) AS REAL) = f THEN printf('%.15g', f) WHEN CAST(printf('%.16g', f) AS REAL) = f THEN printf('%.16g', f) ELSE printf('%.17g', f) END END AS s FROM (SELECT r0.value AS f))) ELSE json_quote(r0.value) END) -> ('$."' || ? || '"')) ->> '$') WHERE NOT (r0.key IS NULL AND r0.type = 'null') ORDER BY r0.key) AS s) AS w0 LEFT JOIN "nodes" AS n1 ON n1."id" = w0.c0 LEFT JOIN "edges" AS e2 ON e2."id" = w0.c1 LEFT JOIN "nodes" AS n3 ON n3."id" = w0.c2 WHERE (SELECT (CASE WHEN s0.t0 IS NULL OR s0.t0 = 'null' OR ? IS NULL THEN NULL WHEN s0.t0 IN ('integer', 'float') THEN (((n1."properties" -> ('$."' || ? || '"')) ->> '$') > ?) ELSE NULL END) FROM (SELECT (CASE json_type((n1."properties" -> ('$."' || ? || '"'))) WHEN 'integer' THEN 'integer' WHEN 'real' THEN 'float' WHEN 'text' THEN 'string' WHEN 'true' THEN 'boolean' WHEN 'false' THEN 'boolean' WHEN 'array' THEN 'list' WHEN 'object' THEN COALESCE(json_extract((n1."properties" -> ('$."' || ? || '"')), '$."~cypher"'), 'map') WHEN 'null' THEN 'null' END) AS t0 LIMIT -1 OFFSET 0) AS s0) ORDER BY w0.o LIMIT ?
+-- values: "w", writtenRows, "a", "b", "r", "1", "v", "1", "v", "v", limit(maxRowsPerStep + 1)"
 `;
 
 exports[`sqlite > create with generated ids: CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a) 1`] = `

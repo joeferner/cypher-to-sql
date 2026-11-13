@@ -5,11 +5,29 @@ import type { SqlExecutor } from './executor.js';
 import { defaultLimits, lowerLimits, type Limits } from './limits.js';
 import { defaultMapping, validateMapping, type GraphMapping } from './mapping.js';
 import { parse } from './parser/parse.js';
-import { createPlan, executePlan, type CompiledPlan } from './plan.js';
+import {
+  createPlan,
+  executePlan,
+  type ColumnSpec,
+  type CompiledPlan,
+  type PlanStep,
+  type WrittenValue,
+} from './plan.js';
 import { assertQueryReadOnly, assertSupported, hasWriteClause } from './planner/gate.js';
-import { planRead, ReadScope, RowSource } from './planner/read.js';
+import {
+  planRead,
+  planWrittenReturn,
+  ReadScope,
+  RowSource,
+  type WrittenVariable,
+} from './planner/read.js';
 import { SqlBuilder } from './planner/sql-builder.js';
-import { WritePlanner, type IdStrategy } from './planner/write.js';
+import {
+  WritePlanner,
+  type CreatedEntity,
+  type CreateSource,
+  type IdStrategy,
+} from './planner/write.js';
 import type { CypherValue } from './values.js';
 
 export interface GraphOptions {
@@ -92,31 +110,63 @@ function planQuery(
       // Unreachable while the gate works; kept so that a gate bug cannot reach SQL.
       throw new ReadOnlyViolationError('Write clauses are not allowed on a read-only graph');
     }
-    // Reading clauses (and WITH) first, then CREATE clauses only.
+    // Reading clauses, then CREATE clauses, then optionally reading clauses over
+    // the written rows and RETURN.
     const firstCreate = clauses.findIndex((c) => c.type === 'Create');
     const reading = clauses.slice(0, firstCreate);
-    const creates = clauses.slice(firstCreate);
+    const afterCreate = clauses.findIndex((c, i) => i > firstCreate && c.type !== 'Create');
+    const creates = clauses.slice(firstCreate, afterCreate < 0 ? undefined : afterCreate);
+    const tail = afterCreate < 0 ? [] : clauses.slice(afterCreate);
+    const last = tail.at(-1);
+    const ret = last?.type === 'Return' ? last : undefined;
+    const tailReading = tail.slice(0, -1);
     const misplaced =
-      reading.find((c) => !isRowClause(c)) ?? creates.find((c) => c.type !== 'Create');
+      reading.find((c) => !isRowClause(c)) ??
+      (tail.length > 0 && !ret ? tail[0] : undefined) ??
+      tailReading.find((c) => !isRowClause(c));
     if (misplaced) {
       throw new UnsupportedFeatureError(
-        'Only MATCH, UNWIND, and WITH followed by CREATE can write for now (no RETURN or other clauses after CREATE)',
+        'A write query can be MATCH, UNWIND, and WITH, then CREATE, then MATCH, UNWIND, and WITH with RETURN for now (not CREATE again after them)',
         { position: misplaced.position },
       );
     }
-    if (reading.length === 0) {
-      return checkSteps(
-        createPlan(writer.planCreate(creates as ast.CreateClause[], limits), []),
-        limits,
-      );
-    }
     const builder = new SqlBuilder(dialect, mapping);
-    const source = new RowSource(ReadScope.of(builder, reading as ast.RowClause[]));
-    const inserts = writer.planCreate(creates as ast.CreateClause[], limits, source);
-    return checkSteps(
-      createPlan([...builder.searchSteps, source.finish(), ...inserts], []),
+    let source =
+      reading.length > 0
+        ? new RowSource(ReadScope.of(builder, reading as ast.RowClause[]))
+        : undefined;
+    const createSource: CreateSource = {
+      get current() {
+        return source;
+      },
+      need: () => (source ??= new RowSource(new ReadScope(builder))),
+    };
+    if (ret) {
+      // RETURN collects the written rows from the per-row steps.
+      createSource.need();
+    }
+    const { steps: inserts, created } = writer.planCreate(
+      creates as ast.CreateClause[],
       limits,
+      createSource,
     );
+    const returned = ret
+      ? planReturnAfterCreate(
+          tailReading as ast.RowClause[],
+          ret,
+          source!,
+          created,
+          dialect,
+          mapping,
+        )
+      : undefined;
+    const steps = [
+      ...builder.searchSteps,
+      ...(source ? [source.finish()] : []),
+      ...inserts,
+      ...(returned ? [returned.step] : []),
+    ];
+    return checkSteps(createPlan(steps, returned?.columns ?? []), limits);
   }
 
   const ret = clauses.at(-1);
@@ -136,6 +186,53 @@ function planQuery(
   const builder = new SqlBuilder(dialect, mapping);
   const { step, columns } = planRead(builder, reading as ast.RowClause[], ret);
   return checkSteps(createPlan([...builder.searchSteps, step], columns), limits);
+}
+
+/**
+ * The end of `... CREATE ... [MATCH | UNWIND | WITH]* RETURN`: a step after the
+ * writes over the written rows, each holding the source row's variables (ids of
+ * matched entities, other values as JSON) and the ids of the entities created
+ * for it. Must run before `source.finish()`, since it adds source columns.
+ */
+function planReturnAfterCreate(
+  reading: ast.RowClause[],
+  ret: ast.ReturnClause,
+  source: RowSource,
+  created: Map<string, CreatedEntity>,
+  dialect: Dialect,
+  mapping: GraphMapping,
+): { step: PlanStep; columns: ColumnSpec[] } {
+  const scope = source.scope;
+  const written: { name: string; value: WrittenValue }[] = [];
+  const variables: WrittenVariable[] = [];
+  for (const name of scope.variables) {
+    const binding = scope.lookup({ name, position: ret.position });
+    if (binding.kind === 'node' || binding.kind === 'relationship') {
+      const table = binding.kind === 'node' ? mapping.nodes : mapping.edges;
+      const column = source.column(`${binding.alias}.${scope.b.ident(table.id)}`);
+      written.push({ name, value: { kind: 'rowId', column } });
+      variables.push({ name, kind: binding.kind });
+    } else {
+      const value = source.valueColumn({ type: 'Variable', position: ret.position, name });
+      if (value.kind !== 'row') {
+        throw new Error('Internal error: a variable is not a row column');
+      }
+      written.push({ name, value: { kind: 'rowJson', column: value.column } });
+      variables.push({ name, kind: 'value' });
+    }
+  }
+  for (const [name, entity] of created) {
+    written.push({ name, value: { kind: 'entity', entity: entity.entity } });
+    variables.push({ name, kind: entity.kind });
+  }
+  const b = new SqlBuilder(dialect, mapping);
+  const { step, columns } = planWrittenReturn(b, variables, reading, ret);
+  if (b.searchSteps.length > 0) {
+    throw new UnsupportedFeatureError('shortestPath() after CREATE is not supported yet', {
+      position: ret.position,
+    });
+  }
+  return { step: { ...step, written }, columns };
 }
 
 function isRowClause(clause: ast.Clause): clause is ast.RowClause {

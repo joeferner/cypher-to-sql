@@ -59,7 +59,18 @@ export type BindValue =
   /** The node ids of the current breadth-first search frontier, as a JSON array. */
   | { kind: 'frontier' }
   /** The paths found by shortest path search `search`, as JSON (see Dialect.boundPaths). */
-  | { kind: 'shortestPaths'; search: number };
+  | { kind: 'shortestPaths'; search: number }
+  /** The rows a write query wrote, as a JSON array of objects (see `PlanStep.written`). */
+  | { kind: 'writtenRows' };
+
+/** Where the value of a variable in a written row comes from. */
+export type WrittenValue =
+  /** The id of an entity created for the row. */
+  | { kind: 'entity'; entity: number }
+  /** An id column of the source row (a matched node or relationship). */
+  | { kind: 'rowId'; column: string }
+  /** A JSON text column of the source row. */
+  | { kind: 'rowJson'; column: string };
 
 /**
  * The largest number of hops of a variable-length pattern: its upper bound, or
@@ -111,6 +122,12 @@ export interface PlanStep {
   perRow?: boolean | undefined;
   /** When set, the step selects the node pairs of this shortest path search, which runs next. */
   search?: ShortestPathSearch | undefined;
+  /**
+   * When set, the step runs once after the per-row steps (the RETURN of a write
+   * query). For each source row, the runner collects these variables into a
+   * JSON object, and the `writtenRows` bind gives the array of them.
+   */
+  written?: { name: string; value: WrittenValue }[] | undefined;
 }
 
 /** How to build one result column from the SQL columns of the final step. */
@@ -162,7 +179,9 @@ export function createPlan(steps: PlanStep[], columns: ColumnSpec[]): CompiledPl
             ? ' (for each source row)'
             : s.search
               ? ` (node pairs of shortest path search ${s.search.index + 1})`
-              : '';
+              : s.written
+                ? ` (after the writes, over the written rows: ${s.written.map((w) => w.name).join(', ')})`
+                : '';
           let text = `-- step ${i + 1}${note}\n${describeStep(s)}`;
           if (s.search) {
             const { all, min, maxDepth } = s.search;
@@ -183,13 +202,27 @@ export async function executePlan(
 ): Promise<Record<string, CypherValue>[]> {
   const { executor, limits } = options;
   const deadline = Date.now() + limits.timeoutMs;
-  const state: RunState = { entityIds: new Map(), searches: new Map(), frontier: undefined };
+  const state: RunState = {
+    entityIds: new Map(),
+    searches: new Map(),
+    frontier: undefined,
+    written: undefined,
+  };
   const entityIds = state.entityIds;
   let stepsRun = 0;
 
-  const firstPerRow = plan.steps.findIndex((s) => s.perRow);
-  const once = firstPerRow < 0 ? plan.steps : plan.steps.slice(0, firstPerRow);
-  const perRow = firstPerRow < 0 ? [] : plan.steps.slice(firstPerRow);
+  const final = plan.steps.find((s) => s.written);
+  const steps = plan.steps.filter((s) => s !== final);
+  const firstPerRow = steps.findIndex((s) => s.perRow);
+  const once = firstPerRow < 0 ? steps : steps.slice(0, firstPerRow);
+  const perRow = firstPerRow < 0 ? [] : steps.slice(firstPerRow);
+  /** For a write query with RETURN: one JSON object per source row (see `PlanStep.written`). */
+  const written: string[] = [];
+  const collect = (row: Row | undefined): void => {
+    if (final?.written) {
+      written.push(writtenRow(final.written, entityIds, row));
+    }
+  };
 
   const rows = await executor.transaction(plan.readOnly ? 'read' : 'write', async (tx) => {
     const run = async (step: PlanStep, row: Row | undefined): Promise<Row[]> => {
@@ -255,8 +288,15 @@ export async function executePlan(
         for (const step of perRow) {
           await run(step, row);
         }
+        collect(row);
       }
       last = [];
+    } else if (final) {
+      collect(undefined);
+    }
+    if (final) {
+      state.written = `[${written.join(',')}]`;
+      last = await run(final, undefined);
     }
     return last;
   });
@@ -281,6 +321,36 @@ interface RunState {
   searches: Map<number, string>;
   /** JSON text of the frontier while a search step runs. */
   frontier: string | undefined;
+  /** JSON text of the rows a write query wrote, for its RETURN step. */
+  written: string | undefined;
+}
+
+/** One written row as a JSON object: ids of created and matched entities, and JSON values. */
+function writtenRow(
+  variables: { name: string; value: WrittenValue }[],
+  entityIds: Map<number, unknown>,
+  row: Row | undefined,
+): string {
+  const members = variables.map(({ name, value }) => {
+    let json: string;
+    if (value.kind === 'entity') {
+      json = idJsonOrNull(entityIds.get(value.entity));
+    } else if (value.kind === 'rowId') {
+      json = idJsonOrNull(requireRow(row)[value.column]);
+    } else {
+      const text = requireRow(row)[value.column];
+      if (text !== null && text !== undefined && typeof text !== 'string') {
+        throw new Error(`Internal error: expected JSON text from the database, got ${typeof text}`);
+      }
+      json = text ?? 'null';
+    }
+    return `${JSON.stringify(name)}:${json}`;
+  });
+  return `{${members.join(',')}}`;
+}
+
+function idJsonOrNull(id: unknown): string {
+  return id === null || id === undefined ? 'null' : idsJson([id]).slice(1, -1);
 }
 
 function resolveBind(
@@ -366,6 +436,11 @@ function resolveBind(
       }
       return found;
     }
+    case 'writtenRows':
+      if (state.written === undefined) {
+        throw new Error('Internal error: written rows are bound before the writes ran');
+      }
+      return state.written;
   }
 }
 
@@ -592,6 +667,8 @@ function describeBind(bind: BindValue): string {
       return 'frontier';
     case 'shortestPaths':
       return `shortestPaths(search ${bind.search + 1})`;
+    case 'writtenRows':
+      return 'writtenRows';
   }
 }
 

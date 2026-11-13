@@ -147,5 +147,111 @@ for (const backend of testBackends()) {
         expect(() => read.compile('UNWIND [1] AS i CREATE ()')).toThrow(ReadOnlyViolationError);
       });
     });
+
+    describe('computed values and RETURN', () => {
+      it('computes property values without reading clauses', async () => {
+        const { write, read } = await setup();
+        await write.query("CREATE (:N {a: 1 + 2, b: toUpper('x'), c: [i IN range(1, 3) | i * i]})");
+        expect(await read.query('MATCH (n:N) RETURN n.a AS a, n.b AS b, n.c AS c')).toEqual([
+          { a: 3n, b: 'X', c: [1n, 4n, 9n] },
+        ]);
+      });
+
+      it('reads properties of entities created earlier in the query', async () => {
+        const { write, read } = await setup();
+        await write.query(
+          `CREATE (a:A {v: 1, l: [1, 2]})-[r:R {w: a.v + 1}]->(b:B {v: a.v * 10, x: a.missing}),
+                  (:C {p: b.v, l: size(a.l), w: r.w}), (:D $props), (:E {q: 1})`,
+          { props: { k: 'p' } },
+        );
+        expect(
+          await read.query(
+            'MATCH (a:A)-[r]->(b:B), (c:C) RETURN r.w AS w, b.v AS v, b.x AS x, c.p AS p, c.l AS l, c.w AS cw',
+          ),
+        ).toEqual([{ w: 2n, v: 10n, x: null, p: 10n, l: 2n, cw: 2n }]);
+        await write.query('CREATE (d:D2 $props), (:E2 {k: d.k})', { props: { k: 'p' } });
+        expect(await read.query('MATCH (e:E2) RETURN e.k AS k')).toEqual([{ k: 'p' }]);
+        expect(() => write.compile('CREATE (a), (b {v: a})')).toThrow(/only as `a.key`/);
+        expect(() => write.compile('CREATE (a {v: a.w})')).toThrow(SemanticError);
+      });
+
+      it('returns created entities and values', async () => {
+        const { write } = await setup();
+        const [row] = await write.query(
+          "CREATE (a:A {v: 1})-[r:R]->(b:B {v: 2}) RETURN a, r, b.v AS v, labels(a) AS labels, 'x' AS x",
+        );
+        expect(row!['a']).toMatchObject({ labels: ['A'], properties: { v: 1n } });
+        expect(row!['r']).toMatchObject({ type: 'R' });
+        expect(row).toMatchObject({ v: 2n, labels: ['A'], x: 'x' });
+      });
+
+      it('returns one row per source row, in order, with source variables', async () => {
+        const { write, read } = await setup();
+        await write.query("CREATE (:P {n: 'p'})");
+        expect(
+          await write.query(
+            `MATCH (p:P) UNWIND [3, 1, 2] AS i CREATE (p)-[:HAS]->(c:C {i: i})
+             RETURN p.n AS p, i, c.i AS c`,
+          ),
+        ).toEqual([
+          { p: 'p', i: 3n, c: 3n },
+          { p: 'p', i: 1n, c: 1n },
+          { p: 'p', i: 2n, c: 2n },
+        ]);
+        expect(
+          await write.query(
+            'UNWIND [1, 2, 3] AS i CREATE (n:Q {i: i}) RETURN count(n) AS n, sum(n.i) AS s',
+          ),
+        ).toEqual([{ n: 3n, s: 6n }]);
+        expect(
+          await write.query(
+            'UNWIND [2, 1] AS i CREATE (n:R2 {i: i}) RETURN n.i AS i ORDER BY i LIMIT 1',
+          ),
+        ).toEqual([{ i: 1n }]);
+        expect(await write.query('MATCH (x:Missing) CREATE (:Y) RETURN 1 AS one')).toEqual([]);
+        expect(await read.query('MATCH (c:C) RETURN count(*) AS c')).toEqual([{ c: 3n }]);
+      });
+
+      it('returns created entities with an id generator', async () => {
+        let next = 100;
+        const { write } = await setup({
+          idStrategy: { kind: 'generator', generate: () => next++ },
+        });
+        const rows = await write.query(
+          'UNWIND [1, 2] AS i CREATE (n {i: i}) RETURN id(n) AS id, n.i AS i',
+        );
+        expect(rows).toEqual([
+          { id: 100n, i: 1n },
+          { id: 101n, i: 2n },
+        ]);
+      });
+
+      it('explains the RETURN step', async () => {
+        const { write } = await setup();
+        expect(write.compile('CREATE (a) RETURN a').explain()).toContain(
+          '(after the writes, over the written rows: a)',
+        );
+        expect(() => write.compile('CREATE (a) WITH a CREATE (b) RETURN b')).toThrow(
+          /not CREATE again/,
+        );
+      });
+
+      it('runs WITH, UNWIND, and MATCH after CREATE before RETURN', async () => {
+        const { write, count } = await setup();
+        // Filtering and aggregating after CREATE change the result, not what was created.
+        expect(
+          await write.query(
+            'UNWIND [1, 2, 3] AS i CREATE (n:N {i: i}) WITH n WHERE n.i > 1 RETURN collect(n.i) AS l',
+          ),
+        ).toEqual([{ l: [2n, 3n] }]);
+        expect(await count('nodes')).toBe(3n);
+        // MATCH after CREATE sees the new nodes.
+        expect(
+          await write.query(
+            'CREATE (:M {k: 1}) WITH 1 AS one MATCH (m:M) UNWIND [m.k, 2] AS x RETURN x ORDER BY x',
+          ),
+        ).toEqual([{ x: 1n }, { x: 2n }]);
+      });
+    });
   });
 }

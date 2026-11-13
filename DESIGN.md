@@ -47,7 +47,8 @@ A query compiles to a plan of one or more SQL steps (`graph.compile(cypher).expl
 - **Shortest path:** breadth-first search with one step per depth, which stops as soon as it reaches the target. A recursive CTE cannot stop early in the same way.
 - **Entity hydration:** first find matching ids, then fetch full nodes and relationships in one batched step.
 - **Large `WITH` stages:** materialize an intermediate result once instead of repeating it.
-- **Writes after reading clauses:** a source `SELECT` runs first, then the `CREATE` inserts run once per source row (`perRow` steps). The source is fully read before any insert, so new entities are never matched by the same query.
+- **Writes after reading clauses:** a source `SELECT` runs first, then the `CREATE` inserts run once per source row (`perRow` steps). The source is fully read before any insert, so new entities are never matched by the same query. A `CREATE` with no reading clauses gets a one-row source `SELECT` when a property value must be computed in SQL (or for RETURN); constant values need none. In a property value, `a.key` of an entity created earlier in the query is the expression `a` was given for `key` (null if none), so `rand()` there is evaluated again.
+- **RETURN after CREATE:** for each source row the runner collects its variables (ids of matched and created entities, other values as JSON text) into a JSON object. A last step (`written`) reads the bound array of them in source order, joins the entities back by id, and runs the clauses after CREATE (`MATCH`, `UNWIND`, `WITH`, which see the new entities) and the RETURN, so filtering and aggregation there change the result but not what was created. A second CREATE after those clauses is not supported yet.
 
 Rules:
 
@@ -282,7 +283,7 @@ The defaults are starting values, not measured ones (#16).
 | `UNWIND`                                                          | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position. |
 | List comprehensions, `all`/`any`/`none`/`single`                  | Correlated subquery over the unwound list (see "List expressions")                                                              |
 | Pattern predicates, `EXISTS { }`, pattern comprehensions          | Correlated `EXISTS (SELECT ...)` or list subquery (see "Patterns in expressions")                                               |
-| `CREATE` (write mode)                                             | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`                                               |
+| `CREATE` (write mode)                                             | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`; RETURN over the written rows                 |
 
 ## Dialect differences
 

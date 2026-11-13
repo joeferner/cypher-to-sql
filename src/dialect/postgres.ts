@@ -221,6 +221,7 @@ export function postgres(): Dialect {
     idListHas: (list, id) => `(${id} = ANY(${list}))`,
     idListsOverlap: (left, right) => `(${left} && ${right})`,
     idListLength: (list) => `cardinality(${list})::bigint`,
+    jsonId: (json, table, id) => typedId(json, table, id),
     // = ANY(ARRAY(...)) runs the subquery once and lets the column's index be used.
     boundIdIn: (column, json, table, id) =>
       `${column} = ANY(ARRAY(SELECT ${typedId('x.value', table, id)} ` +

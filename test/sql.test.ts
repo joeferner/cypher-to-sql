@@ -46,6 +46,7 @@ const writeQueries = [
   "CREATE (a:A {name: 'x', n: null})-[:T {w: 1.5}]->(b:B $props)<-[:U]-(a)",
   'UNWIND $rows AS row CREATE (:N {v: row.v})',
   'MATCH (a:A), (b:B) CREATE (a)-[:T {k: a.k}]->(b), (b)-[:BACK]->(:New)',
+  'CREATE (a {v: 1 + 2})-[r:T]->(b {w: a.v}) WITH a, r, b WHERE a.v > 1 RETURN a, r, b.w',
 ];
 
 for (const dialect of [sqlite(), postgres()]) {

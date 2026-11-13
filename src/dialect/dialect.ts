@@ -228,6 +228,8 @@ export interface Dialect {
   // passed through `jsonInput`). JSON has no id type, so each id is converted to
   // the type of the id column `id` (its unquoted name) of `table`.
 
+  /** The JSON id `json` as a value of the type of the id column `id` of `table`. */
+  jsonId(json: string, table: string, id: string): string;
   /** Condition: `column` is one of the ids in the JSON array `json`. */
   boundIdIn(column: string, json: string, table: string, id: string): string;
   /**

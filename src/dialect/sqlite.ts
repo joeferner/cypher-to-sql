@@ -189,6 +189,7 @@ export function sqlite(): Dialect {
     idListsOverlap: (left, right) =>
       `EXISTS (SELECT 1 FROM json_each(${left}) AS vl JOIN json_each(${right}) AS vr ON vl.value = vr.value)`,
     idListLength: (list) => `json_array_length(${list})`,
+    jsonId: (json) => `(${json} ->> '$')`,
     // JSON numbers and strings compare with the id column's affinity.
     boundIdIn: (column, json) => `${column} IN (SELECT value FROM json_each(${json}))`,
     boundPaths: (json) =>
