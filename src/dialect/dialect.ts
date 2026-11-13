@@ -134,6 +134,15 @@ export interface Dialect {
    */
   readonly regexMatch: ((string: string, pattern: string) => string) | undefined;
 
+  /**
+   * A temporal function (`date`, `datetime.fromepoch`, ...; lower case) of
+   * arguments known only at run time (a JSON array), as a temporal value's
+   * JSON. Undefined when the database cannot evaluate them; such calls are then
+   * an `UnsupportedFeatureError` (calls with literal or parameter arguments run
+   * in the library).
+   */
+  readonly temporalCall: ((name: string, args: string) => string) | undefined;
+
   /** `base ^ exponent` as a float. */
   power(base: string, exponent: string): string;
 

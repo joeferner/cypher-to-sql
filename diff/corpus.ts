@@ -173,6 +173,39 @@ export const CORPUS: DiffGroup[] = [
           "CASE 2 WHEN 1 THEN 'one' WHEN 2 THEN 'two' END AS b",
       ),
       q("RETURN 'abc' STARTS WITH 'a' AS a, 'abc' ENDS WITH 'bc' AS b, 'abc' CONTAINS 'd' AS c"),
+      // Temporal values
+      q(
+        "RETURN date('2015-07-21') AS a, date({year: 1984, week: 10, dayOfWeek: 3}) AS b, " +
+          "localtime('214032.142') AS c, time({hour: 12, timezone: '+02:05:59'}) AS d, " +
+          "localdatetime('2015-W30-2T214032.142') AS e, " +
+          "datetime('2015-07-21T21:40:32.142[Europe/London]') AS f, " +
+          "datetime({year: 1818, month: 7, day: 21, hour: 21, timezone: 'Europe/Stockholm'}) AS g",
+      ),
+      q(
+        "WITH date('1984-10-11') AS d, datetime('1984-10-11T12:31:14.645876123+01:00') AS t " +
+          'RETURN d.year AS y, d.quarter AS q, d.week AS w, d.weekYear AS wy, d.ordinalDay AS o, ' +
+          'd.dayOfWeek AS dw, t.hour AS h, t.nanosecond AS ns, t.millisecond AS ms, ' +
+          't.offsetSeconds AS off, t.epochSeconds AS es, toString(t) AS s',
+      ),
+      q(
+        "WITH datetime('1984-10-11T12:00+01:00') AS a, datetime('1984-10-11T11:30Z') AS b, " +
+          "time('10:00+01:00') AS c, time('09:35Z') AS d " +
+          'RETURN a < b AS ab, a = b AS eq, c < d AS cd, date(a) = date(b) AS dates',
+      ),
+      q(
+        "UNWIND [date('2020-01-02'), date('2019-05-06'), date('2021-03-04')] AS d " +
+          'RETURN d ORDER BY d',
+      ),
+      q(
+        "WITH datetime({year: 1984, month: 10, day: 11, hour: 12, timezone: 'Europe/Stockholm'}) AS o " +
+          "RETURN datetime({datetime: o, timezone: '+05:00'}) AS a, date({date: o, week: 1}) AS b, " +
+          'localtime(o) AS c',
+      ),
+      q(
+        'RETURN datetime.fromepoch(416779, 999999999) AS a, datetime.fromepochmillis(237821673987) AS b',
+      ),
+      q("RETURN date('2015-13-01') AS bad"),
+
       // Regular expressions (Java syntax, whole-string match)
       q(
         "RETURN 'abc' =~ 'a.*' AS a, 'abc' =~ 'b' AS b, 'ab' =~ 'a|ab' AS c, 'ABC' =~ '(?i)abc' AS d, " +

@@ -1,4 +1,8 @@
 import { UnsupportedFeatureError } from '../errors.js';
+import { parseCypherJson, stringifyCypherJson } from '../json.js';
+import { TemporalError } from '../temporal.js';
+import { callTemporal } from '../temporal-functions.js';
+import type { CypherValue } from '../values.js';
 import {
   ENTITY_TAG,
   entityFields,
@@ -47,6 +51,17 @@ export function registerSqliteFunctions(db: SqliteFunctionHost): void {
   db.function('cypher_regex', options, (s, p) =>
     typeof s === 'string' && typeof p === 'string' ? Number(javaRegex(p).test(s)) : null,
   );
+  // Not deterministic: date() without arguments is the current date.
+  db.function('cypher_temporal', { deterministic: false }, (name, args) => {
+    try {
+      const values = parseCypherJson(String(args)) as CypherValue[];
+      return stringifyCypherJson(callTemporal(String(name), values));
+    } catch (error) {
+      throw error instanceof TemporalError
+        ? new Error(`cypher temporal error: ${error.message}`)
+        : error;
+    }
+  });
 }
 
 const regexCache = new Map<string, RegExp>();
@@ -161,6 +176,9 @@ export function sqlite(options: SqliteOptions = {}): Dialect {
     contains: (string, part) => `(instr(${string}, ${part}) > 0)`,
     regexMatch: options.functions
       ? (string, pattern): string => `cypher_regex(${string}, ${pattern})`
+      : undefined,
+    temporalCall: options.functions
+      ? (name, args): string => `cypher_temporal(${sqlStringLiteral(name)}, ${args})`
       : undefined,
     power: (base, exponent) => `pow(${base}, ${exponent})`,
     // ORDER BY inside an aggregate needs SQLite 3.44 or newer.

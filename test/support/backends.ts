@@ -22,7 +22,8 @@ export const sqliteBackend: TestBackend = {
   open() {
     const db = createSqliteDatabase();
     return Promise.resolve({
-      dialect: sqlite(),
+      // With the functions registerSqliteFunctions adds (see createSqliteDatabase).
+      dialect: sqlite({ functions: true }),
       executor: sqliteExecutor(db),
       close: () => {
         db.close();

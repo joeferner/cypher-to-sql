@@ -9,7 +9,23 @@
 // in a different order. Entity ids differ between engines and are left out.
 
 import neo4j from 'neo4j-driver';
-import { CypherNode, CypherPath, CypherRelationship, type CypherValue } from '../src/index.js';
+import {
+  CypherNode,
+  CypherPath,
+  CypherRelationship,
+  CypherTemporal,
+  type CypherValue,
+} from '../src/index.js';
+import { parseTemporal, renderTemporal, type TemporalKind } from '../src/temporal.js';
+
+/**
+ * A temporal value as its text, as the TCK compares them (so a date and the
+ * same date as a string look alike). Neo4j's driver writes them its own way,
+ * so they are parsed and written again here.
+ */
+function temporal(kind: TemporalKind, text: string): string {
+  return string(renderTemporal(parseTemporal(kind, text)));
+}
 
 /** A row: column name to canonical value, columns sorted. */
 export function canonicalRow(row: Record<string, string>): string {
@@ -98,6 +114,9 @@ export function fromCypher(value: CypherValue): string {
       value.relationships.map((r, i) => r.startNodeId === value.nodes[i]!.id),
     );
   }
+  if (value instanceof CypherTemporal) {
+    return temporal(value.kind, value.text);
+  }
   return map(entries(value, fromCypher));
 }
 
@@ -137,6 +156,20 @@ export function fromNeo4j(value: unknown): string {
       value.type,
       entries(value.properties as Record<string, unknown>, fromNeo4j),
     );
+  }
+  const kind: TemporalKind | undefined = neo4j.isDate(value)
+    ? 'date'
+    : neo4j.isLocalTime(value)
+      ? 'localtime'
+      : neo4j.isTime(value)
+        ? 'time'
+        : neo4j.isLocalDateTime(value)
+          ? 'localdatetime'
+          : neo4j.isDateTime(value)
+            ? 'datetime'
+            : undefined;
+  if (kind) {
+    return temporal(kind, (value as { toString(): string }).toString());
   }
   if (neo4j.isPath(value)) {
     const nodes = [value.start, ...value.segments.map((s) => s.end)];

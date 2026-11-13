@@ -1,12 +1,15 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   createGraph,
+  CypherTemporal,
   SemanticError,
+  sqlite,
   UnsupportedFeatureError,
   type CypherValue,
   type Graph,
 } from '../src/index.js';
 import { testBackends } from './support/backends.js';
+import { createSqliteDatabase, sqliteExecutor } from './support/sqlite.js';
 
 for (const backend of testBackends()) {
   describe(`functions on ${backend.name}`, () => {
@@ -39,22 +42,10 @@ for (const backend of testBackends()) {
       expect(await v('labels(null)')).toBe(null);
     });
 
-    it('changes case by Unicode, except on SQLite without registerSqliteFunctions', async () => {
-      // examples.test.ts covers sqlite({ functions: true }).
-      expect(await v("toUpper('aü')")).toBe(backend.name === 'sqlite' ? 'Aü' : 'AÜ');
-      expect(await v("toLower('AÜ')")).toBe(backend.name === 'sqlite' ? 'aÜ' : 'aü');
-    });
-
-    it('rejects =~ on SQLite without registerSqliteFunctions', async () => {
-      // examples.test.ts covers =~ itself.
-      if (backend.name === 'sqlite') {
-        await expect(v("a.name =~ 'A.*'")).rejects.toThrow(UnsupportedFeatureError);
-        await expect(v("a.name =~ 'A.*'")).rejects.toMatchObject({
-          hint: expect.stringMatching(/registerSqliteFunctions/) as unknown,
-        });
-      } else {
-        expect(await v("a.name =~ ' A.*'")).toBe(true);
-      }
+    it('changes case by Unicode (SQLite: with registerSqliteFunctions)', async () => {
+      expect(await v("toUpper('aü')")).toBe('AÜ');
+      expect(await v("toLower('AÜ')")).toBe('aü');
+      expect(await v("a.name =~ ' A.*'")).toBe(true);
     });
 
     it('converts between types', async () => {
@@ -166,3 +157,29 @@ for (const backend of testBackends()) {
     });
   });
 }
+
+describe('sqlite() without its functions', () => {
+  const graph = createGraph({
+    dialect: sqlite(),
+    executor: sqliteExecutor(createSqliteDatabase()),
+  });
+
+  it('changes case of ASCII letters only, and rejects =~ and temporals of row values', async () => {
+    expect(await graph.query("RETURN toUpper('aü') AS u, toLower('AÜ') AS l")).toEqual([
+      { u: 'Aü', l: 'aÜ' },
+    ]);
+    for (const query of [
+      "RETURN 'a' =~ 'a' AS r",
+      "UNWIND ['2020-01-01'] AS s RETURN date(s) AS d",
+    ]) {
+      await expect(graph.query(query)).rejects.toMatchObject({
+        constructor: UnsupportedFeatureError,
+        hint: expect.stringMatching(/registerSqliteFunctions/) as unknown,
+      });
+    }
+    // Temporal functions of literals and parameters run in the library.
+    expect(await graph.query("RETURN date('2020-01-01') AS d")).toEqual([
+      { d: new CypherTemporal('date', '2020-01-01') },
+    ]);
+  });
+});

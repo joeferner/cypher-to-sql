@@ -13,7 +13,8 @@ export type CypherValue =
   | CypherMap
   | CypherNode
   | CypherRelationship
-  | CypherPath;
+  | CypherPath
+  | CypherTemporal;
 
 export interface CypherMap {
   [key: string]: CypherValue;
@@ -39,6 +40,24 @@ export class CypherRelationship {
   ) {}
 }
 
+/**
+ * A temporal value: a date, local time, time, local date-time, or date-time.
+ * `text` is its Cypher form, which `toString()` returns: `2015-07-21`,
+ * `21:40:32.142`, `21:40:32.142+01:00`, `2015-07-21T21:40:32.142`,
+ * `2015-07-21T21:40:32.142+02:00[Europe/Stockholm]`. As a query parameter it is
+ * the same value: `new CypherTemporal('date', '2015-07-21')`.
+ */
+export class CypherTemporal {
+  public constructor(
+    public readonly kind: 'date' | 'localtime' | 'time' | 'localdatetime' | 'datetime',
+    public readonly text: string,
+  ) {}
+
+  public toString(): string {
+    return this.text;
+  }
+}
+
 export class CypherPath {
   public constructor(
     /** `nodes.length === relationships.length + 1` */
@@ -54,6 +73,7 @@ export function isCypherMap(value: CypherValue): value is CypherMap {
     !Array.isArray(value) &&
     !(value instanceof CypherNode) &&
     !(value instanceof CypherRelationship) &&
-    !(value instanceof CypherPath)
+    !(value instanceof CypherPath) &&
+    !(value instanceof CypherTemporal)
   );
 }

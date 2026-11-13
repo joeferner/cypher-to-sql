@@ -11,6 +11,7 @@ import {
   CypherNode,
   CypherPath,
   CypherRelationship,
+  CypherTemporal,
   type CypherMap,
   type CypherValue,
 } from '../../src/index.js';
@@ -293,6 +294,10 @@ export function fromCypher(value: CypherValue): TckValue {
         node: nodeFromCypher(rest[i]!),
       })),
     };
+  }
+  if (value instanceof CypherTemporal) {
+    // The TCK writes temporal values as their text: '2015-07-21'.
+    return { t: 'string', v: value.text };
   }
   return { t: 'map', entries: propsFromCypher(value) };
 }

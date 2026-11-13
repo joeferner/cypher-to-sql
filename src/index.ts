@@ -21,6 +21,7 @@ export {
   CypherNode,
   CypherRelationship,
   CypherPath,
+  CypherTemporal,
   isCypherMap,
   type CypherValue,
   type CypherMap,

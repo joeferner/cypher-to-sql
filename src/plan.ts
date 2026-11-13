@@ -12,11 +12,15 @@ import {
 import { parseCypherJson, stringifyCypherJson } from './json.js';
 import { checkDeclaredType, type PropertyTypes } from './property-types.js';
 import { idsJson, pathsJson, shortestPaths } from './search.js';
+import type { FunctionCall } from './ast.js';
+import { TemporalError } from './temporal.js';
+import { evaluateKnown } from './temporal-functions.js';
 import { ENTITY_TAG, RESERVED_KEYS } from './dialect/dialect.js';
 import {
   CypherNode,
   CypherPath,
   CypherRelationship,
+  CypherTemporal,
   isCypherMap,
   type CypherMap,
   type CypherValue,
@@ -70,6 +74,11 @@ export type BindValue =
   | { kind: 'shortestPaths'; search: number }
   /** The rows a write query wrote, as a JSON array of objects (see `PlanStep.written`). */
   | { kind: 'writtenRows' }
+  /**
+   * A temporal function call whose arguments are known before the query runs
+   * (see `isKnownBeforeRun`), evaluated when the step is bound, as JSON.
+   */
+  | { kind: 'temporal'; call: FunctionCall }
   /**
    * The current source row of a write query as a one-element JSON array, in the
    * form of `writtenRows`: what SET reads its values from, after earlier writes.
@@ -435,6 +444,11 @@ function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
   if (code === '22012') {
     return new CypherArgumentError('Division by zero', { code: 'DivisionByZero' });
   }
+  // SQLite: an invalid argument to cypher_temporal().
+  const temporal = /cypher temporal error: (.*)/.exec(message);
+  if (temporal) {
+    return new CypherArgumentError(temporal[1]!, { code: 'InvalidArgumentValue' });
+  }
   // PostgreSQL: invalid_regular_expression. SQLite: the RegExp of cypher_regex().
   if (code === '2201B' || /^invalid regular expression/i.test(message)) {
     return new CypherArgumentError(message, { code: 'InvalidRegex' });
@@ -576,6 +590,21 @@ function resolveBind(
       return state.written;
     case 'currentRow':
       return `[${writtenRow(bind.written, entityIds, row)}]`;
+    case 'temporal':
+      try {
+        return stringifyCypherJson(
+          evaluateKnown(bind.call, (name, position) =>
+            resolveValue({ kind: 'parameter', name, position }, options.params, row),
+          ),
+        );
+      } catch (error) {
+        throw error instanceof TemporalError
+          ? new CypherArgumentError(error.message, {
+              code: 'InvalidArgumentValue',
+              position: bind.call.position,
+            })
+          : error;
+      }
     case 'computedId': {
       const computed = computedValue(state, bind.index, bind.column);
       if (computed.raw !== undefined) {
@@ -776,7 +805,7 @@ function checkPropertyValue(
   }
   const items = Array.isArray(value) ? value : [value];
   for (const item of items) {
-    if (item !== null && typeof item === 'object') {
+    if (item !== null && typeof item === 'object' && !(item instanceof CypherTemporal)) {
       throw new SemanticError(
         `Property ${JSON.stringify(key)} cannot be set to a ${Array.isArray(item) ? 'nested list' : 'map, node, or relationship'}`,
         { hint: 'Property values must be strings, numbers, booleans, or lists of those.' },
@@ -934,6 +963,8 @@ function describeBind(bind: BindValue): string {
       return 'writtenRows';
     case 'currentRow':
       return `currentRow(${bind.written.map((w) => w.name).join(', ')})`;
+    case 'temporal':
+      return `${bind.call.name}(...)`;
     case 'computedId':
       return `id(computed ${bind.index + 1}.${bind.column.name}, ${bind.entity})`;
     case 'propertyPatch':

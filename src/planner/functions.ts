@@ -1,6 +1,8 @@
 import type * as ast from '../ast.js';
 import { RESERVED_KEYS, type ScalarType } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError } from '../errors.js';
+import { TEMPORAL_KINDS } from '../temporal.js';
+import { isKnownBeforeRun, TEMPORAL_FUNCTIONS } from '../temporal-functions.js';
 import {
   isNullType,
   typeError,
@@ -155,7 +157,10 @@ function apply(
   return result(sql, type, shape);
 }
 
-type Cases = Partial<Record<Kind, (value: string) => string>>;
+/** SQL per accepted kind; `temporal` gets the JSON of any temporal value. */
+type Cases = Partial<Record<Kind | 'temporal', (value: string) => string>>;
+
+const TEMPORAL_TYPES = `(${TEMPORAL_KINDS.map((k) => `'${k}'`).join(', ')})`;
 
 /**
  * A function of one argument that accepts several types. `cases` gives the SQL
@@ -176,7 +181,7 @@ function dispatch(
     return NULL;
   }
   const finish = (type: string, sql: string): string =>
-    resultType === 'json' && type !== 'list' && type !== 'map'
+    resultType === 'json' && type !== 'list' && type !== 'map' && type !== 'temporal'
       ? d.toJson(sql, type as ScalarType)
       : sql;
   const known = arg.type === 'json' ? arg.shape : arg.type;
@@ -198,6 +203,9 @@ function dispatch(
     : argumentError(call, resultType);
   const sql = c.share([arg], ([a]) => {
     const arms = Object.entries(cases).map(([type, f]) => {
+      if (type === 'temporal') {
+        return `WHEN ${a!.jsonType} IN ${TEMPORAL_TYPES} THEN ${finish(type, f(a!.sql))}`;
+      }
       const value =
         type === 'list' || type === 'map' ? a!.sql : d.fromJson(a!.sql, type as ScalarType);
       return `WHEN ${a!.jsonType} = '${type}' THEN ${finish(type, f(value))}`;
@@ -523,6 +531,12 @@ const FUNCTIONS: Record<string, FunctionDef> = {
   rand: math('rand', 0),
 };
 
+// Temporal values: date(), localtime(), time(), localdatetime(), datetime(), and
+// their .statement() / .transaction() / .realtime() and epoch forms.
+for (const [name, { min, max }] of Object.entries(TEMPORAL_FUNCTIONS)) {
+  FUNCTIONS[name] = fn(min, max, temporalFunction(name));
+}
+
 /** The first argument that is not null. */
 function coalesce(call: Call): Expr {
   const { c, node } = call;
@@ -561,7 +575,45 @@ function toStringFunction(call: Call): Expr {
     integer: (i) => `CAST(${i} AS TEXT)`,
     float: (f) => d.floatToString(f),
     boolean: (b) => `(CASE WHEN ${b} THEN 'true' WHEN NOT ${b} THEN 'false' END)`,
+    temporal: (j) => temporalText(call, j),
   });
+}
+
+/** The text of a temporal value's JSON (its `~s` member). */
+function temporalText(call: Call, json: string): string {
+  const d = call.c.b.dialect;
+  return d.fromJson(
+    d.jsonMember(json, call.c.b.bind({ kind: 'sql', value: '~s' }), '~s'),
+    'string',
+  );
+}
+
+/**
+ * A temporal function: evaluated when the step is bound if its arguments are
+ * known before the query runs, otherwise in SQL (`Dialect.temporalCall`).
+ */
+function temporalFunction(name: string): FunctionImpl {
+  return (call) => {
+    const { c, node } = call;
+    const d = c.b.dialect;
+    if (node.args.every(isKnownBeforeRun)) {
+      return result(d.jsonInput(c.b.bind({ kind: 'temporal', call: node })), 'json');
+    }
+    if (!d.temporalCall) {
+      throw new UnsupportedFeatureError(
+        `${node.name}() of values from the query is not supported on ${d.name}${d.name === 'sqlite' ? ' without its functions' : ' yet'}`,
+        {
+          position: node.position,
+          hint:
+            d.name === 'sqlite'
+              ? 'Register them with registerSqliteFunctions(db) and use sqlite({ functions: true }).'
+              : 'Use literals or parameters as its arguments.',
+        },
+      );
+    }
+    const args = call.args.map((a) => c.asJson(a).sql);
+    return result(d.temporalCall(name, d.jsonArray(args)), 'json');
+  };
 }
 
 function toNumber(call: Call, type: 'integer' | 'float'): Expr {

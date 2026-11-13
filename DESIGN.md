@@ -244,6 +244,14 @@ Pattern predicates (`WHERE (a)-[:T]->()`), `EXISTS { pattern WHERE c }`, `EXISTS
 - A pattern comprehension is the JSON list (`jsonAggregate`) of its projection over the matches.
 - Aliases of a subquery's scope and expression compiler start with `q<n>_`, so that none hides an alias of the enclosing query. Relationship uniqueness applies within the subquery's pattern only. `shortestPath` inside one is not supported (its node-pair step runs on its own), nor are patterns in expressions after aggregation.
 
+### Temporal values
+
+`date`, `localtime`, `time`, `localdatetime`, and `datetime` values are `CypherTemporal` in results and parameters (`kind` and `text`, the Cypher form `toString()` returns: `2015-07-21T21:40:32.142+02:00[Europe/Stockholm]`). The calendar rules live in one TypeScript module (`src/temporal.ts`): ISO strings in all the forms Neo4j accepts, maps in calendar, week, ordinal, and quarter forms with a value to start from (`{date: d, week: 2}`), time zones by offset or IANA name (offsets from `Intl`, including historical ones such as Stockholm's `+00:53:28` in 1818), conversion between zones, epoch forms, and rendering as Java's `java.time` writes it.
+
+- **Evaluation.** A temporal call whose arguments are known before the query runs (literals, parameters, maps and lists of them, and other such temporal calls) is a bind value evaluated in TypeScript when its step is bound (`temporal`). Other calls run in the database (`Dialect.temporalCall`): on SQLite through `cypher_temporal()`, which `registerSqliteFunctions` defines with the same TypeScript code (so `sqlite({ functions: true })`); PostgreSQL does not evaluate them yet (an `UnsupportedFeatureError`).
+- **In SQL** a temporal value is a tagged JSON object: the kind as `~cypher`, the text as `~s`, a sort key as `~k`, and its components (`year`, `week`, `ordinalDay`, `hour`, `nanosecond`, `offsetSeconds`, `epochMillis`, ...). So `d.year` is a member lookup, `toString(d)` reads `~s`, and comparisons and ORDER BY compare `~k`, which orders values of one kind by instant (times and datetimes in UTC). Values of different temporal kinds are not comparable. Stored as a property, the object keeps the value's type.
+- **Ordering across types:** after paths and before strings: datetime, localdatetime, date, time, localtime.
+
 ### Map projections
 
 `n {.a, b: expr, c, .*}` (a Neo4j extension to the openCypher 9 grammar) is rewritten by the parser: `CASE WHEN n IS NULL THEN NULL ELSE {a: n.a, b: expr, c: c} END`. With `.*` the map starts from `properties(n)` and each entry is set over it in order (`MapProjection`, `Dialect.jsonSetKey`), so explicit entries win and keep null values. A later entry for a key replaces an earlier one. The subject may be a node, a relationship, or a map.

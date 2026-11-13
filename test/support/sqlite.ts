@@ -1,5 +1,10 @@
 import Database from 'better-sqlite3';
-import type { Row, SqlExecutor, SqlTx } from '../../src/index.js';
+import {
+  registerSqliteFunctions,
+  type Row,
+  type SqlExecutor,
+  type SqlTx,
+} from '../../src/index.js';
 
 /** DDL for the generic layout with the default mapping. */
 export const SQLITE_SCHEMA = `
@@ -27,6 +32,7 @@ export function createSqliteDatabase(): Database.Database {
   db.defaultSafeIntegers(true);
   db.pragma('foreign_keys = ON');
   db.exec(SQLITE_SCHEMA);
+  registerSqliteFunctions(db);
   return db;
 }
 

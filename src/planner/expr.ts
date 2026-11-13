@@ -1,6 +1,7 @@
 import type * as ast from '../ast.js';
 import { ENTITY_TAG, type ScalarType } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError, type SourcePosition } from '../errors.js';
+import { TEMPORAL_KINDS } from '../temporal.js';
 import { compileAggregate, isAggregateCall } from './aggregates.js';
 import { compileFunction } from './functions.js';
 import { constantValue, type SqlBuilder } from './sql-builder.js';
@@ -73,6 +74,9 @@ type Comparison = ast.ComparisonOperator;
 
 /** Numbers compare with each other; every other type only with itself. */
 const NUMBER_TYPES = `('integer', 'float')`;
+
+/** The JSON types of temporal values (their tags). */
+const TEMPORAL_TYPES = `(${TEMPORAL_KINDS.map((k) => `'${k}'`).join(', ')})`;
 
 /**
  * Compiles Cypher expressions to SQL with Cypher semantics: three-valued logic,
@@ -391,10 +395,22 @@ export class ExprCompiler {
             // Null (and a missing property) ranks last.
             sql:
               `(CASE ${t} WHEN 'map' THEN 1 WHEN 'node' THEN 2 WHEN 'relationship' THEN 3 ` +
-              `WHEN 'list' THEN 4 WHEN 'path' THEN 5 WHEN 'string' THEN 12 ` +
+              `WHEN 'list' THEN 4 WHEN 'path' THEN 5 WHEN 'datetime' THEN 6 ` +
+              `WHEN 'localdatetime' THEN 7 WHEN 'date' THEN 8 WHEN 'time' THEN 9 ` +
+              `WHEN 'localtime' THEN 10 WHEN 'string' THEN 12 ` +
               `WHEN 'boolean' THEN 13 WHEN 'integer' THEN 14 WHEN 'float' THEN 14 ELSE 99 END)`,
             nulls: false,
           },
+          // Temporal values of one kind by instant (their sort key).
+          when(
+            TEMPORAL_TYPES,
+            d.orderString(
+              d.fromJson(
+                d.jsonMember(e.sql, this.b.bind({ kind: 'sql', value: '~k' }), '~k'),
+                'string',
+              ),
+            ),
+          ),
           when(NUMBER_TYPES, d.fromJson(e.sql, 'number')),
           when(`('string')`, d.orderString(d.fromJson(e.sql, 'string'))),
           when(`('boolean')`, d.fromJson(e.sql, 'boolean')),
@@ -767,6 +783,8 @@ export class ExprCompiler {
         const rt = r!.jsonType;
         const same = (cls: 'string' | 'boolean'): string =>
           this.compareSame(op, d.fromJson(l!.sql, cls), d.fromJson(r!.sql, cls), cls);
+        const sortKey = (j: string): string =>
+          d.fromJson(d.jsonMember(j, this.b.bind({ kind: 'sql', value: '~k' }), '~k'), 'string');
         let structured: string;
         if (op === '=' || op === '<>') {
           const equal = d.jsonDeepEquals(l!.sql, r!.sql);
@@ -781,6 +799,8 @@ export class ExprCompiler {
           `WHEN ${lt} IN ${NUMBER_TYPES} AND ${rt} IN ${NUMBER_TYPES} THEN ` +
           `${d.fromJson(l!.sql, 'number')} ${op} ${d.fromJson(r!.sql, 'number')} ` +
           `WHEN ${lt} <> ${rt} THEN ${mismatch} ` +
+          // Temporal values of one kind compare by their sort key (by instant).
+          `WHEN ${lt} IN ${TEMPORAL_TYPES} THEN ${d.compareStrings(sortKey(l!.sql), op, sortKey(r!.sql))} ` +
           `WHEN ${lt} = 'string' THEN ${same('string')} ` +
           `WHEN ${lt} = 'boolean' THEN ${same('boolean')} ` +
           `ELSE ${structured} END)`

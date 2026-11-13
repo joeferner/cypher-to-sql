@@ -179,6 +179,7 @@ export function postgres(): Dialect {
     endsWith: (string, suffix) => `(right(${string}, length(${suffix})) = ${suffix})`,
     contains: (string, part) => `(strpos(${string}, ${part}) > 0)`,
     regexMatch,
+    temporalCall: undefined,
     power: (base, exponent) =>
       `power((${base})::double precision, (${exponent})::double precision)`,
     jsonAggregate: (value, { distinct, orderBy, filter }) =>
