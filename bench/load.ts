@@ -10,6 +10,7 @@ import { pgExecutor } from '../examples/executors/pg.js';
 import {
   defaultMapping,
   postgres,
+  registerSqliteFunctions,
   sqlite,
   type Dialect,
   type GraphMapping,
@@ -44,6 +45,7 @@ function batches<T>(items: T[]): T[][] {
 
 export function loadSqlite(graph: Graph): Promise<LoadedGraph> {
   const db = new Database(':memory:');
+  registerSqliteFunctions(db);
   db.exec(schema('sqlite.sql'));
   db.exec(`
     CREATE INDEX nodes_name ON nodes (properties ->> '$."name"');
@@ -63,7 +65,7 @@ export function loadSqlite(graph: Graph): Promise<LoadedGraph> {
   })();
   db.exec('ANALYZE');
   return Promise.resolve({
-    dialect: sqlite(),
+    dialect: sqlite({ functions: true }),
     executor: betterSqliteExecutor(db),
     close: () => Promise.resolve(void db.close()),
   });

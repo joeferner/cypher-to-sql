@@ -326,6 +326,12 @@ function stringFunction(arity: number, sql: (values: string[]) => string): Funct
   return fn(arity, arity, (call) => apply(call, Array<Kind>(arity).fill('string'), 'string', sql));
 }
 
+function changeCase(to: 'upper' | 'lower'): FunctionDef {
+  return fn(1, 1, (call) =>
+    apply(call, ['string'], 'string', ([s]) => call.c.b.dialect.changeCase(s!, to)),
+  );
+}
+
 // ---- the functions -----------------------------------------------------------------
 
 const FUNCTIONS: Record<string, FunctionDef> = {
@@ -470,10 +476,10 @@ const FUNCTIONS: Record<string, FunctionDef> = {
   right: fn(2, 2, (call) =>
     apply(call, ['string', 'integer'], 'string', ([s, n]) => call.c.b.dialect.rightString(s!, n!)),
   ),
-  toupper: stringFunction(1, ([s]) => `upper(${s})`),
-  upper: stringFunction(1, ([s]) => `upper(${s})`),
-  tolower: stringFunction(1, ([s]) => `lower(${s})`),
-  lower: stringFunction(1, ([s]) => `lower(${s})`),
+  toupper: changeCase('upper'),
+  upper: changeCase('upper'),
+  tolower: changeCase('lower'),
+  lower: changeCase('lower'),
   trim: stringFunction(1, ([s]) => `trim(${s})`),
   ltrim: stringFunction(1, ([s]) => `ltrim(${s})`),
   rtrim: stringFunction(1, ([s]) => `rtrim(${s})`),

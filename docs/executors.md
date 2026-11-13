@@ -53,5 +53,20 @@ The `pg` example also runs, after `BEGIN`:
 - Use SQLite 3.44 or later (for `ORDER BY` inside aggregates) with the JSON and math functions, which are on in the builds of `better-sqlite3` and `node:sqlite`.
 - For a graph that only reads, open the connection read-only (`new Database(path, { readonly: true })`, or `new DatabaseSync(path, { readOnly: true })`). The examples also set `PRAGMA query_only` on read transactions, which protects a shared connection.
 - `node:sqlite` is available without a flag from Node.js 22.13. It is still marked experimental and prints a warning when loaded.
+- SQLite's `upper()` and `lower()` change ASCII letters only. For `toUpper` and `toLower` to follow Unicode, as in Cypher, register the library's functions on the connection and use `sqlite({ functions: true })`:
+
+  ```ts
+  import Database from 'better-sqlite3';
+  import { createGraph, registerSqliteFunctions, sqlite } from 'cypher-to-sql';
+
+  const db = new Database('graph.db');
+  registerSqliteFunctions(db); // also takes a node:sqlite DatabaseSync
+  const graph = createGraph({
+    dialect: sqlite({ functions: true }),
+    executor: betterSqliteExecutor(db),
+  });
+  ```
+
+  With the option and without the functions, queries that use them fail with SQLite's `no such function` error.
 
 See [Safe execution](safe-execution.md) for database roles and limits, and [Schema](schema.md) for the tables.

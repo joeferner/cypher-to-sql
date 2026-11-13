@@ -81,6 +81,9 @@ export interface Dialect {
    */
   floatToString(value: string): string;
 
+  /** A string in upper or lower case (`toUpper`, `toLower`). */
+  changeCase(string: string, to: 'upper' | 'lower'): string;
+
   /** A JSON list of JSON values. */
   jsonArray(items: string[]): string;
 

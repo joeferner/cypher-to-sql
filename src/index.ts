@@ -10,7 +10,12 @@ export { PROPERTY_TYPES, type PropertyType, type PropertyTypes } from './propert
 export type { CompiledPlan, PlanStep, BindValue } from './plan.js';
 export type { IdStrategy } from './planner/write.js';
 export type { Dialect } from './dialect/dialect.js';
-export { sqlite } from './dialect/sqlite.js';
+export {
+  sqlite,
+  registerSqliteFunctions,
+  type SqliteOptions,
+  type SqliteFunctionHost,
+} from './dialect/sqlite.js';
 export { postgres } from './dialect/postgres.js';
 export {
   CypherNode,

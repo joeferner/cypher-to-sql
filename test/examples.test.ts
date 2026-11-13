@@ -10,6 +10,7 @@ import {
   createGraph,
   CypherTypeError,
   postgres,
+  registerSqliteFunctions,
   sqlite,
   type Dialect,
   type SqlExecutor,
@@ -42,9 +43,10 @@ interface Example {
 const examples: Example[] = [
   {
     name: 'better-sqlite3',
-    dialect: sqlite(),
+    dialect: sqlite({ functions: true }),
     open: (): Promise<Opened> => {
       const db = new Database(':memory:');
+      registerSqliteFunctions(db);
       db.exec(schema('sqlite.sql'));
       return Promise.resolve({
         executor: betterSqliteExecutor(db),
@@ -54,9 +56,10 @@ const examples: Example[] = [
   },
   {
     name: 'node:sqlite',
-    dialect: sqlite(),
+    dialect: sqlite({ functions: true }),
     open: async (): Promise<Opened> => {
       const db = await openNodeSqlite();
+      registerSqliteFunctions(db);
       db.exec(schema('sqlite.sql'));
       return { executor: nodeSqliteExecutor(db), close: () => Promise.resolve(db.close()) };
     },
@@ -107,6 +110,17 @@ for (const example of examples) {
            RETURN [n IN nodes(p) | n.name] AS names, m.big AS big, a.born + 1 AS next`,
         ),
       ).toEqual([{ names: ['Ada', 'Charles', 'Mary'], big: 9223372036854775807n, next: 1816n }]);
+    });
+
+    it('changes the case of letters beyond ASCII (SQLite: with registerSqliteFunctions)', async () => {
+      const { executor } = await opened;
+      const read = createGraph({ dialect: example.dialect, executor });
+      expect(
+        await read.query(
+          "RETURN toUpper('ÄÖü é ω') AS u, toLower('ÄÖÜ É Ω') AS l, upper($s) AS p, toUpper(null) AS n",
+          { s: 'ça' },
+        ),
+      ).toEqual([{ u: 'ÄÖÜ É Ω', l: 'äöü é ω', p: 'ÇA', n: null }]);
     });
 
     it('runs concurrent queries one transaction at a time', async () => {

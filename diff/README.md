@@ -42,5 +42,4 @@ Every engine's values become one text form ([values.ts](values.ts)): integers an
 
 The corpus marks these with `known`:
 
-- `toUpper` and `toLower` on SQLite change ASCII letters only (SQLite's `upper()` and `lower()` without ICU, #38).
 - `EXISTS { MATCH ... }` without `RETURN`, map projections (`n {.name}`), and `=~` are outside the openCypher 9 grammar, so they fail to parse here.

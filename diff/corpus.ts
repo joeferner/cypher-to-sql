@@ -99,11 +99,10 @@ export const CORPUS: DiffGroup[] = [
 
       // Properties and values
       q('MATCH (n) RETURN n.name AS name, n.n + 1 AS a, n.f * 2 AS b, n.n / 2 AS c, n.n % 2 AS d'),
-      {
-        cypher:
-          'MATCH (n) RETURN n.name AS name, n.s + "!" AS s, size(n.s) AS len, toUpper(n.s) AS u',
-        known: "SQLite's upper() changes ASCII letters only (#38)",
-      },
+      q(
+        'MATCH (n) RETURN n.name AS name, n.s + "!" AS s, size(n.s) AS len, toUpper(n.s) AS u, ' +
+          'toLower(n.s) AS l',
+      ),
       q(
         'MATCH (n) RETURN n.name AS name, size(n.l) AS len, n.l[0] AS first, n.l[-1] AS last, ' +
           'n.l[1..] AS rest',

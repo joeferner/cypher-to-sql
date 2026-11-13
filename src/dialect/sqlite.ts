@@ -15,12 +15,42 @@ function entityObject(kind: 'node' | 'relationship', alias: string, table: Entit
   return `json_patch(${alias}.${table.properties}, json_object(${fields.flat().join(', ')}))`;
 }
 
+export interface SqliteOptions {
+  /**
+   * Use the functions that `registerSqliteFunctions` adds to the connection
+   * (default false). Without them, `toUpper` and `toLower` change ASCII
+   * letters only, because SQLite's `upper()` and `lower()` do (unless the ICU
+   * extension is loaded); with them, they follow Unicode, as in Cypher.
+   */
+  functions?: boolean;
+}
+
+/** A connection that can define SQL functions: better-sqlite3 or `node:sqlite`. */
+export interface SqliteFunctionHost {
+  function(
+    name: string,
+    options: { deterministic: boolean },
+    fn: (value: unknown) => unknown,
+  ): unknown;
+}
+
+/**
+ * Registers the functions that `sqlite({ functions: true })` uses on a
+ * better-sqlite3 `Database` or a `node:sqlite` `DatabaseSync`. Call it once per
+ * connection, before running queries.
+ */
+export function registerSqliteFunctions(db: SqliteFunctionHost): void {
+  const options = { deterministic: true };
+  db.function('cypher_upper', options, (s) => (typeof s === 'string' ? s.toUpperCase() : s));
+  db.function('cypher_lower', options, (s) => (typeof s === 'string' ? s.toLowerCase() : s));
+}
+
 /**
  * SQLite dialect. Requires SQLite 3.38 or newer for the `->` JSON operator, and
  * the math functions (`pow`, `trunc`; on by default in most builds) for `^` and
  * float `%`. JSON values are JSON text; booleans are the integers 1 and 0.
  */
-export function sqlite(): Dialect {
+export function sqlite(options: SqliteOptions = {}): Dialect {
   return {
     name: 'sqlite',
     quoteIdent: (name) => `"${name}"`,
@@ -58,6 +88,8 @@ export function sqlite(): Dialect {
     fromJson: (json) => `(${json} ->> '$')`,
     toJson,
     floatToString,
+    changeCase: (string, to) =>
+      options.functions ? `cypher_${to}(${string})` : `${to}(${string})`,
     // json() marks JSON text as JSON, so that it is nested rather than quoted.
     jsonArray: (items) => `json_array(${items.map((item) => `json(${item})`).join(', ')})`,
     jsonObject: (entries) =>

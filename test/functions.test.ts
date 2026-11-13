@@ -39,6 +39,12 @@ for (const backend of testBackends()) {
       expect(await v('labels(null)')).toBe(null);
     });
 
+    it('changes case by Unicode, except on SQLite without registerSqliteFunctions', async () => {
+      // examples.test.ts covers sqlite({ functions: true }).
+      expect(await v("toUpper('aü')")).toBe(backend.name === 'sqlite' ? 'Aü' : 'AÜ');
+      expect(await v("toLower('AÜ')")).toBe(backend.name === 'sqlite' ? 'aÜ' : 'aü');
+    });
+
     it('converts between types', async () => {
       expect(await v('toString(a.n)')).toBe('7');
       expect(await v('toString(a.f)')).toBe('2.5');
