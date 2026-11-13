@@ -10,6 +10,7 @@
 // tagged JSON with the components and text that src/json.ts temporalJson writes.
 
 import { TEMPORAL_KINDS, TRUNCATE_UNITS, type TemporalKind } from '../temporal.js';
+import { postgresDurationCall } from './postgres-duration.js';
 
 /** An error with this text prefix becomes a CypherArgumentError (see plan.ts). */
 const ERROR = 'cypher temporal error: ';
@@ -19,7 +20,7 @@ const ERROR = 'cypher temporal error: ';
  * keeps PostgreSQL from folding a constant message (and failing) at plan time
  * in a branch that is never taken.
  */
-const fail = (message: string): string =>
+export const fail = (message: string): string =>
   `(('${ERROR}' || ${message} || substr(random()::text, 1, 0))::int)`;
 
 const pad = (n: string, width: number): string => `lpad((${n})::text, ${width}, '0')`;
@@ -96,7 +97,7 @@ function offsetOf(text: string): string {
 }
 
 /** The offset of named zone `zone` at local timestamp `local`. */
-const offsetAtLocal = (zone: string, local: string): string =>
+export const offsetAtLocal = (zone: string, local: string): string =>
   `extract(epoch FROM ${local} - ((${local} AT TIME ZONE ${zone}) AT TIME ZONE 'UTC'))::int`;
 
 /** The offset of named zone `zone` at an instant (seconds since the epoch). */
@@ -279,6 +280,9 @@ const CALENDAR =
  * tagged JSON (NULL for a null argument).
  */
 export function postgresTemporalCall(name: string, args: string): string {
+  if (name === 'duration' || name.startsWith('duration.')) {
+    return postgresDurationCall(name, args);
+  }
   if (name === 'datetime.fromepoch' || name === 'datetime.fromepochmillis') {
     const nanos =
       name === 'datetime.fromepoch'
@@ -302,18 +306,20 @@ export function postgresTemporalCall(name: string, args: string): string {
     return truncate(kind, args);
   }
   const x = `(a.a -> 0)`;
+  // No argument: the current time (an empty map of fields).
+  const none = `jsonb_array_length(a.a) = 0`;
   // The map of fields: a parsed string, a temporal value to start from, a map,
   // or (for .statement() and the like) a time zone.
   const fields = clock
-    ? `jsonb_build_object('timezone', ${x})`
-    : `(CASE jsonb_typeof(${x}) ` +
+    ? `(CASE WHEN ${none} THEN '{}'::jsonb ELSE jsonb_build_object('timezone', ${x}) END)`
+    : `(CASE WHEN ${none} THEN '{}'::jsonb ELSE (CASE jsonb_typeof(${x}) ` +
       `WHEN 'string' THEN ${stringFields(kind, `(${x} #>> '{}')`)} ` +
       `WHEN 'object' THEN (CASE WHEN ${x} ->> '~cypher' IN ${TEMPORAL_TYPES} THEN ` +
       `jsonb_build_object(${[
         ...(hasDate(kind) ? [`'date', ${x}`] : []),
         ...(hasTime(kind) ? [`'time', ${x}`] : []),
       ].join(', ')}) ELSE ${x} END) ` +
-      `ELSE ${fail(`'Invalid argument for ${name}()'`)}::text::jsonb END)`;
+      `ELSE ${fail(`'Invalid argument for ${name}()'`)}::text::jsonb END) END)`;
   const zone = hasOffset(kind)
     ? [
         stage(ZONE_INPUTS, 'z'),
@@ -332,7 +338,7 @@ export function postgresTemporalCall(name: string, args: string): string {
       ...zone,
       stage(hasDate(kind) ? CALENDAR : 'SELECT 0 AS y', 'c'),
     ].join(', ') +
-    ` WHERE coalesce(jsonb_typeof(${x}), 'null') <> 'null')`
+    ` WHERE ${none} OR coalesce(jsonb_typeof(${x}), 'null') <> 'null')`
   );
 }
 
@@ -413,6 +419,6 @@ function truncate(kind: TemporalKind, args: string): string {
  * `OFFSET 0` keeps PostgreSQL from pulling it up into the next stage, which
  * would copy each column's expression into every use of it.
  */
-function stage(sql: string, alias: string): string {
+export function stage(sql: string, alias: string): string {
   return `LATERAL (${sql} OFFSET 0) ${alias}`;
 }

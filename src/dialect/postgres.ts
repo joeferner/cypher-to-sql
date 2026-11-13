@@ -7,6 +7,7 @@ import {
   type EntityColumns,
   type ScalarType,
 } from './dialect.js';
+import { postgresTemporalArithmetic } from './postgres-duration.js';
 import { postgresTemporalCall } from './postgres-temporal.js';
 
 const SQL_TYPES: Record<ScalarType, string> = {
@@ -181,6 +182,7 @@ export function postgres(): Dialect {
     contains: (string, part) => `(strpos(${string}, ${part}) > 0)`,
     regexMatch,
     temporalCall: postgresTemporalCall,
+    temporalArithmetic: postgresTemporalArithmetic,
     power: (base, exponent) =>
       `power((${base})::double precision, (${exponent})::double precision)`,
     jsonAggregate: (value, { distinct, orderBy, filter }) =>

@@ -14,7 +14,8 @@ export type CypherValue =
   | CypherNode
   | CypherRelationship
   | CypherPath
-  | CypherTemporal;
+  | CypherTemporal
+  | CypherDuration;
 
 export interface CypherMap {
   [key: string]: CypherValue;
@@ -58,6 +59,19 @@ export class CypherTemporal {
   }
 }
 
+/**
+ * A duration: months, days, seconds, and nanoseconds, kept apart as in Cypher.
+ * `text` is its ISO 8601 form as Cypher writes it (`P1Y2M3DT4H5M6.7S`), which
+ * `toString()` returns; as a parameter, `new CypherDuration('P1D')`.
+ */
+export class CypherDuration {
+  public constructor(public readonly text: string) {}
+
+  public toString(): string {
+    return this.text;
+  }
+}
+
 export class CypherPath {
   public constructor(
     /** `nodes.length === relationships.length + 1` */
@@ -74,6 +88,7 @@ export function isCypherMap(value: CypherValue): value is CypherMap {
     !(value instanceof CypherNode) &&
     !(value instanceof CypherRelationship) &&
     !(value instanceof CypherPath) &&
-    !(value instanceof CypherTemporal)
+    !(value instanceof CypherTemporal) &&
+    !(value instanceof CypherDuration)
   );
 }

@@ -13,7 +13,8 @@ import {
   temporalComponents,
   type Temporal,
 } from './temporal.js';
-import { CypherTemporal, isCypherMap, type CypherValue } from './values.js';
+import { durationComponents, parseDuration, renderDuration, type Duration } from './duration.js';
+import { CypherDuration, CypherTemporal, isCypherMap, type CypherValue } from './values.js';
 
 // `JSON.rawJSON` and the reviver's `source` context (ES2025, Node 21+) are not in
 // TypeScript's lib yet.
@@ -51,6 +52,9 @@ export function parseCypherJson(text: string): CypherValue {
       if (isTemporalKind(tag)) {
         return new CypherTemporal(tag, String((value as Record<string, unknown>)['~s']));
       }
+      if (tag === 'duration') {
+        return new CypherDuration(String((value as Record<string, unknown>)['~s']));
+      }
     }
     return value;
   }) as CypherValue;
@@ -69,6 +73,19 @@ export function temporalJson(t: Temporal): Record<string, unknown> {
   };
   for (const [key, v] of Object.entries(temporalComponents(t))) {
     out[key] = typeof v === 'bigint' ? JSON.rawJSON(v.toString()) : v;
+  }
+  return out;
+}
+
+/**
+ * The JSON object of a duration in SQL: `duration` as the tag, its text (`~s`),
+ * and its components (`months`, `days`, `seconds`, `nanosecondsOfSecond` hold
+ * the duration itself; the others are derived).
+ */
+export function durationJson(d: Duration): Record<string, unknown> {
+  const out: Record<string, unknown> = { [ENTITY_TAG]: 'duration', '~s': renderDuration(d) };
+  for (const [key, v] of Object.entries(durationComponents(d))) {
+    out[key] = JSON.rawJSON(v.toString());
   }
   return out;
 }
@@ -96,6 +113,9 @@ function toJsonable(value: CypherValue): unknown {
   }
   if (value instanceof CypherTemporal) {
     return temporalJson(parseTemporal(value.kind, value.text));
+  }
+  if (value instanceof CypherDuration) {
+    return durationJson(parseDuration(value.text));
   }
   if (value !== null && typeof value === 'object') {
     if (!isCypherMap(value)) {

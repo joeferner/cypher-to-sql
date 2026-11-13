@@ -2,6 +2,7 @@ import type * as ast from '../ast.js';
 import { ENTITY_TAG, type ScalarType } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError, type SourcePosition } from '../errors.js';
 import { TEMPORAL_KINDS } from '../temporal.js';
+import { isTemporalArithmetic } from '../temporal-functions.js';
 import { compileAggregate, isAggregateCall } from './aggregates.js';
 import { compileFunction } from './functions.js';
 import { constantValue, type SqlBuilder } from './sql-builder.js';
@@ -77,6 +78,7 @@ const NUMBER_TYPES = `('integer', 'float')`;
 
 /** The JSON types of temporal values (their tags). */
 const TEMPORAL_TYPES = `(${TEMPORAL_KINDS.map((k) => `'${k}'`).join(', ')})`;
+const TEMPORAL_OR_DURATION = `(${[...TEMPORAL_KINDS, 'duration'].map((k) => `'${k}'`).join(', ')})`;
 
 /**
  * Compiles Cypher expressions to SQL with Cypher semantics: three-valued logic,
@@ -397,7 +399,7 @@ export class ExprCompiler {
               `(CASE ${t} WHEN 'map' THEN 1 WHEN 'node' THEN 2 WHEN 'relationship' THEN 3 ` +
               `WHEN 'list' THEN 4 WHEN 'path' THEN 5 WHEN 'datetime' THEN 6 ` +
               `WHEN 'localdatetime' THEN 7 WHEN 'date' THEN 8 WHEN 'time' THEN 9 ` +
-              `WHEN 'localtime' THEN 10 WHEN 'string' THEN 12 ` +
+              `WHEN 'localtime' THEN 10 WHEN 'duration' THEN 11 WHEN 'string' THEN 12 ` +
               `WHEN 'boolean' THEN 13 WHEN 'integer' THEN 14 WHEN 'float' THEN 14 ELSE 99 END)`,
             nulls: false,
           },
@@ -1326,6 +1328,11 @@ export class ExprCompiler {
     if (left.type === 'null' || right.type === 'null') {
       return { sql: 'NULL', type: 'null', atomic: true };
     }
+    if (isTemporalArithmetic(expr)) {
+      // Temporal arithmetic of values known before the query runs: in the library.
+      const b = this.b;
+      return json(b.dialect.jsonInput(b.bind({ kind: 'temporal', expression: expr })), false);
+    }
     const numeric = (t: ExprType): boolean => t === 'integer' || t === 'float';
 
     if (left.type !== 'json' && right.type !== 'json') {
@@ -1425,6 +1432,14 @@ export class ExprCompiler {
         `(CASE WHEN ${t} = 'list' THEN ${e.sql} ELSE ${d.jsonArray([e.sql])} END)`;
       arms.push(
         `WHEN ${lt} = 'list' OR ${rt} = 'list' THEN ${d.concatLists(asList(l, lt), asList(r, rt))}`,
+      );
+    }
+    // A temporal value or duration on either side: the dialect's temporal arithmetic.
+    const temporal = d.temporalArithmetic;
+    if (temporal && op !== '%' && op !== '^') {
+      arms.push(
+        `WHEN ${lt} IN ${TEMPORAL_OR_DURATION} OR ${rt} IN ${TEMPORAL_OR_DURATION} ` +
+          `THEN ${temporal(op, l.sql, r.sql)}`,
       );
     }
     const mismatch = this.b.typeError(

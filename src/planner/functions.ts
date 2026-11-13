@@ -160,7 +160,8 @@ function apply(
 /** SQL per accepted kind; `temporal` gets the JSON of any temporal value. */
 type Cases = Partial<Record<Kind | 'temporal', (value: string) => string>>;
 
-const TEMPORAL_TYPES = `(${TEMPORAL_KINDS.map((k) => `'${k}'`).join(', ')})`;
+/** Temporal values and durations: their text is their `~s` member. */
+const TEMPORAL_TYPES = `(${[...TEMPORAL_KINDS, 'duration'].map((k) => `'${k}'`).join(', ')})`;
 
 /**
  * A function of one argument that accepts several types. `cases` gives the SQL
@@ -597,7 +598,7 @@ function temporalFunction(name: string): FunctionImpl {
     const { c, node } = call;
     const d = c.b.dialect;
     if (node.args.every(isKnownBeforeRun)) {
-      return result(d.jsonInput(c.b.bind({ kind: 'temporal', call: node })), 'json');
+      return result(d.jsonInput(c.b.bind({ kind: 'temporal', expression: node })), 'json');
     }
     if (!d.temporalCall) {
       throw new UnsupportedFeatureError(

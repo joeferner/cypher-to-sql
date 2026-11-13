@@ -14,8 +14,10 @@ import {
   CypherPath,
   CypherRelationship,
   CypherTemporal,
+  CypherDuration,
   type CypherValue,
 } from '../src/index.js';
+import { renderDuration } from '../src/duration.js';
 import { parseTemporal, renderTemporal, type TemporalKind } from '../src/temporal.js';
 
 /**
@@ -117,6 +119,9 @@ export function fromCypher(value: CypherValue): string {
   if (value instanceof CypherTemporal) {
     return temporal(value.kind, value.text);
   }
+  if (value instanceof CypherDuration) {
+    return string(value.text);
+  }
   return map(entries(value, fromCypher));
 }
 
@@ -170,6 +175,19 @@ export function fromNeo4j(value: unknown): string {
             : undefined;
   if (kind) {
     return temporal(kind, (value as { toString(): string }).toString());
+  }
+  if (neo4j.isDuration(value)) {
+    // The driver writes durations its own way (P12M14DT58390S); write them as Cypher does.
+    const n = (v: unknown): bigint => BigInt(String(v));
+    const nanos = n(value.seconds) * 1_000_000_000n + n(value.nanoseconds);
+    return string(
+      renderDuration({
+        months: n(value.months),
+        days: n(value.days),
+        seconds: nanos / 1_000_000_000n - (nanos % 1_000_000_000n < 0n ? 1n : 0n),
+        nanos: ((nanos % 1_000_000_000n) + 1_000_000_000n) % 1_000_000_000n,
+      }),
+    );
   }
   if (neo4j.isPath(value)) {
     const nodes = [value.start, ...value.segments.map((s) => s.end)];

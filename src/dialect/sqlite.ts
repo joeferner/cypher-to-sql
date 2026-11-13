@@ -1,7 +1,7 @@
 import { UnsupportedFeatureError } from '../errors.js';
 import { parseCypherJson, stringifyCypherJson } from '../json.js';
 import { TemporalError } from '../temporal.js';
-import { callTemporal } from '../temporal-functions.js';
+import { callTemporal, temporalArithmetic, TypeMismatch } from '../temporal-functions.js';
 import type { CypherValue } from '../values.js';
 import {
   ENTITY_TAG,
@@ -57,6 +57,19 @@ export function registerSqliteFunctions(db: SqliteFunctionHost): void {
       const values = parseCypherJson(String(args)) as CypherValue[];
       return stringifyCypherJson(callTemporal(String(name), values));
     } catch (error) {
+      throw error instanceof TemporalError
+        ? new Error(`cypher temporal error: ${error.message}`)
+        : error;
+    }
+  });
+  db.function('cypher_temporal_op', { deterministic: true }, (op, left, right) => {
+    try {
+      const value = (json: unknown): CypherValue => parseCypherJson(String(json));
+      return stringifyCypherJson(temporalArithmetic(String(op), value(left), value(right)));
+    } catch (error) {
+      if (error instanceof TypeMismatch) {
+        throw new Error(`cypher temporal type error: ${error.message}`, { cause: error });
+      }
       throw error instanceof TemporalError
         ? new Error(`cypher temporal error: ${error.message}`)
         : error;
@@ -179,6 +192,10 @@ export function sqlite(options: SqliteOptions = {}): Dialect {
       : undefined,
     temporalCall: options.functions
       ? (name, args): string => `cypher_temporal(${sqlStringLiteral(name)}, ${args})`
+      : undefined,
+    temporalArithmetic: options.functions
+      ? (op, left, right): string =>
+          `cypher_temporal_op(${sqlStringLiteral(op)}, ${left}, ${right})`
       : undefined,
     power: (base, exponent) => `pow(${base}, ${exponent})`,
     // ORDER BY inside an aggregate needs SQLite 3.44 or newer.

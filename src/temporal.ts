@@ -158,6 +158,11 @@ function zoneAtLocal(text: string, localSecond: number): Zone {
   return { offsetSeconds: second, zone: text };
 }
 
+/** The offset (seconds) of zone or offset `text` at a local time (seconds since the epoch, local). */
+export function offsetAtLocal(text: string, localSecond: number): number {
+  return zoneAtLocal(text, localSecond).offsetSeconds;
+}
+
 /** The zone `text` names, with its offset at the instant `epochSecond`. */
 function zoneAtInstant(text: string, epochSecond: number): Zone {
   const fixed = parseOffset(text);
@@ -686,9 +691,21 @@ export function truncateTemporal(
   return temporalFromMap(kind, map, now);
 }
 
-/** The current time as a datetime in UTC. */
+let clock: bigint | undefined;
+
+/**
+ * The current time as a datetime in UTC. It stays the same until the current
+ * synchronous evaluation ends (one step's binds, or one SQLite statement), so
+ * that `datetime()` twice in a query is the same time.
+ */
 export function nowUtc(): Temporal {
-  const millis = BigInt(Date.now());
+  if (clock === undefined) {
+    clock = BigInt(Date.now());
+    queueMicrotask(() => {
+      clock = undefined;
+    });
+  }
+  const millis = clock;
   return {
     kind: 'datetime',
     ...fromLocalSeconds(millis / 1000n, (millis % 1000n) * 1_000_000n),

@@ -205,6 +205,24 @@ export const CORPUS: DiffGroup[] = [
         'RETURN datetime.fromepoch(416779, 999999999) AS a, datetime.fromepochmillis(237821673987) AS b',
       ),
       q("RETURN date('2015-13-01') AS bad"),
+      // Durations and temporal arithmetic
+      q(
+        "RETURN duration('P14DT16H12M') AS a, duration({months: 0.75}) AS b, duration({weeks: 2.5}) AS c, " +
+          "duration({seconds: -60, milliseconds: -1}) AS d, duration('P2012-02-02T14:37:21.545') AS e",
+      ),
+      q(
+        'WITH duration({years: 12, months: 5, days: 14, hours: 16, minutes: 12, seconds: 70, nanoseconds: 2}) AS d, ' +
+          "date('1984-10-11') AS a, datetime('1984-10-11T12:31:14.000000001+01:00') AS c UNWIND [1] AS one " +
+          'RETURN a + d AS a1, a - d AS a2, c + d AS c1, d + d AS dd, d * 0.5 AS half, d / 2 AS div, ' +
+          'd.days AS days, d.minutesOfHour AS moh, d = d AS same',
+      ),
+      q(
+        "RETURN duration.between(date('1984-10-11'), datetime('2015-07-21T21:40:32.142+0100')) AS a, " +
+          "duration.inMonths(date('1984-10-11'), date('2015-06-24')) AS b, " +
+          "duration.inDays(localdatetime('2015-07-21T21:40:32.142'), date('2015-06-24')) AS c, " +
+          "duration.inSeconds(datetime({year: 2017, month: 10, day: 29, hour: 0, timezone: 'Europe/Stockholm'}), " +
+          'localdatetime({year: 2017, month: 10, day: 29, hour: 4})) AS d',
+      ),
       q(
         "WITH datetime('1984-10-11T12:31:14.645876123+01:00') AS x UNWIND [1] AS one " +
           "RETURN date.truncate('weekYear', x) AS a, datetime.truncate('quarter', x) AS b, " +

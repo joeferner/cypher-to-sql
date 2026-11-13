@@ -1,7 +1,13 @@
 // The temporal core (src/temporal.ts) on its own, with examples from the TCK.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createGraph, CypherArgumentError, type CypherValue, type Graph } from '../src/index.js';
+import {
+  createGraph,
+  CypherArgumentError,
+  CypherTypeError,
+  type CypherValue,
+  type Graph,
+} from '../src/index.js';
 import { testBackends } from './support/backends.js';
 import {
   nowUtc,
@@ -257,6 +263,54 @@ for (const backend of testBackends()) {
       expect(await run(`time.truncate('minute', x)`)).toBe('12:31+01:00');
       expect(await run(`localtime.truncate('microsecond', x)`)).toBe('12:31:14.645876');
       expect(await run(`localtime.truncate('day', x)`)).toBe('00:00');
+    });
+
+    it('builds durations and computes with them on row values', async () => {
+      expect(
+        await each('duration(x)', [
+          'P14DT16H12M',
+          'P0.75M',
+          'P2012-02-02T14:37:21.545',
+          { days: 14n, hours: 16n, minutes: 12n },
+          { months: 5n, days: 1.5 },
+          { minutes: 12n, seconds: -60n },
+        ]),
+      ).toEqual([
+        'P14DT16H12M',
+        'P22DT19H51M49.5S',
+        'P2012Y2M2DT14H37M21.545S',
+        'P14DT16H12M',
+        'P5M1DT12H',
+        'PT11M',
+      ]);
+      const d =
+        'duration({years: 12, months: 5, days: 14, hours: 16, minutes: 12, seconds: 70, nanoseconds: 2})';
+      const [row] = await graph.query(
+        `WITH ${d} AS d, date('1984-10-11') AS a, localtime('12:31:14.000000001') AS b,
+              datetime('1984-10-11T12:31:14.000000001+01:00') AS c UNWIND [1] AS one
+         RETURN toString(a + d) AS a1, toString(a - d) AS a2, toString(b + d) AS b1,
+                toString(c + d) AS c1, toString(d + d) AS dd, toString(d * 0.5) AS half,
+                toString(d / 2) AS div, d.days AS days, d.monthsOfYear AS moy,
+                toString(duration.between(a, c)) AS between,
+                toString(duration.inSeconds(b, c)) AS secs, d = d AS same`,
+      );
+      expect(row).toEqual({
+        a1: '1997-03-25',
+        a2: '1972-04-27',
+        b1: '04:44:24.000000003',
+        c1: '1997-03-26T04:44:24.000000003+01:00',
+        dd: 'P24Y10M28DT32H26M20.000000004S',
+        half: 'P6Y2M22DT13H21M8.000000001S',
+        div: 'P6Y2M22DT13H21M8.000000001S',
+        days: 14n,
+        moy: 5n,
+        between: 'PT12H31M14.000000001S',
+        secs: 'PT0S',
+        same: true,
+      });
+      await expect(
+        graph.query(`WITH ${d} AS d UNWIND [1] AS one RETURN d + 1 AS x`),
+      ).rejects.toThrow(CypherTypeError);
     });
 
     it('gives components that match values built in the library', async () => {

@@ -12,6 +12,7 @@ import {
   CypherPath,
   CypherRelationship,
   CypherTemporal,
+  CypherDuration,
   type CypherMap,
   type CypherValue,
 } from '../../src/index.js';
@@ -295,8 +296,8 @@ export function fromCypher(value: CypherValue): TckValue {
       })),
     };
   }
-  if (value instanceof CypherTemporal) {
-    // The TCK writes temporal values as their text: '2015-07-21'.
+  if (value instanceof CypherTemporal || value instanceof CypherDuration) {
+    // The TCK writes temporal values and durations as their text: '2015-07-21'.
     return { t: 'string', v: value.text };
   }
   return { t: 'map', entries: propsFromCypher(value) };

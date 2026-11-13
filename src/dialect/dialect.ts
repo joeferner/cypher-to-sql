@@ -143,6 +143,14 @@ export interface Dialect {
    */
   readonly temporalCall: ((name: string, args: string) => string) | undefined;
 
+  /**
+   * `left op right` (`+`, `-`, `*`, `/`) on two JSON values of which one is a
+   * temporal value or duration, as JSON: temporal ± duration, duration ±
+   * duration, duration × or ÷ number. Other operands are a type error. Undefined
+   * when the database cannot compute it (such operands are then a type error).
+   */
+  readonly temporalArithmetic: ((op: string, left: string, right: string) => string) | undefined;
+
   /** `base ^ exponent` as a float. */
   power(base: string, exponent: string): string;
 

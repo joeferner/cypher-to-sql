@@ -17,7 +17,18 @@ import {
   type Temporal,
   type TemporalArgument,
 } from './temporal.js';
-import { CypherTemporal, isCypherMap, type CypherValue } from './values.js';
+import {
+  addDurations,
+  addToTemporal,
+  durationBetween,
+  durationFromMap,
+  multiplyDuration,
+  negate,
+  parseDuration,
+  renderDuration,
+  type Duration,
+} from './duration.js';
+import { CypherDuration, CypherTemporal, isCypherMap, type CypherValue } from './values.js';
 
 /** The temporal functions, by lower-case name, with their argument counts. */
 export const TEMPORAL_FUNCTIONS: Record<string, { min: number; max: number }> = {
@@ -31,6 +42,54 @@ for (const kind of ['date', 'localtime', 'time', 'localdatetime', 'datetime']) {
   }
   TEMPORAL_FUNCTIONS[`${kind}.truncate`] = { min: 2, max: 3 };
 }
+TEMPORAL_FUNCTIONS['duration'] = { min: 1, max: 1 };
+for (const unit of ['between', 'inmonths', 'indays', 'inseconds']) {
+  TEMPORAL_FUNCTIONS[`duration.${unit}`] = { min: 2, max: 2 };
+}
+
+const BETWEEN = {
+  'duration.between': 'between',
+  'duration.inmonths': 'inMonths',
+  'duration.indays': 'inDays',
+  'duration.inseconds': 'inSeconds',
+} as const;
+
+const durationValue = (d: Duration): CypherDuration => new CypherDuration(renderDuration(d));
+const durationOfValue = (v: CypherDuration): Duration => parseDuration(v.text);
+
+/** `l op r` where one side is a temporal value or duration (null if either is null). */
+export function temporalArithmetic(op: string, l: CypherValue, r: CypherValue): CypherValue {
+  if (l === null || r === null) {
+    return null;
+  }
+  const number = (v: CypherValue): number | undefined =>
+    typeof v === 'bigint' || typeof v === 'number' ? Number(v) : undefined;
+  if (l instanceof CypherTemporal && r instanceof CypherDuration && (op === '+' || op === '-')) {
+    const d = durationOfValue(r);
+    return value(addToTemporal(temporalOf(l), op === '+' ? d : negate(d)));
+  }
+  if (l instanceof CypherDuration && r instanceof CypherTemporal && op === '+') {
+    return value(addToTemporal(temporalOf(r), durationOfValue(l)));
+  }
+  if (l instanceof CypherDuration && r instanceof CypherDuration && (op === '+' || op === '-')) {
+    const b = durationOfValue(r);
+    return durationValue(addDurations(durationOfValue(l), op === '+' ? b : negate(b)));
+  }
+  if (l instanceof CypherDuration && number(r) !== undefined && (op === '*' || op === '/')) {
+    const n = number(r)!;
+    if (op === '/' && n === 0) {
+      throw new TemporalError('Division by zero');
+    }
+    return durationValue(multiplyDuration(durationOfValue(l), op === '*' ? n : 1 / n));
+  }
+  if (r instanceof CypherDuration && number(l) !== undefined && op === '*') {
+    return durationValue(multiplyDuration(durationOfValue(r), number(l)!));
+  }
+  throw new TypeMismatch(`Type mismatch: cannot apply \`${op}\` to these values`);
+}
+
+/** A `TemporalError` for operands of the wrong type (a type error, not an argument error). */
+export class TypeMismatch extends TemporalError {}
 
 /** A map argument as temporal map fields (temporal values parsed). */
 function fields(arg: CypherValue): Record<string, TemporalArgument> {
@@ -90,6 +149,31 @@ export function callTemporal(name: string, args: CypherValue[]): CypherValue {
     const millis = integer(args[0], 'milliseconds');
     const seconds = millis / 1000n - (millis % 1000n < 0n ? 1n : 0n);
     return value(fromEpoch(seconds, (millis - seconds * 1000n) * 1_000_000n));
+  }
+  if (name === 'duration') {
+    const arg = args[0];
+    if (arg === null || arg === undefined) {
+      return null;
+    }
+    if (typeof arg === 'string') {
+      return durationValue(parseDuration(arg));
+    }
+    if (arg instanceof CypherDuration) {
+      return arg;
+    }
+    return durationValue(durationFromMap(fields(arg)));
+  }
+  if (name in BETWEEN) {
+    const [a, b] = args;
+    if (a === null || b === null || a === undefined || b === undefined) {
+      return null;
+    }
+    if (!(a instanceof CypherTemporal) || !(b instanceof CypherTemporal)) {
+      throw new TemporalError(`Invalid argument for ${name}()`);
+    }
+    return durationValue(
+      durationBetween(BETWEEN[name as keyof typeof BETWEEN], temporalOf(a), temporalOf(b)),
+    );
   }
   const [kind, clock] = name.split('.');
   if (!isTemporalKind(kind)) {
@@ -166,9 +250,27 @@ export function isKnownBeforeRun(expr: ast.Expression): boolean {
       return expr.entries.every((e) => isKnownBeforeRun(e.value));
     case 'FunctionCall':
       return isTemporalFunction(expr.name) && expr.args.every(isKnownBeforeRun);
+    case 'Binary':
+      return isTemporalArithmetic(expr);
     default:
       return false;
   }
+}
+
+/**
+ * Arithmetic known before the query runs that involves a temporal value or
+ * duration (one side is a temporal call or such arithmetic itself).
+ */
+export function isTemporalArithmetic(expr: ast.BinaryExpression): boolean {
+  const temporal = (e: ast.Expression): boolean =>
+    (e.type === 'FunctionCall' && isTemporalFunction(e.name)) ||
+    (e.type === 'Binary' && isTemporalArithmetic(e));
+  return (
+    ['+', '-', '*', '/'].includes(expr.operator) &&
+    (temporal(expr.left) || temporal(expr.right)) &&
+    isKnownBeforeRun(expr.left) &&
+    isKnownBeforeRun(expr.right)
+  );
 }
 
 /** Evaluates an expression for which `isKnownBeforeRun` holds. */
@@ -191,6 +293,12 @@ export function evaluateKnown(
       return callTemporal(
         expr.name.toLowerCase(),
         expr.args.map((arg) => evaluateKnown(arg, parameter)),
+      );
+    case 'Binary':
+      return temporalArithmetic(
+        expr.operator,
+        evaluateKnown(expr.left, parameter),
+        evaluateKnown(expr.right, parameter),
       );
     default:
       throw new Error(`Internal error: ${expr.type} is not known before the query runs`);

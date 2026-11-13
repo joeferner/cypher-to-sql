@@ -12,14 +12,15 @@ import {
 import { parseCypherJson, stringifyCypherJson } from './json.js';
 import { checkDeclaredType, type PropertyTypes } from './property-types.js';
 import { idsJson, pathsJson, shortestPaths } from './search.js';
-import type { FunctionCall } from './ast.js';
+import type { Expression } from './ast.js';
 import { TemporalError } from './temporal.js';
-import { evaluateKnown } from './temporal-functions.js';
+import { evaluateKnown, TypeMismatch } from './temporal-functions.js';
 import { ENTITY_TAG, RESERVED_KEYS } from './dialect/dialect.js';
 import {
   CypherNode,
   CypherPath,
   CypherRelationship,
+  CypherDuration,
   CypherTemporal,
   isCypherMap,
   type CypherMap,
@@ -75,10 +76,11 @@ export type BindValue =
   /** The rows a write query wrote, as a JSON array of objects (see `PlanStep.written`). */
   | { kind: 'writtenRows' }
   /**
-   * A temporal function call whose arguments are known before the query runs
-   * (see `isKnownBeforeRun`), evaluated when the step is bound, as JSON.
+   * A temporal function call, or temporal arithmetic, whose arguments are known
+   * before the query runs (see `isKnownBeforeRun`), evaluated when the step is
+   * bound, as JSON.
    */
-  | { kind: 'temporal'; call: FunctionCall }
+  | { kind: 'temporal'; expression: Expression }
   /**
    * The current source row of a write query as a one-element JSON array, in the
    * form of `writtenRows`: what SET reads its values from, after earlier writes.
@@ -444,6 +446,10 @@ function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
   if (code === '22012') {
     return new CypherArgumentError('Division by zero', { code: 'DivisionByZero' });
   }
+  const temporalType = /cypher temporal type error: ([^"]*)/.exec(message);
+  if (temporalType) {
+    return new CypherTypeError(temporalType[1]!, { code: 'InvalidArgumentType' });
+  }
   // An invalid argument to a temporal function: SQLite's cypher_temporal(), or
   // the PostgreSQL SQL (its own message, a date field out of range, or an
   // unknown time zone).
@@ -597,15 +603,21 @@ function resolveBind(
     case 'temporal':
       try {
         return stringifyCypherJson(
-          evaluateKnown(bind.call, (name, position) =>
+          evaluateKnown(bind.expression, (name, position) =>
             resolveValue({ kind: 'parameter', name, position }, options.params, row),
           ),
         );
       } catch (error) {
+        if (error instanceof TypeMismatch) {
+          throw new CypherTypeError(error.message, {
+            code: 'InvalidArgumentType',
+            position: bind.expression.position,
+          });
+        }
         throw error instanceof TemporalError
           ? new CypherArgumentError(error.message, {
               code: 'InvalidArgumentValue',
-              position: bind.call.position,
+              position: bind.expression.position,
             })
           : error;
       }
@@ -809,7 +821,12 @@ function checkPropertyValue(
   }
   const items = Array.isArray(value) ? value : [value];
   for (const item of items) {
-    if (item !== null && typeof item === 'object' && !(item instanceof CypherTemporal)) {
+    if (
+      item !== null &&
+      typeof item === 'object' &&
+      !(item instanceof CypherTemporal) &&
+      !(item instanceof CypherDuration)
+    ) {
       throw new SemanticError(
         `Property ${JSON.stringify(key)} cannot be set to a ${Array.isArray(item) ? 'nested list' : 'map, node, or relationship'}`,
         { hint: 'Property values must be strings, numbers, booleans, or lists of those.' },
@@ -968,7 +985,9 @@ function describeBind(bind: BindValue): string {
     case 'currentRow':
       return `currentRow(${bind.written.map((w) => w.name).join(', ')})`;
     case 'temporal':
-      return `${bind.call.name}(...)`;
+      return bind.expression.type === 'FunctionCall'
+        ? `${bind.expression.name}(...)`
+        : `temporal ${bind.expression.type === 'Binary' ? bind.expression.operator : 'value'}`;
     case 'computedId':
       return `id(computed ${bind.index + 1}.${bind.column.name}, ${bind.entity})`;
     case 'propertyPatch':
