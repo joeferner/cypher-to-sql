@@ -192,6 +192,7 @@ joined with `v.s = a.id AND v.t = b.id`.
 
 - The path is a list of edge ids: an array of the id column's type on PostgreSQL (`||`, `= ANY`, `&&`), JSON text on SQLite (`json_insert`, `json_each`). It enforces relationship uniqueness along the path, which also ends cycles, and against the MATCH's other relationship patterns.
 - `<max>` is bound at run time: the explicit upper bound, or `maxPathDepth` when there is none. A bound (or a lower bound with no upper bound) above `maxPathDepth` raises `LimitExceededError`. The default lower bound is 1.
+- At most `maxRowsPerStep` paths: the CTE's rows go through `LIMIT maxRowsPerStep + 1`, which stops the recursion, and `row_number()` past the cap raises `LimitExceededError` (through `Dialect.raise`). The check is in the start-node column and in the SELECT with the window function, because neither database pushes a join condition into such a SELECT; otherwise SQLite filters the paths by the end node first and the LIMIT would cut the rest silently. It costs up to a few milliseconds on large path sets.
 - Undirected patterns follow an edge from either end (`CASE` picks the other end); a self-loop is followed once.
 - The CTE cannot refer to the outer query (SQLite has no `LATERAL`), and inline property values must not use variables. `<start nodes>` makes up for it: `SELECT a.id FROM ... WHERE ...` over the scope's tables and conditions before `b` joins, a self-contained query of every node `a` can be (`ReadScope.startNodes`). It covers a filtered start node and one bound by earlier clauses, so the search grows with the start's neighborhood, not the graph (benchmarks: `*1..3` between two given nodes from 10 seconds to 30–40 ms on 10,000 nodes).
 - The search still starts at every node when nothing restricts `a` (a filter only on `b` does not), inside a subquery (EXISTS, pattern comprehensions), and when the rows so far already include a search that starts at every node, which the start-node query would repeat. Starting from the end node instead, or seeding with ids found in a separate step, would cover more of these.
@@ -259,17 +260,23 @@ Pattern predicates (`WHERE (a)-[:T]->()`), `EXISTS { pattern WHERE c }`, `EXISTS
 
 Set for each graph; a query can lower them but never raise them. Exceeding a limit raises `LimitExceededError`. Results are never silently truncated.
 
-| Limit                | Default | Behavior                                                                                           |
-| -------------------- | ------- | -------------------------------------------------------------------------------------------------- |
-| `maxPathDepth`       | 10      | Upper bound for `[*]` and `[*n..]`. An explicit upper bound above it is rejected.                  |
-| `maxRowsPerStep`     | 100,000 | Each step runs with `LIMIT maxRowsPerStep + 1`; getting the extra row means the limit is exceeded. |
-| `maxResultRows`      | 10,000  | Final records. The hint suggests adding `LIMIT`.                                                   |
-| `maxFrontierSize`    | 100,000 | Nodes carried from one breadth-first search depth to the next, summed over the start nodes.        |
-| `maxSteps`           | 32      | SQL steps in one read plan, including breadth-first search depths (counted as they run).           |
-| `timeoutMs`          | 30,000  | Total wall-clock time, checked between steps. Timeouts for single statements belong to the caller. |
-| `maxCreatedEntities` | 100,000 | Nodes plus relationships created by one query, checked against all source rows before any insert.  |
+| Limit                | Default | Behavior                                                                                                                                                |
+| -------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxPathDepth`       | 10      | Upper bound for `[*]` and `[*n..]`. An explicit upper bound above it is rejected.                                                                       |
+| `maxRowsPerStep`     | 100,000 | Each step runs with `LIMIT maxRowsPerStep + 1`; getting the extra row means the limit is exceeded. Also the paths one variable-length pattern may find. |
+| `maxResultRows`      | 10,000  | Final records. The hint suggests adding `LIMIT`.                                                                                                        |
+| `maxFrontierSize`    | 100,000 | Nodes carried from one breadth-first search depth to the next, summed over the start nodes.                                                             |
+| `maxSteps`           | 32      | SQL steps in one read plan, including breadth-first search depths (counted as they run).                                                                |
+| `timeoutMs`          | 30,000  | Total wall-clock time, checked between steps. Timeouts for single statements belong to the caller.                                                      |
+| `maxCreatedEntities` | 100,000 | Nodes plus relationships created by one query, checked against all source rows before any insert.                                                       |
 
-The defaults are starting values, not measured ones (#16).
+The defaults were checked against the reference graphs (#16, `npm run bench:limits`, [bench/README.md](bench/README.md#limits)):
+
+- `maxPathDepth` 10: a shortest path search reaches every node of the 100,000-node graph within 6 hops, in about 450 ms. A depth cannot bound a variable-length pattern, though: its cost is the number of paths, about degree to the power of the depth (on a graph with 16 relationships per node, 1 million paths at depth 5 and 18 million, 47–94 seconds, at depth 6; on one with 4, 1.4 million at depth 10). So `maxRowsPerStep` also caps the paths of a pattern, which stops such a query in well under a second on PostgreSQL and in about 2 seconds on SQLite.
+- `maxRowsPerStep` 100,000 and `maxResultRows` 10,000: returning 10,000 full nodes takes about 85 ms and 10 MB of heap, 90,000 about 670 ms and 65 MB. 100,000 paths take about 300 ms.
+- `maxFrontierSize` 100,000: the largest frontier from one node on the 100,000-node graph is 46,000 nodes.
+- `maxSteps` 32: a shortest path search to depth 10 needs 12 steps.
+- `timeoutMs` 30 seconds: no measured query that stays within the other limits takes more than a few seconds. It cannot stop a single statement; the executor's statement timeout does that.
 
 ## Translation rules
 

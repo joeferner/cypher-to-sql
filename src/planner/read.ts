@@ -684,8 +684,53 @@ export class ReadScope {
       (startNodes ? ` WHERE ${n}.${nodeId} IN (${startNodes})` : '') +
       ` UNION ALL SELECT ${p}.s, ${next}, ${p}.d + 1, ${d.idListAppend(`${p}.path`, `${e}.${edges.id}`)}` +
       `${nodes.append} FROM ${p} JOIN ${edges.table} AS ${e} ON ${adjacent} WHERE ${step.join(' AND ')})` +
-      ` SELECT s, t, path${nodes.column} FROM ${p} WHERE d >= ${min}`;
+      this.capPaths(
+        `SELECT s, t, path${nodes.column} FROM ${p} WHERE d >= ${min}`,
+        `${v}l.t AS t, ${v}l.path AS path${withNodes ? `, ${v}l.nodes AS nodes` : ''}`,
+        v,
+        rel,
+      );
     return this.joinPaths(`(${cte}) AS ${v}`, v, rel, left, right, boundHere, withNodes);
+  }
+
+  /**
+   * The paths of a variable-length CTE (`paths`, a SELECT of its rows), at
+   * most `maxRowsPerStep` of them: one more path raises a LimitExceededError.
+   * Their number grows with the degree to the power of the depth (on a graph
+   * with 16 relationships per node, 1 million paths at depth 5 and 18 million
+   * at depth 6, which takes minutes), and a depth limit alone cannot know the
+   * degree. Both databases stop computing a recursive CTE once a LIMIT on it
+   * is reached.
+   *
+   * The check is in the start node column `s`, which every plan reads, and in
+   * the same SELECT as the window function: neither database pushes a join
+   * condition into a SELECT with a window function, so every path is checked.
+   * (Otherwise SQLite pushes `t = <end node>` down, checks only the paths that
+   * match, and the LIMIT cuts the others silently.)
+   */
+  private capPaths(
+    paths: string,
+    columns: string,
+    v: string,
+    rel: ast.RelationshipPattern,
+  ): string {
+    const b = this.b;
+    const d = b.dialect;
+    const limit = b.bind({ kind: 'rowLimit', userLimit: undefined });
+    const cap = d.typedPlaceholder(b.bind({ kind: 'rowCap' }), 'integer');
+    const tooMany = b.raise(
+      {
+        kind: 'limit',
+        code: 'Give the pattern a smaller upper bound, or start it at fewer nodes.',
+        message: 'A variable-length pattern found more paths than maxRowsPerStep allows',
+        position: rel.position,
+      },
+      'integer',
+    );
+    return (
+      ` SELECT (CASE WHEN row_number() OVER () > ${cap} THEN ${tooMany} ELSE ${v}l.s END) AS s, ${columns}` +
+      ` FROM (${paths} LIMIT ${limit}) AS ${v}l`
+    );
   }
 
   /**

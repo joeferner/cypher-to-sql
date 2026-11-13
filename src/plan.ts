@@ -53,6 +53,8 @@ export type BindValue =
   | { kind: 'rowId'; column: string }
   /** The SQL `LIMIT` of a step: `min(user limit, maxRowsPerStep + 1)`. */
   | { kind: 'rowLimit'; userLimit: ValueSource | undefined }
+  /** `maxRowsPerStep` itself, as an integer (the paths a variable-length pattern may find). */
+  | { kind: 'rowCap' }
   /** The SQL `OFFSET` of a step: the query's SKIP. */
   | { kind: 'rowOffset'; skip: ValueSource }
   /** The SQL `LIMIT` inside a WITH stage: the query's LIMIT exactly (no row cap). */
@@ -162,7 +164,8 @@ export interface PlanStep {
 
 /** A Cypher error that a step's SQL raises at run time, through `Dialect.raise`. */
 export interface RaisedError {
-  kind: 'type' | 'argument';
+  /** `limit` raises a `LimitExceededError`, with `code` as its hint. */
+  kind: 'type' | 'argument' | 'limit';
   /** openCypher's detail code, for example `InvalidArgumentType`. */
   code: string;
   message: string;
@@ -372,6 +375,12 @@ function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
       return undefined;
     }
     const options = { code: raised.code, position: raised.position };
+    if (raised.kind === 'limit') {
+      return new LimitExceededError(raised.message, {
+        position: raised.position,
+        hint: raised.code,
+      });
+    }
     return raised.kind === 'type'
       ? new CypherTypeError(raised.message, options)
       : new CypherArgumentError(raised.message, options);
@@ -493,6 +502,8 @@ function resolveBind(
       }
       return limit < cap ? limit : cap;
     }
+    case 'rowCap':
+      return BigInt(options.limits.maxRowsPerStep);
     case 'rowOffset':
       return rowCount(bind.skip, 'SKIP', options, row);
     case 'stageLimit':
@@ -781,6 +792,8 @@ function describeBind(bind: BindValue): string {
       return bind.userLimit
         ? `limit(${describeSource(bind.userLimit)})`
         : 'limit(maxRowsPerStep + 1)';
+    case 'rowCap':
+      return 'maxRowsPerStep';
     case 'rowOffset':
       return `skip(${describeSource(bind.skip)})`;
     case 'stageLimit':

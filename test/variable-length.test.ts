@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createGraph, CypherRelationship, type Graph } from '../src/index.js';
+import { createGraph, CypherRelationship, LimitExceededError, type Graph } from '../src/index.js';
 import { testBackends } from './support/backends.js';
 
 for (const backend of testBackends()) {
@@ -115,6 +115,24 @@ for (const backend of testBackends()) {
       await expect(
         graph.query(`MATCH ({n: 'a'})-[:R*3..]->(x) RETURN x`, {}, { limits }),
       ).rejects.toThrow(/exceeds maxPathDepth/);
+    });
+
+    it('raises instead of cutting paths short when there are more than maxRowsPerStep', async () => {
+      // No start filter: the search finds every R path of length 1..2 (5 of
+      // them), although only 2 end at d.
+      const query = `MATCH (x)-[:R*1..2]->({n: 'd'}) RETURN count(*) AS n`;
+      expect(await graph.query(query, {}, { limits: { maxRowsPerStep: 5 } })).toEqual([{ n: 2n }]);
+      await expect(graph.query(query, {}, { limits: { maxRowsPerStep: 4 } })).rejects.toThrow(
+        LimitExceededError,
+      );
+      // A start filter keeps the search small.
+      expect(
+        await graph.query(
+          `MATCH ({n: 'b'})-[:R*1..2]->(x) RETURN count(*) AS n`,
+          {},
+          { limits: { maxRowsPerStep: 4 } },
+        ),
+      ).toEqual([{ n: 2n }]);
     });
 
     it('rejects what it does not support yet', async () => {
