@@ -149,7 +149,7 @@ Each `WITH` ends a stage. `ReadScope.of` plans the clauses so far, projects them
 
 ```sql
 SELECT ... FROM (SELECT <projected columns> FROM ... WHERE ...) AS w0
-  CROSS JOIN "nodes" AS n1 ... WHERE n1."id" = w0.c0 AND ...
+  LEFT JOIN "nodes" AS n1 ON n1."id" = w0.c0 ... WHERE ...
 ```
 
 - Values are columns of the stage in their SQL type (JSON stays JSON). Nodes and relationships are carried as ids and joined back to their tables, so that everything that works on entities keeps working; the join is by primary key.
@@ -164,7 +164,7 @@ SELECT ... FROM (SELECT <projected columns> FROM ... WHERE ...) AS w0
 The tables an OPTIONAL MATCH adds are grouped and left-joined, with all of its conditions (the pattern's, and its WHERE) in the ON clause:
 
 ```sql
-FROM "nodes" AS n0 LEFT JOIN ("nodes" AS n1 CROSS JOIN "edges" AS e2)
+FROM "nodes" AS n0 LEFT JOIN ("nodes" AS n1 JOIN "edges" AS e2 ON TRUE)
   ON e2."start_id" = n0."id" AND e2."end_id" = n1."id" AND <WHERE>
 ```
 
@@ -294,15 +294,16 @@ The defaults are starting values, not measured ones (#16).
 
 ## Dialect differences
 
-| Topic                 | PostgreSQL                                             | SQLite                                                                                |
-| --------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| Correlated joins      | `LATERAL`                                              | No `LATERAL`. Use correlated subqueries, table-valued `json_each`, or separate steps. |
-| Arrays                | Native arrays and `jsonb`                              | JSON text only                                                                        |
-| Path cycle check      | `= ANY` on an array of edge ids                        | `json_each` on a JSON array of edge ids                                               |
-| Typing                | Strict; a failed cast raises an error                  | Type affinity; values can change type silently                                        |
-| `LIKE`                | Case sensitive                                         | Case-insensitive for ASCII. Use `instr` / `substr` for `CONTAINS` and `STARTS WITH`.  |
-| Read-only enforcement | `READ ONLY` transaction plus a role with only `SELECT` | Read-only connection or `PRAGMA query_only`                                           |
-| Integer size          | `bigint`, with overflow errors                         | 64-bit integers; overflow silently becomes a float                                    |
+| Topic                 | PostgreSQL                                             | SQLite                                                                                                                                                                      |
+| --------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Correlated joins      | `LATERAL`                                              | No `LATERAL`. Use correlated subqueries, table-valued `json_each`, or separate steps.                                                                                       |
+| Join order            | Chosen from statistics                                 | `CROSS JOIN` fixes the order, so pattern tables use `JOIN ... ON 1`; inline property filters are marked selective with `likelihood()` so that a pattern starts there (#36). |
+| Arrays                | Native arrays and `jsonb`                              | JSON text only                                                                                                                                                              |
+| Path cycle check      | `= ANY` on an array of edge ids                        | `json_each` on a JSON array of edge ids                                                                                                                                     |
+| Typing                | Strict; a failed cast raises an error                  | Type affinity; values can change type silently                                                                                                                              |
+| `LIKE`                | Case sensitive                                         | Case-insensitive for ASCII. Use `instr` / `substr` for `CONTAINS` and `STARTS WITH`.                                                                                        |
+| Read-only enforcement | `READ ONLY` transaction plus a role with only `SELECT` | Read-only connection or `PRAGMA query_only`                                                                                                                                 |
+| Integer size          | `bigint`, with overflow errors                         | 64-bit integers; overflow silently becomes a float                                                                                                                          |
 
 ## Semantics that need care
 

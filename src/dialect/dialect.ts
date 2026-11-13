@@ -257,6 +257,13 @@ export interface Dialect {
     edges: { table: string; id: string },
   ): string;
 
+  /**
+   * The condition, marked as one that few rows meet, so that the query planner
+   * starts a join there (SQLite's `likelihood`); unchanged where the planner
+   * takes no such hint.
+   */
+  selective(condition: string): string;
+
   // ---- run-time errors ------------------------------------------------------------
 
   /**

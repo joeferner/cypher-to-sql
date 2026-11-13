@@ -34,19 +34,20 @@ Median milliseconds on 10,000 nodes and 45,000 relationships (Intel i7-10510U, P
 
 | Query                                   | SQLite | PostgreSQL |
 | --------------------------------------- | -----: | ---------: |
-| lookup by name (undeclared)             |     14 |         17 |
+| lookup by name (undeclared)             |     13 |         17 |
 | lookup by name (declared, indexed)      |      9 |         11 |
-| range filter count (declared)           |    0.9 |        2.3 |
-| one hop                                 |     20 |         17 |
-| aggregate by company                    | 28,585 |         31 |
-| pattern predicate (no incoming)         | 21,237 |         18 |
-| `WITH` stages                           | 27,360 |         30 |
-| var-length `*1..3` from one node        |  1,740 |        833 |
-| var-length `*1..3` between two nodes    | 12,211 |      9,823 |
-| `shortestPath` (multi-step search)      |     38 |         29 |
-| shortest path as one statement (`*..3`) | 15,692 |     11,969 |
+| range filter count (declared)           |    1.2 |        2.3 |
+| one hop                                 |     10 |         17 |
+| two hops distinct                       |     11 |         32 |
+| aggregate by company                    |     20 |         31 |
+| pattern predicate (no incoming)         |     12 |         18 |
+| `WITH` stages                           |     20 |         30 |
+| var-length `*1..3` from one node        |  1,729 |        833 |
+| var-length `*1..3` between two nodes    | 12,322 |      9,823 |
+| `shortestPath` (multi-step search)      |     23 |         29 |
+| shortest path as one statement (`*..3`) | 15,666 |     11,969 |
 
-1. **SQLite joins in a fixed order.** The planner joins the tables of a pattern with `CROSS JOIN`, which SQLite (unlike PostgreSQL) treats as a fixed join order. `(:Person)-[:WORKS_AT]->(c:Company)` therefore pairs every person with every company before it looks at a relationship. Queries with more than one node scan take seconds on SQLite and milliseconds on PostgreSQL. Plain inner joins would let SQLite choose the order.
+1. **SQLite joined in a fixed order (fixed, #36).** The planner joined the tables of a pattern with `CROSS JOIN`, which SQLite (unlike PostgreSQL) takes as a fixed join order, so `(:Person)-[:WORKS_AT]->(c:Company)` paired every person with every company: aggregation, pattern predicates, and `WITH` stages took 20–29 seconds on SQLite. Plain inner joins (`JOIN ... ON 1`) let SQLite choose; inline property filters are marked selective (`likelihood`), so a pattern starts at its filtered node even without an index.
 2. **Variable-length patterns explore from every node.** The recursive CTE cannot start at a bound node (see DESIGN.md), so its cost grows with the whole graph, not the neighborhood: `*1..3` between two given nodes takes 10 seconds on 10,000 nodes. This is #14 (seeding the search from bound nodes in a separate step).
 3. **Multi-step search wins for shortest paths.** The breadth-first search takes 30–40 ms where the single statement (every path up to length 3, the shortest kept) takes 12–16 seconds, and it reaches 10 hops instead of 3.
 4. **A parameter in a property map does not use the index.** `(p:Person {name: $a})` on a declared, indexed `name` takes 9–11 ms, while a declared range filter takes 1–2 ms: the parameter's type is known only at run time, so the comparison checks it in SQL, which no index can serve.

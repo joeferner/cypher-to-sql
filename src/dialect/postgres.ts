@@ -241,6 +241,8 @@ export function postgres(): Dialect {
     idListHas: (list, id) => `(${id} = ANY(${list}))`,
     idListsOverlap: (left, right) => `(${left} && ${right})`,
     idListLength: (list) => `cardinality(${list})::bigint`,
+    // PostgreSQL estimates selectivity from statistics; it takes no hints.
+    selective: (condition) => condition,
     // A failed cast to integer quotes the text. random() keeps PostgreSQL from
     // folding the cast at plan time, which it does to constants even in CASE
     // branches that never run.

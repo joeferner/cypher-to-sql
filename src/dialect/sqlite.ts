@@ -204,6 +204,7 @@ export function sqlite(): Dialect {
     idListsOverlap: (left, right) =>
       `EXISTS (SELECT 1 FROM json_each(${left}) AS vl JOIN json_each(${right}) AS vr ON vl.value = vr.value)`,
     idListLength: (list) => `json_array_length(${list})`,
+    selective: (condition) => `likelihood(${condition}, 0.001)`,
     // An invalid JSON path is an error that quotes the path. random() keeps the
     // call from being evaluated once up front.
     raise: (marker) => `json_extract('{}', '${marker}' || substr(random(), 1, 0))`,

@@ -72,7 +72,11 @@ export type Binding = VariableBinding;
  */
 export class ReadScope {
   private readonly bindings = new Map<string, Binding>();
-  private readonly from: string[] = [];
+  /**
+   * The FROM items: a table (or derived table) that the planner may join in any
+   * order, or a join that must stay where it is (`LEFT JOIN ... ON ...`).
+   */
+  private readonly from: ({ table: string } | { join: string })[] = [];
   private readonly where: string[] = [];
   /** Expressions that order rows the way Cypher produces them (one per FROM item). */
   private readonly order: string[] = [];
@@ -115,9 +119,29 @@ export class ReadScope {
     return this.bindings.get(name) ?? this.outer?.find(name);
   }
 
-  /** Adds a FROM item, cross-joined to the ones before it. */
+  /** Adds a FROM item, joined to the ones before it (see `joinTables`). */
   private addFrom(item: string): void {
-    this.from.push(this.from.length === 0 ? item : `CROSS JOIN ${item}`);
+    this.from.push({ table: item });
+  }
+
+  /**
+   * Tables joined with plain inner joins, `a JOIN b ON TRUE`: their conditions
+   * are in WHERE, and the database may join them in any order. (SQLite takes
+   * `CROSS JOIN` as a fixed join order, which made it scan whole tables.)
+   */
+  private joinTables(tables: string[]): string {
+    const on = ` ON ${this.b.dialect.booleanLiteral(true)}`;
+    return tables.map((t, i) => (i === 0 ? t : `JOIN ${t}${on}`)).join(' ');
+  }
+
+  /** The FROM clause, without the keyword. */
+  private fromClause(): string {
+    const on = ` ON ${this.b.dialect.booleanLiteral(true)}`;
+    return this.from
+      .map((item, i) =>
+        'join' in item ? item.join : i === 0 ? item.table : `JOIN ${item.table}${on}`,
+      )
+      .join(' ');
   }
 
   /**
@@ -164,10 +188,11 @@ export class ReadScope {
       const alias = scope.alias(kind === 'node' ? 'n' : 'e');
       const idName = b.mapping[table].id;
       // LEFT JOIN: a node from OPTIONAL MATCH may be null.
-      scope.from.push(
-        `LEFT JOIN ${b.table(table)} AS ${alias} ON ${alias}.${b.ident(idName)} = ` +
+      scope.from.push({
+        join:
+          `LEFT JOIN ${b.table(table)} AS ${alias} ON ${alias}.${b.ident(idName)} = ` +
           d.jsonId(member, b.table(table), idName),
-      );
+      });
       scope.bindings.set(name, { kind, alias });
     }
     return scope;
@@ -209,10 +234,11 @@ export class ReadScope {
       // where it is null (from OPTIONAL MATCH).
       const table = output.kind === 'node' ? 'nodes' : 'edges';
       const entity = next.alias(output.kind === 'node' ? 'n' : 'e');
-      next.from.push(
-        `LEFT JOIN ${this.b.table(table)} AS ${entity} ` +
+      next.from.push({
+        join:
+          `LEFT JOIN ${this.b.table(table)} AS ${entity} ` +
           `ON ${entity}.${this.b.ident(this.b.mapping[table].id)} = ${alias}.${output.column}`,
-      );
+      });
       next.bindings.set(output.name, { kind: output.kind, alias: entity });
     }
     if (w.where && !filterFirst) {
@@ -346,7 +372,12 @@ export class ReadScope {
    * matches; they may refer to earlier tables.
    */
   private makeOptional(fromStart: number, whereStart: number): void {
-    const tables = this.from.splice(fromStart).map((item) => item.replace(/^CROSS JOIN /, ''));
+    const tables = this.from.splice(fromStart).map((item) => {
+      if (!('table' in item)) {
+        throw new Error('Internal error: a MATCH added a join that is not a table');
+      }
+      return item.table;
+    });
     const conditions = this.where.splice(whereStart);
     if (tables.length === 0) {
       // Every variable was bound already: the match adds nothing, and the row is
@@ -355,13 +386,13 @@ export class ReadScope {
     }
     if (this.from.length === 0) {
       // A first OPTIONAL MATCH still gives one row (of nulls) when nothing matches.
-      this.from.push(`(SELECT 1 AS one) AS ${this.alias('one')}`);
+      this.from.push({ table: `(SELECT 1 AS one) AS ${this.alias('one')}` });
     }
     const on =
       conditions.length > 0 ? conditions.join(' AND ') : this.b.dialect.booleanLiteral(true);
     // Both databases reject a single table in parentheses.
-    const joined = tables.length === 1 ? tables[0]! : `(${tables.join(' CROSS JOIN ')})`;
-    this.from.push(`LEFT JOIN ${joined} ON ${on}`);
+    const joined = tables.length === 1 ? tables[0]! : `(${this.joinTables(tables)})`;
+    this.from.push({ join: `LEFT JOIN ${joined} ON ${on}` });
   }
 
   /** Binds or reuses the node of a node pattern, adds its filters, and returns its alias. */
@@ -804,8 +835,10 @@ export class ReadScope {
       });
     }
     const e = this.expressions;
-    return properties.entries.map(
-      ({ key, value }) => e.comparison('=', e.member(entity, key), e.compile(value)).sql,
+    return properties.entries.map(({ key, value }) =>
+      // Inline properties usually pick out few rows; telling the database lets it
+      // start a pattern there even when no index serves the comparison.
+      this.b.dialect.selective(e.comparison('=', e.member(entity, key), e.compile(value)).sql),
     );
   }
 
@@ -925,7 +958,7 @@ export class ReadScope {
   public selectBase(columns: string[], distinct = false, groupBy?: string[]): string {
     let sql = `SELECT ${distinct ? 'DISTINCT ' : ''}${columns.join(', ')}`;
     if (this.from.length > 0) {
-      sql += ` FROM ${this.from.join(' ')}`;
+      sql += ` FROM ${this.fromClause()}`;
     }
     if (this.where.length > 0) {
       sql += ` WHERE ${this.where.join(' AND ')}`;
