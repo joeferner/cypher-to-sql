@@ -423,7 +423,9 @@ class AstBuilder {
           ? 'STARTS WITH'
           : child.ENDS()
             ? 'ENDS WITH'
-            : 'CONTAINS';
+            : child.REGEX_MATCH()
+              ? '=~'
+              : 'CONTAINS';
         const right = this.additive(child.oC_AddOrSubtractExpression());
         expr = { type: 'Binary', position: pos(child), operator, left: expr, right };
       } else if (child instanceof OC_ListPredicateExpressionContext) {

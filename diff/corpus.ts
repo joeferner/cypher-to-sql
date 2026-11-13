@@ -165,10 +165,22 @@ export const CORPUS: DiffGroup[] = [
           "CASE 2 WHEN 1 THEN 'one' WHEN 2 THEN 'two' END AS b",
       ),
       q("RETURN 'abc' STARTS WITH 'a' AS a, 'abc' ENDS WITH 'bc' AS b, 'abc' CONTAINS 'd' AS c"),
-      {
-        cypher: "RETURN 'abc' =~ 'a.*' AS d",
-        known: '=~ is not in the openCypher 9 grammar',
-      },
+      // Regular expressions (Java syntax, whole-string match)
+      q(
+        "RETURN 'abc' =~ 'a.*' AS a, 'abc' =~ 'b' AS b, 'ab' =~ 'a|ab' AS c, 'ABC' =~ '(?i)abc' AS d, " +
+          "'a1_' =~ '\\\\w\\\\d\\\\w' AS e, 'x-y' =~ '[a-z]-[a-z]' AS f, '' =~ 'a*' AS g",
+      ),
+      q(
+        "RETURN 'a\\nb' =~ 'a.b' AS a, 'a\\nb' =~ '(?s)a.b' AS b, 'a\\nb' =~ '(?m)a$.b' AS c, " +
+          "'a\\nb' =~ '(?ms)a$.^b' AS d, 'ü😀' =~ '..' AS e, 'aaa' =~ 'a{2,3}' AS f",
+      ),
+      q("RETURN null =~ 'a' AS a, 'a' =~ null AS b, 'a' =~ $p AS c", { p: '[a]' }),
+      q("UNWIND [1, 'a', true, null, [1]] AS x RETURN x =~ 'a' AS r"),
+      q("RETURN 'a+' =~ 'a\\\\+' AS a, 'a-' =~ 'a\\\\-' AS b, 'a.b' =~ 'a\\\\.b' AS c"),
+      q("MATCH (n) WHERE n.s =~ '(?i)[hw].*' RETURN n.name AS name"),
+      q('MATCH (n) WHERE n.name =~ $p RETURN n.name AS name', { p: '[a-c]' }),
+      q("MATCH (n) RETURN n.name AS name, n.s =~ '.*l.*' AS l"),
+      q("RETURN 'a' =~ '(' AS a"),
       q(
         'RETURN coalesce(null, 1) AS a, null + 1 AS b, null IS NULL AS c, NOT null AS d, ' +
           'true XOR null AS e, false AND null AS f, true OR null AS g',

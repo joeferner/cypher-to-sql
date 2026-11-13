@@ -394,6 +394,10 @@ function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
   if (code === '22012') {
     return new CypherArgumentError('Division by zero', { code: 'DivisionByZero' });
   }
+  // PostgreSQL: invalid_regular_expression. SQLite: the RegExp of cypher_regex().
+  if (code === '2201B' || /^invalid regular expression/i.test(message)) {
+    return new CypherArgumentError(message, { code: 'InvalidRegex' });
+  }
   return undefined;
 }
 

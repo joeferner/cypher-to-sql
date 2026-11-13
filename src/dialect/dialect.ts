@@ -107,6 +107,13 @@ export interface Dialect {
   endsWith(string: string, suffix: string): string;
   contains(string: string, part: string): string;
 
+  /**
+   * Condition: the regular expression `pattern` (Java syntax, as in Cypher)
+   * matches the whole `string`. Undefined when the database cannot match
+   * regular expressions; `=~` is then an `UnsupportedFeatureError`.
+   */
+  readonly regexMatch: ((string: string, pattern: string) => string) | undefined;
+
   /** `base ^ exponent` as a float. */
   power(base: string, exponent: string): string;
 

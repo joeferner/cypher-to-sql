@@ -318,8 +318,12 @@ oC_PartialComparisonExpression
 oC_StringListNullPredicateExpression
                                  :  oC_AddOrSubtractExpression ( oC_StringPredicateExpression | oC_ListPredicateExpression | oC_NullPredicateExpression )* ;
 
+// Implementation extension to Cypher, not part of openCypher 9 (cypher-to-sql):
+// the regular expression match `=~`, as in Neo4j and earlier openCypher.
 oC_StringPredicateExpression
-                         :  ( ( SP STARTS SP WITH ) | ( SP ENDS SP WITH ) | ( SP CONTAINS ) ) SP? oC_AddOrSubtractExpression ;
+                         :  ( ( SP STARTS SP WITH ) | ( SP ENDS SP WITH ) | ( SP CONTAINS ) | ( SP? REGEX_MATCH ) ) SP? oC_AddOrSubtractExpression ;
+
+REGEX_MATCH : '=~' ;
 
 STARTS : ( 'S' | 's' ) ( 'T' | 't' ) ( 'A' | 'a' ) ( 'R' | 'r' ) ( 'T' | 't' ) ( 'S' | 's' ) ;
 

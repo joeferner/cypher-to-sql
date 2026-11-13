@@ -42,4 +42,6 @@ Every engine's values become one text form ([values.ts](values.ts)): integers an
 
 The corpus marks these with `known`:
 
-- `EXISTS { MATCH ... }` without `RETURN`, map projections (`n {.name}`), and `=~` are outside the openCypher 9 grammar, so they fail to parse here.
+- `EXISTS { MATCH ... }` without `RETURN` and map projections (`n {.name}`) are outside the openCypher 9 grammar, so they fail to parse here.
+
+Two results where only ArcadeDB differs: it returns `false` for an invalid regular expression (Neo4j and this library raise an error) and for `=~` on a value that is not a string (null in Neo4j and here).

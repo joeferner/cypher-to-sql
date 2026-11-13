@@ -647,7 +647,8 @@ export class ExprCompiler {
       case 'STARTS WITH':
       case 'ENDS WITH':
       case 'CONTAINS':
-        return this.stringPredicate(expr.operator, left, right);
+      case '=~':
+        return this.stringPredicate(expr.operator, left, right, expr.position);
       case 'IN':
         return this.inList(left, right, expr);
       default:
@@ -881,14 +882,30 @@ export class ExprCompiler {
     );
   }
 
-  private stringPredicate(op: ast.StringOperator, left: Expr, right: Expr): Expr {
+  private stringPredicate(
+    op: ast.StringOperator,
+    left: Expr,
+    right: Expr,
+    position: SourcePosition,
+  ): Expr {
     const d = this.b.dialect;
+    const regexMatch = d.regexMatch;
+    if (op === '=~' && !regexMatch) {
+      throw new UnsupportedFeatureError(`=~ is not supported on ${d.name} without its functions`, {
+        position,
+        hint:
+          'Register them with registerSqliteFunctions(db) and use sqlite({ functions: true }), ' +
+          'or use STARTS WITH, ENDS WITH, or CONTAINS.',
+      });
+    }
     const apply = (s: string, p: string): string =>
       op === 'STARTS WITH'
         ? d.startsWith(s, p)
         : op === 'ENDS WITH'
           ? d.endsWith(s, p)
-          : d.contains(s, p);
+          : op === '=~'
+            ? regexMatch!(s, p)
+            : d.contains(s, p);
     if (left.type === 'string' && right.type === 'string') {
       return boolean(this.share([left, right], ([l, r]) => apply(l!.sql, r!.sql)));
     }

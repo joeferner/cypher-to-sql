@@ -20,7 +20,8 @@ export interface SqliteOptions {
    * Use the functions that `registerSqliteFunctions` adds to the connection
    * (default false). Without them, `toUpper` and `toLower` change ASCII
    * letters only, because SQLite's `upper()` and `lower()` do (unless the ICU
-   * extension is loaded); with them, they follow Unicode, as in Cypher.
+   * extension is loaded); with them, they follow Unicode, as in Cypher. `=~`
+   * needs them too.
    */
   functions?: boolean;
 }
@@ -30,7 +31,7 @@ export interface SqliteFunctionHost {
   function(
     name: string,
     options: { deterministic: boolean },
-    fn: (value: unknown) => unknown,
+    fn: (...args: unknown[]) => unknown,
   ): unknown;
 }
 
@@ -43,6 +44,46 @@ export function registerSqliteFunctions(db: SqliteFunctionHost): void {
   const options = { deterministic: true };
   db.function('cypher_upper', options, (s) => (typeof s === 'string' ? s.toUpperCase() : s));
   db.function('cypher_lower', options, (s) => (typeof s === 'string' ? s.toLowerCase() : s));
+  db.function('cypher_regex', options, (s, p) =>
+    typeof s === 'string' && typeof p === 'string' ? Number(javaRegex(p).test(s)) : null,
+  );
+}
+
+const regexCache = new Map<string, RegExp>();
+
+/**
+ * A JavaScript RegExp for a Java regular expression (Cypher's syntax) that
+ * must match a whole string. Java's leading embedded flags `(?ims)` become
+ * RegExp flags. The lookarounds anchor at the ends of the string whatever the
+ * flags (JavaScript has no `\A` or `\z`). The `u` flag makes `.` match a code
+ * point, as in Java; a pattern that `u` rejects (such as `\-` outside a
+ * class, which Java allows) is compiled without it. Other Java syntax that
+ * JavaScript lacks (possessive quantifiers, atomic groups, `\Q...\E`, flags
+ * inside the pattern) is an invalid regular expression.
+ */
+function javaRegex(pattern: string): RegExp {
+  const cached = regexCache.get(pattern);
+  if (cached) {
+    return cached;
+  }
+  const leading = /^\(\?([a-zA-Z]*)\)/.exec(pattern);
+  const javaFlags = leading?.[1] ?? '';
+  if (/[^imsud]/.test(javaFlags)) {
+    throw new SyntaxError(`Invalid regular expression: flags (?${javaFlags}) are not supported`);
+  }
+  const flags = [...'ims'].filter((f) => javaFlags.includes(f)).join('');
+  const source = `(?<![\\s\\S])(?:${pattern.slice(leading?.[0].length ?? 0)})(?![\\s\\S])`;
+  let regex: RegExp;
+  try {
+    regex = new RegExp(source, `${flags}u`);
+  } catch {
+    regex = new RegExp(source, flags);
+  }
+  if (regexCache.size >= 256) {
+    regexCache.clear();
+  }
+  regexCache.set(pattern, regex);
+  return regex;
 }
 
 /**
@@ -104,6 +145,9 @@ export function sqlite(options: SqliteOptions = {}): Dialect {
       `(CASE WHEN ${string} IS NULL OR ${suffix} IS NULL THEN NULL ` +
       `WHEN length(${suffix}) = 0 THEN 1 ELSE substr(${string}, -length(${suffix})) = ${suffix} END)`,
     contains: (string, part) => `(instr(${string}, ${part}) > 0)`,
+    regexMatch: options.functions
+      ? (string, pattern): string => `cypher_regex(${string}, ${pattern})`
+      : undefined,
     power: (base, exponent) => `pow(${base}, ${exponent})`,
     // ORDER BY inside an aggregate needs SQLite 3.44 or newer.
     jsonAggregate: (value, { distinct, orderBy, filter }) =>

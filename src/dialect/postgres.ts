@@ -51,6 +51,32 @@ function floatToString(value: string): string {
   );
 }
 
+/**
+ * `string =~ pattern` with PostgreSQL's advanced regular expressions (ARE),
+ * which share most of Java's syntax. The pattern must match the whole string,
+ * so it is wrapped in `\A(?: ... )\Z`. Java's leading embedded flags `(?imsx)`
+ * become ARE's, which must come first: `i` and `x` are the same; without `s`,
+ * Java's `.` does not match a newline (ARE `p`), and `m` makes `^` and `$`
+ * match at lines (ARE `n`, or `w` with `s`). Other Java syntax that ARE lacks
+ * (flags inside the pattern, possessive quantifiers, `\Q...\E`) is an invalid
+ * regular expression.
+ */
+function regexMatch(string: string, pattern: string): string {
+  const has = (flag: string): string => `position('${flag}' in f) > 0`;
+  const flags =
+    `(CASE WHEN ${has('i')} THEN 'i' ELSE '' END) || (CASE WHEN ${has('x')} THEN 'x' ELSE '' END) || ` +
+    `(CASE WHEN ${has('m')} THEN (CASE WHEN ${has('s')} THEN 'w' ELSE 'n' END) ` +
+    `ELSE (CASE WHEN ${has('s')} THEN 's' ELSE 'p' END) END)`;
+  const leading = `'^\\(\\?[a-zA-Z]*\\)'`;
+  const body = `(CASE WHEN p ~ ${leading} THEN substr(p, length(f) + 4) ELSE p END)`;
+  return (
+    `(SELECT CASE WHEN s IS NULL OR p IS NULL THEN NULL ` +
+    `ELSE s ~ ('(?' || ${flags} || ')\\A(?:' || ${body} || ')\\Z') END ` +
+    `FROM (SELECT s, p, coalesce(substring(p from '^\\(\\?([a-zA-Z]*)\\)'), '') AS f ` +
+    `FROM (SELECT (${string})::text AS s, (${pattern})::text AS p) AS ra) AS rb)`
+  );
+}
+
 /** An entity's tagged object: its properties with the reserved keys added. */
 function entityObject(kind: 'node' | 'relationship', alias: string, table: EntityColumns): string {
   const fields = entityFields(kind, alias, table, (c) => c);
@@ -146,6 +172,7 @@ export function postgres(): Dialect {
     startsWith: (string, prefix) => `starts_with(${string}, ${prefix})`,
     endsWith: (string, suffix) => `(right(${string}, length(${suffix})) = ${suffix})`,
     contains: (string, part) => `(strpos(${string}, ${part}) > 0)`,
+    regexMatch,
     power: (base, exponent) =>
       `power((${base})::double precision, (${exponent})::double precision)`,
     jsonAggregate: (value, { distinct, orderBy, filter }) =>

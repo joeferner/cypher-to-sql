@@ -45,6 +45,18 @@ for (const backend of testBackends()) {
       expect(await v("toLower('AÜ')")).toBe(backend.name === 'sqlite' ? 'aÜ' : 'aü');
     });
 
+    it('rejects =~ on SQLite without registerSqliteFunctions', async () => {
+      // examples.test.ts covers =~ itself.
+      if (backend.name === 'sqlite') {
+        await expect(v("a.name =~ 'A.*'")).rejects.toThrow(UnsupportedFeatureError);
+        await expect(v("a.name =~ 'A.*'")).rejects.toMatchObject({
+          hint: expect.stringMatching(/registerSqliteFunctions/) as unknown,
+        });
+      } else {
+        expect(await v("a.name =~ ' A.*'")).toBe(true);
+      }
+    });
+
     it('converts between types', async () => {
       expect(await v('toString(a.n)')).toBe('7');
       expect(await v('toString(a.f)')).toBe('2.5');

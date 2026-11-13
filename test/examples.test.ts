@@ -8,6 +8,7 @@ import pg from 'pg';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   createGraph,
+  CypherArgumentError,
   CypherTypeError,
   postgres,
   registerSqliteFunctions,
@@ -121,6 +122,36 @@ for (const example of examples) {
           { s: 'ça' },
         ),
       ).toEqual([{ u: 'ÄÖÜ É Ω', l: 'äöü é ω', p: 'ÇA', n: null }]);
+    });
+
+    it('matches regular expressions (SQLite: with registerSqliteFunctions)', async () => {
+      const { executor } = await opened;
+      const read = createGraph({ dialect: example.dialect, executor });
+      const [row] = await read.query(
+        `RETURN 'abc' =~ 'a.*' AS whole, 'abc' =~ 'b' AS part, 'ab' =~ 'a|ab' AS alt,
+                'ABC' =~ '(?i)abc' AS i, 'a\\nb' =~ 'a.b' AS dot, 'a\\nb' =~ '(?s)a.b' AS s,
+                'a\\nb' =~ '(?m)a$.b' AS m, 'a1' =~ '\\\\w\\\\d' AS classes, 'ü😀' =~ '..' AS unicode,
+                $x =~ 'a' AS notString, 'a' =~ $p AS param, null =~ 'a' AS nil`,
+        { x: 1n, p: '[a-c]' },
+      );
+      expect(row).toEqual({
+        whole: true,
+        part: false,
+        alt: true,
+        i: true,
+        dot: false,
+        s: true,
+        m: false,
+        classes: true,
+        unicode: true,
+        notString: null,
+        param: true,
+        nil: null,
+      });
+      await expect(read.query("RETURN 'a' =~ '(' AS r")).rejects.toMatchObject({
+        constructor: CypherArgumentError,
+        code: 'InvalidRegex',
+      });
     });
 
     it('runs concurrent queries one transaction at a time', async () => {

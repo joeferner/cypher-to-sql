@@ -226,7 +226,8 @@ export interface FunctionCall extends Node {
 export type BooleanOperator = 'OR' | 'XOR' | 'AND';
 export type ComparisonOperator = '=' | '<>' | '<' | '<=' | '>' | '>=';
 export type ArithmeticOperator = '+' | '-' | '*' | '/' | '%' | '^';
-export type StringOperator = 'STARTS WITH' | 'ENDS WITH' | 'CONTAINS';
+/** `=~` is a regular expression that must match the whole string (an extension to openCypher 9). */
+export type StringOperator = 'STARTS WITH' | 'ENDS WITH' | 'CONTAINS' | '=~';
 
 /**
  * A binary operator. A comparison chain `a < b < c` is parsed as
