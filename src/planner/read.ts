@@ -869,11 +869,13 @@ export class ReadScope {
       });
     }
     const e = this.expressions;
-    return properties.entries.map(({ key, value }) =>
+    return properties.entries.map(({ key, value }) => {
+      const condition = e.comparison('=', e.member(entity, key), e.compile(value));
       // Inline properties usually pick out few rows; telling the database lets it
-      // start a pattern there even when no index serves the comparison.
-      this.b.dialect.selective(e.comparison('=', e.member(entity, key), e.compile(value)).sql),
-    );
+      // start a pattern there even when no index serves the comparison. An
+      // indexable comparison stays unwrapped, so that the index is used.
+      return condition.indexable ? condition.sql : this.b.dialect.selective(condition.sql);
+    });
   }
 
   private addUnwind(unwind: ast.UnwindClause): void {

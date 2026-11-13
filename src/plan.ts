@@ -67,7 +67,29 @@ export type BindValue =
   /** The paths found by shortest path search `search`, as JSON (see Dialect.boundPaths). */
   | { kind: 'shortestPaths'; search: number }
   /** The rows a write query wrote, as a JSON array of objects (see `PlanStep.written`). */
-  | { kind: 'writtenRows' };
+  | { kind: 'writtenRows' }
+  /**
+   * A query parameter compared with a declared property (`n.age > $min`), as a
+   * value of the property's type, so that the comparison is plain SQL that an
+   * index can serve: the value, null when it has another type, and an integer
+   * bound for a float compared with an integer property (`> 30.5` is `> 30`).
+   * `op` is the comparison with the property on the left.
+   */
+  | ParameterComparison
+  /**
+   * Whether that parameter can be compared with the property: 1 when its type
+   * fits, 0 when not (an `=` that is false), null when it is null or the
+   * comparison is null (ordering values of different types).
+   */
+  | (Omit<ParameterComparison, 'kind'> & { kind: 'parameterFits' });
+
+export interface ParameterComparison {
+  kind: 'parameterAs';
+  name: string;
+  position: SourcePosition;
+  type: 'string' | 'integer' | 'float';
+  op: '=' | '<' | '<=' | '>' | '>=';
+}
 
 /** Where the value of a variable in a written row comes from. */
 export type WrittenValue =
@@ -494,7 +516,56 @@ function resolveBind(
         throw new Error('Internal error: written rows are bound before the writes ran');
       }
       return state.written;
+    case 'parameterAs':
+    case 'parameterFits': {
+      const value = resolveValue(
+        { kind: 'parameter', name: bind.name, position: bind.position },
+        options.params,
+        row,
+      );
+      const compared = compareParameter(value, bind);
+      return bind.kind === 'parameterAs' ? compared.value : compared.fits;
+    }
   }
+}
+
+/**
+ * A parameter as a value of a declared property's type (see `parameterAs`),
+ * and whether it fits (see `parameterFits`).
+ */
+function compareParameter(
+  value: CypherValue,
+  { type, op }: Omit<ParameterComparison, 'kind' | 'name' | 'position'>,
+): { value: string | number | bigint | null; fits: number | null } {
+  if (value === null) {
+    return { value: null, fits: null };
+  }
+  /** A value of another type: `=` is false, an ordering is null. */
+  const mismatch = { value: null, fits: op === '=' ? 0 : null };
+  if (type === 'string') {
+    return typeof value === 'string' ? { value, fits: 1 } : mismatch;
+  }
+  if (typeof value === 'bigint') {
+    return { value: type === 'float' ? Number(value) : value, fits: 1 };
+  }
+  if (typeof value !== 'number') {
+    return mismatch;
+  }
+  if (type === 'float') {
+    return { value, fits: 1 };
+  }
+  // A float against an integer property.
+  if (Number.isInteger(value)) {
+    return { value: BigInt(value), fits: 1 };
+  }
+  if (!Number.isFinite(value) || op === '=') {
+    // No integer equals a fraction. Infinity and NaN have no integer bound, so
+    // an ordering with them gives null (Cypher gives true or false).
+    return { value: null, fits: op === '=' ? 0 : null };
+  }
+  // `age > 30.5` is `age > 30`; `age < 30.5` is `age < 31`.
+  const bound = op === '<' || op === '>=' ? Math.ceil(value) : Math.floor(value);
+  return { value: BigInt(bound), fits: 1 };
 }
 
 function resolvePathDepth(bind: PathDepthBind, limits: Limits): number {
@@ -722,6 +793,10 @@ function describeBind(bind: BindValue): string {
       return `shortestPaths(search ${bind.search + 1})`;
     case 'writtenRows':
       return 'writtenRows';
+    case 'parameterAs':
+      return `$${bind.name} as ${bind.type}`;
+    case 'parameterFits':
+      return `$${bind.name} fits ${bind.type}`;
   }
 }
 

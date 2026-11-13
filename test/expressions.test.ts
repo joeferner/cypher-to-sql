@@ -6,6 +6,7 @@ import {
   type CypherValue,
   type Graph,
   type GraphMapping,
+  type SqlExecutor,
 } from '../src/index.js';
 import { testBackends } from './support/backends.js';
 
@@ -17,9 +18,12 @@ const mapping: GraphMapping = {
 for (const backend of testBackends()) {
   describe(`expressions on ${backend.name}`, () => {
     let graph: Graph;
+    let executor: SqlExecutor;
 
     beforeAll(async () => {
-      const { dialect, executor } = await backend.open();
+      const opened = await backend.open();
+      const dialect = opened.dialect;
+      executor = opened.executor;
       graph = createGraph({ dialect, executor, mapping });
       await createGraph({ dialect, executor, mapping, readOnly: false }).query(
         `CREATE (:P {name: 'Ada', age: 36, score: 1.5, tags: ['a', 'b'], nick: 'a%_'}),
@@ -141,6 +145,64 @@ for (const backend of testBackends()) {
     it('reads declared properties as typed SQL values', () => {
       const sql = graph.compile('MATCH (n) WHERE n.age > 30 RETURN n.age').steps[0]!.sql;
       expect(sql).toMatch(backend.name === 'postgres' ? /->> 'age'\)::bigint/ : /->> '\$\."age"'/);
+    });
+
+    it('compares declared properties with parameters of any type, as Cypher does', async () => {
+      const ages = async (cond: string, x: CypherValue): Promise<string[]> => names(cond, { x });
+      expect(await ages('n.age > $x', 30n)).toEqual(['Ada']);
+      expect(await ages('n.age >= $x', 36n)).toEqual(['Ada']);
+      expect(await ages('$x < n.age', 30n)).toEqual(['Ada']);
+      expect(await ages('$x >= n.age', 7n)).toEqual(['bob']);
+      // A float against an integer property: by value.
+      expect(await ages('n.age > $x', 35.5)).toEqual(['Ada']);
+      expect(await ages('n.age < $x', 7.5)).toEqual(['bob']);
+      expect(await ages('n.age <= $x', 6.9)).toEqual([]);
+      expect(await ages('n.age = $x', 36.0)).toEqual(['Ada']);
+      expect(await ages('n.age = $x', 36.5)).toEqual([]);
+      // Another type: never equal, and not ordered.
+      expect(await ages('n.age = $x', '36')).toEqual([]);
+      expect(await ages('NOT n.age = $x', '36')).toEqual(['Ada', 'bob']);
+      expect(await ages('n.age < $x', 'z')).toEqual([]);
+      expect(await ages('n.name = $x', 'bob')).toEqual(['bob']);
+      expect(await ages('n.name = $x', null)).toEqual([]);
+      const values = await graph.query(
+        `MATCH (n) RETURN n.name AS name, n.age = $s AS eq, n.age < $s AS lt, n.age = $i AS i
+         ORDER BY name`,
+        { s: 'x', i: 7n },
+      );
+      expect(values).toEqual([
+        { name: 'Ada', eq: false, lt: null, i: false },
+        { name: 'Cy', eq: null, lt: null, i: null },
+        { name: 'bob', eq: false, lt: null, i: true },
+      ]);
+    });
+
+    it('lets an index serve a declared property compared with a parameter', async () => {
+      const plan = graph.compile('MATCH (n:P {name: $x}) RETURN n.age').steps[0]!;
+      if (backend.name !== 'sqlite') {
+        // A plain comparison, the shape an expression index on `properties ->> 'name'` serves.
+        expect(plan.sql).toMatch(/\(n0\."properties" ->> 'name'\) = \(\$\d+::text\)\) AND/);
+        return;
+      }
+      const used = await executor.transaction('write', async (tx) => {
+        await tx.query(
+          `CREATE INDEX IF NOT EXISTS nodes_name ON nodes (properties ->> '$."name"')`,
+          [],
+        );
+        const values = plan.values.map((v) =>
+          v.kind === 'sql'
+            ? v.value
+            : v.kind === 'parameterAs'
+              ? 'Ada'
+              : v.kind === 'parameterFits'
+                ? 1
+                : 10,
+        );
+        const rows = await tx.query(`EXPLAIN QUERY PLAN ${plan.sql}`, values);
+        await tx.query('DROP INDEX nodes_name', []);
+        return rows.map((r) => String(r['detail'])).join('\n');
+      });
+      expect(used).toMatch(/USING INDEX nodes_name/);
     });
 
     it('evaluates simple CASE with Cypher equality', async () => {

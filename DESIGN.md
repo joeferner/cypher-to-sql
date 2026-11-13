@@ -83,6 +83,8 @@ Rules:
 
   Undeclared properties are JSON values whose type is checked at run time (see "Expressions"); they cannot use these indexes.
 
+- **Parameters:** a parameter's type is known only when the plan runs, so a comparison with a declared property (`n.age > $min`, `(n {name: $name})`) would need a type check in SQL, which no index can serve. Instead it compiles to `typed op ?value AND (?fits = 1 OR (typed IS NULL AND NULL))`, and the plan runner binds `?value` as the parameter converted to the property's type and `?fits` as whether its type fits (`parameterAs`, `parameterFits`). The first conjunct is plain and indexable; the second keeps Cypher's result for a parameter of another type (false for `=`, null when the property is null or for an ordering). A float compared with an integer property becomes the integer bound with the same result (`> 30.5` is `> 30`; `= 30.5` never matches). SQLite's `likelihood` hint (#36) is left off such comparisons, so that SQLite still sees the indexable term.
+
 - Data written to the tables by something other than this library is not checked. Add `CHECK` constraints if other writers exist, because a value of the wrong type makes the PostgreSQL cast fail.
 
 ## Expressions

@@ -25,6 +25,13 @@ export interface Expr {
   atomic: boolean;
   /** For `json`: the value is known to be a list, a map, or a path (or null). */
   shape?: Shape | undefined;
+  /** For a query parameter (`$name`): its name and position. */
+  parameter?: { name: string; position: SourcePosition } | undefined;
+  /**
+   * For a boolean: a comparison an index can serve. `ReadScope` then leaves it
+   * unwrapped, so that the database sees it as one.
+   */
+  indexable?: boolean | undefined;
 }
 
 /**
@@ -208,7 +215,11 @@ export class ExprCompiler {
         const constant = constantValue(expr);
         if (constant) {
           const sql = b.dialect.jsonInput(b.bind({ kind: 'json', value: constant }));
-          return { sql, type: 'json', atomic: true, shape };
+          const parameter =
+            constant.kind === 'parameter'
+              ? { name: constant.name, position: constant.position }
+              : undefined;
+          return { sql, type: 'json', atomic: true, shape, parameter };
         }
         if (expr.type === 'List') {
           const sql = b.dialect.jsonArray(expr.items.map((item) => this.json(item)));
@@ -703,6 +714,16 @@ export class ExprCompiler {
       );
     }
 
+    const parameter = left.parameter ? left : right.parameter ? right : undefined;
+    const known = parameter === left ? right : left;
+    if (
+      parameter &&
+      op !== '<>' &&
+      (known.type === 'string' || known.type === 'integer' || known.type === 'float')
+    ) {
+      return this.compareParameter(op, known, parameter, parameter === left);
+    }
+
     if (left.type !== 'json' || right.type !== 'json') {
       // One side's type is known: check the other's at run time.
       const scalarSide = left.type === 'json' ? right : left;
@@ -748,6 +769,43 @@ export class ExprCompiler {
         );
       }),
     );
+  }
+
+  /**
+   * A native value (typically a declared property) compared with a query
+   * parameter, as plain SQL an index can serve:
+   *
+   *     known op ?value AND (?fits = 1 OR (known IS NULL AND NULL))
+   *
+   * The plan runner binds `?value` as the parameter converted to the known
+   * type, and `?fits` as whether its type fits (see `parameterAs` in plan.ts).
+   * The second conjunct keeps Cypher's result for a parameter of another type:
+   * false for `=` (null when `known` is null), null for an ordering.
+   */
+  private compareParameter(
+    op: Exclude<Comparison, '<>'>,
+    known: Expr,
+    parameter: Expr,
+    parameterOnLeft: boolean,
+  ): Expr {
+    const b = this.b;
+    const d = b.dialect;
+    const type = known.type as 'string' | 'integer' | 'float';
+    // With the parameter on the left, flip the operator: `$min < n.age` is `n.age > $min`.
+    const flipped = { '=': '=', '<': '>', '<=': '>=', '>': '<', '>=': '<=' } as const;
+    const columnOp = parameterOnLeft ? flipped[op] : op;
+    const { name, position } = parameter.parameter!;
+    const bind = { name, position, type, op: columnOp };
+    const value = d.typedPlaceholder(b.bind({ kind: 'parameterAs', ...bind }), type);
+    const fits = d.typedPlaceholder(b.bind({ kind: 'parameterFits', ...bind }), 'integer');
+    // A known value that is not atomic is computed once in a subquery, which no
+    // index can serve; an atomic one (a declared property) stays plain.
+    const sql = this.share([known], ([k]) => {
+      const comparison = this.compareSame(columnOp, k!.sql, value, typeClass(type));
+      const unknown = d.booleanLiteral(null);
+      return `(${comparison} AND (${fits} = 1 OR (${k!.sql} IS NULL AND ${unknown})))`;
+    });
+    return { ...boolean(sql), indexable: known.atomic };
   }
 
   /** Comparison of two non-null native values of the same class. */
