@@ -371,9 +371,12 @@ export class ExprCompiler {
     }
     const b = this.b;
     const labels = `${subject.sql}.${b.ident(b.mapping.nodes.labels)}`;
-    return boolean(
-      `(${expr.labels.map((l) => b.dialect.hasLabel(labels, b.bind({ kind: 'sql', value: l }))).join(' AND ')})`,
-    );
+    const checks = expr.labels
+      .map((l) => b.dialect.hasLabel(labels, b.bind({ kind: 'sql', value: l })))
+      .join(' AND ');
+    // A null node (from OPTIONAL MATCH) has no labels column: the answer is null.
+    const id = `${subject.sql}.${b.ident(b.mapping.nodes.id)}`;
+    return boolean(`(CASE WHEN ${id} IS NULL THEN NULL ELSE (${checks}) END)`);
   }
 
   private isNull(expr: ast.IsNullExpression): Expr {

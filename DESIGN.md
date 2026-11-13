@@ -131,6 +131,20 @@ SELECT ... FROM (SELECT <projected columns> FROM ... WHERE ...) AS w0
 - `WITH ... WHERE` filters the projected rows. When it uses a variable that WITH does not project (Cypher allows that), a stage without aggregation or DISTINCT applies it before projecting (each row projects to one row); with SKIP or LIMIT that is not supported yet. An expression equal to a projected one refers to the projected value.
 - After aggregation, ORDER BY may use only aggregates that are projected.
 
+### OPTIONAL MATCH
+
+The tables an OPTIONAL MATCH adds are grouped and left-joined, with all of its conditions (the pattern's, and its WHERE) in the ON clause:
+
+```sql
+FROM "nodes" AS n0 LEFT JOIN ("nodes" AS n1 CROSS JOIN "edges" AS e2)
+  ON e2."start_id" = n0."id" AND e2."end_id" = n1."id" AND <WHERE>
+```
+
+- The ON clause may refer to earlier tables, which both databases allow for a parenthesized join, so SQLite's missing `LATERAL` does not matter. A single table is not parenthesized (both databases reject that).
+- WHERE decides what matches: when it rejects every match, the row stays with the new variables null. The whole pattern matches or none of it does.
+- An OPTIONAL MATCH that comes first joins to `(SELECT 1)`, so it gives one row of nulls when nothing matches. One whose variables are all bound already adds nothing.
+- Null entities propagate: properties, `labels()`, `type()`, and label predicates are null, `IS NULL` is true, aggregates skip them, WITH carries them (entities are joined back with a LEFT JOIN), and a later MATCH from a null node matches nothing.
+
 ### Functions
 
 `src/planner/functions.ts` compiles function calls (names are case-insensitive). Arguments of a known wrong type are a `SemanticError` at compile time; JSON arguments of the wrong type give null at run time (#30); a null argument gives null.
@@ -184,7 +198,7 @@ The defaults are starting values, not measured ones (#16).
 | Variable length `[*1..n]`                                   | Recursive CTE with visited-id arrays and a required upper bound, or iterative steps                                             |
 | `shortestPath` / `allShortestPaths`                         | Iterative breadth-first search steps, or a recursive CTE stopped at the first depth that reaches the target                     |
 | `nodes(p)`, `relationships(p)`, `length(p)`                 | Path id arrays, hydrated by the assembler                                                                                       |
-| `OPTIONAL MATCH`                                            | PostgreSQL: `LEFT JOIN LATERAL`. SQLite: `LEFT JOIN` with correlated conditions, or a separate step.                            |
+| `OPTIONAL MATCH`                                            | `LEFT JOIN (<new tables>) ON <pattern conditions and WHERE>` on both dialects (see "OPTIONAL MATCH")                            |
 | `WITH`                                                      | A derived table per stage (see "WITH stages"); a separate step for large stages later (#14)                                     |
 | `UNWIND`                                                    | A FROM item over the list: SQLite `json_each`, PostgreSQL `jsonb_array_elements ... WITH ORDINALITY`. Ordered by list position. |
 | Pattern predicates, `EXISTS { }`                            | `EXISTS (SELECT ...)`                                                                                                           |

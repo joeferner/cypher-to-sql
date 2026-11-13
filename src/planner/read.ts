@@ -74,8 +74,20 @@ export class ReadScope {
   public ordered = false;
   public readonly expressions: ExprCompiler;
 
+  private aliasCount = 0;
+
   public constructor(public readonly b: SqlBuilder) {
     this.expressions = new ExprCompiler(b, (variable) => this.lookup(variable));
+  }
+
+  /** A new table alias, unique in this scope. */
+  private alias(prefix: string): string {
+    return `${prefix}${this.aliasCount++}`;
+  }
+
+  /** Adds a FROM item, cross-joined to the ones before it. */
+  private addFrom(item: string): void {
+    this.from.push(this.from.length === 0 ? item : `CROSS JOIN ${item}`);
   }
 
   /**
@@ -106,8 +118,8 @@ export class ReadScope {
     }
     const stage = planProjection(this.b, this, w, 'with');
     const next = new ReadScope(this.b);
-    const alias = 'w0';
-    next.from.push(`(${stage.sql}) AS ${alias}`);
+    const alias = next.alias('w');
+    next.addFrom(`(${stage.sql}) AS ${alias}`);
     if (stage.ordered) {
       next.order.push(`${alias}.o`);
       next.ordered = true;
@@ -122,12 +134,13 @@ export class ReadScope {
         continue;
       }
       // An entity is carried as its id and joined back to its table, so that
-      // everything that works on entities works on it.
+      // everything that works on entities works on it. A LEFT JOIN keeps rows
+      // where it is null (from OPTIONAL MATCH).
       const table = output.kind === 'node' ? 'nodes' : 'edges';
-      const entity = `${output.kind === 'node' ? 'n' : 'e'}${next.from.length}`;
-      next.from.push(`${this.b.table(table)} AS ${entity}`);
-      next.where.push(
-        `${entity}.${this.b.ident(this.b.mapping[table].id)} = ${alias}.${output.column}`,
+      const entity = next.alias(output.kind === 'node' ? 'n' : 'e');
+      next.from.push(
+        `LEFT JOIN ${this.b.table(table)} AS ${entity} ` +
+          `ON ${entity}.${this.b.ident(this.b.mapping[table].id)} = ${alias}.${output.column}`,
       );
       next.bindings.set(output.name, { kind: output.kind, alias: entity });
     }
@@ -183,11 +196,8 @@ export class ReadScope {
 
   private addMatch(match: ast.MatchClause): void {
     const b = this.b;
-    if (match.optional) {
-      throw new UnsupportedFeatureError('OPTIONAL MATCH is not supported yet', {
-        position: match.position,
-      });
-    }
+    const fromStart = this.from.length;
+    const whereStart = this.where.length;
     /** Edge aliases of this clause's relationships, for relationship uniqueness. */
     const relationships: string[] = [];
     /** Relationship variables bound by this clause. */
@@ -216,6 +226,37 @@ export class ReadScope {
     if (match.where) {
       this.where.push(this.expressions.condition(match.where));
     }
+    if (match.optional) {
+      this.makeOptional(fromStart, whereStart);
+    }
+  }
+
+  /**
+   * Turns the tables and conditions added since the given positions into
+   *
+   *     LEFT JOIN (<tables>) ON <conditions>
+   *
+   * so that a row without a match is kept, with the new variables null. The
+   * conditions (the pattern's and the OPTIONAL MATCH's WHERE) decide what
+   * matches; they may refer to earlier tables.
+   */
+  private makeOptional(fromStart: number, whereStart: number): void {
+    const tables = this.from.splice(fromStart).map((item) => item.replace(/^CROSS JOIN /, ''));
+    const conditions = this.where.splice(whereStart);
+    if (tables.length === 0) {
+      // Every variable was bound already: the match adds nothing, and the row is
+      // kept either way.
+      return;
+    }
+    if (this.from.length === 0) {
+      // A first OPTIONAL MATCH still gives one row (of nulls) when nothing matches.
+      this.from.push(`(SELECT 1 AS one) AS ${this.alias('one')}`);
+    }
+    const on =
+      conditions.length > 0 ? conditions.join(' AND ') : this.b.dialect.booleanLiteral(true);
+    // Both databases reject a single table in parentheses.
+    const joined = tables.length === 1 ? tables[0]! : `(${tables.join(' CROSS JOIN ')})`;
+    this.from.push(`LEFT JOIN ${joined} ON ${on}`);
   }
 
   /** Binds or reuses the node of a node pattern, adds its filters, and returns its alias. */
@@ -231,8 +272,8 @@ export class ReadScope {
       }
       alias = existing.alias;
     } else {
-      alias = `n${this.from.length}`;
-      this.from.push(`${b.table('nodes')} AS ${alias}`);
+      alias = this.alias('n');
+      this.addFrom(`${b.table('nodes')} AS ${alias}`);
       this.order.push(`${alias}.${b.ident(b.mapping.nodes.id)}`);
       if (node.variable !== undefined) {
         this.bindings.set(node.variable, { kind: 'node', alias });
@@ -284,8 +325,8 @@ export class ReadScope {
       // A relationship bound by an earlier clause: constrain it again.
       alias = existing.alias;
     } else {
-      alias = `e${this.from.length}`;
-      this.from.push(`${b.table('edges')} AS ${alias}`);
+      alias = this.alias('e');
+      this.addFrom(`${b.table('edges')} AS ${alias}`);
       this.order.push(`${alias}.${b.ident(edges.id)}`);
       if (rel.variable !== undefined) {
         this.bindings.set(rel.variable, { kind: 'relationship', alias });
@@ -351,9 +392,9 @@ export class ReadScope {
       });
     }
     const list = this.value(unwind.expression);
-    const alias = `u${this.from.length}`;
+    const alias = this.alias('u');
     const u = this.b.dialect.unwind(list, alias);
-    this.from.push(u.from);
+    this.addFrom(u.from);
     if (u.where) {
       this.where.push(u.where);
     }
@@ -371,7 +412,7 @@ export class ReadScope {
   public selectBase(columns: string[], distinct = false, groupBy?: string[]): string {
     let sql = `SELECT ${distinct ? 'DISTINCT ' : ''}${columns.join(', ')}`;
     if (this.from.length > 0) {
-      sql += ` FROM ${this.from.join(' CROSS JOIN ')}`;
+      sql += ` FROM ${this.from.join(' ')}`;
     }
     if (this.where.length > 0) {
       sql += ` WHERE ${this.where.join(' AND ')}`;
