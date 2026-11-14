@@ -137,11 +137,38 @@ export class WritePlanner {
         return undefined;
       }
       const binding = reading.scope.lookup({ name, position });
-      if (binding.kind !== 'node') {
+      const b = reading.scope.b;
+      let column: string;
+      const known =
+        binding.kind === 'value' || binding.kind === 'column'
+          ? reading.scope.expressions.compile({ type: 'Variable', position, name }).type
+          : undefined;
+      if (known === 'json') {
+        // A node held as a value (`WITH list[0] AS n`): its id, from its JSON,
+        // checked when the query runs.
+        const d = b.dialect;
+        const json = reading.scope.value({ type: 'Variable', position, name });
+        const table = b.mapping.nodes;
+        const id = d.jsonId(
+          d.jsonMember(json, b.bind({ kind: 'sql', value: '~id' }), '~id'),
+          b.table('nodes'),
+          table.id,
+        );
+        // Ids are 64-bit integers (see docs/schema.md), so the error has that type.
+        const notNode = b.typeError(
+          `Type mismatch: \`${name}\` must be a node to be used in a pattern`,
+          position,
+          'integer',
+        );
+        column = reading.column(
+          `(CASE WHEN ${d.jsonIsNull(json)} THEN NULL WHEN ${d.jsonType(json)} = 'node' ` +
+            `THEN ${id} ELSE ${notNode} END)`,
+        );
+      } else if (binding.kind === 'node') {
+        column = reading.column(`${binding.alias}.${b.ident(b.mapping.nodes.id)}`);
+      } else {
         throw new SemanticError(`Variable \`${name}\` is not a node`, { position });
       }
-      const b = reading.scope.b;
-      const column = reading.column(`${binding.alias}.${b.ident(b.mapping.nodes.id)}`);
       const bound = { kind: 'node' as const, id: { kind: 'rowId' as const, column } };
       variables.set(name, bound);
       return bound;

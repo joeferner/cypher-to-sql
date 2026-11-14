@@ -1,5 +1,5 @@
 import type * as ast from '../ast.js';
-import { ENTITY_TAG } from '../dialect/dialect.js';
+import { ENTITY_TAG, type EntityColumns } from '../dialect/dialect.js';
 import { SemanticError, UnsupportedFeatureError } from '../errors.js';
 import type { BindValue, ColumnSpec, PlanStep, ValueSource } from '../plan.js';
 import { containsAggregate, isAggregateCall } from './aggregates.js';
@@ -1149,7 +1149,9 @@ export class ReadScope {
 
   /** `SELECT [DISTINCT] columns FROM ... WHERE ... [GROUP BY ...]` over this scope. */
   public selectBase(columns: string[], distinct = false, groupBy?: string[]): string {
-    let sql = `SELECT ${distinct ? 'DISTINCT ' : ''}${columns.join(', ')}`;
+    // `WITH *` with nothing in scope projects no columns, but keeps the rows.
+    const list = columns.length > 0 ? columns.join(', ') : '1 AS empty_row';
+    let sql = `SELECT ${distinct ? 'DISTINCT ' : ''}${list}`;
     if (this.from.length > 0) {
       sql += ` FROM ${this.fromClause()}`;
     }
@@ -1270,7 +1272,8 @@ function planProjection(
   const clause = mode === 'return' ? 'RETURN' : 'WITH';
   const items: ast.ProjectionItem[] = [...proj.items];
   if (proj.star) {
-    if (scope.variables.length === 0) {
+    // `WITH *` with nothing in scope keeps the rows (`MATCH () CREATE () WITH * ...`).
+    if (scope.variables.length === 0 && mode === 'return') {
       throw new SemanticError(`${clause} * is not allowed when there are no variables in scope`, {
         position: proj.position,
       });
@@ -1577,9 +1580,20 @@ function planAggregation(
         item,
         entityColumns(b, binding.kind, (n) => fieldRef(b, binding.kind, n, i)),
       );
-      // Used next to aggregates (for example in ORDER BY), an entity key sorts and compares by id.
-      column(`g${i}_id`, { sql: '', type: 'integer', atomic: true });
-      outer.set(keyName(i), outer.get(`g${i}_id`)!);
+      // Used next to aggregates (`[a] + collect(x)`, ORDER BY a), an entity key is the
+      // entity's JSON, rebuilt from its key columns.
+      const keyColumns: EntityColumns = {
+        ...(Object.fromEntries(fields.map(([field]) => [field, `g${i}_${field}`])) as Omit<
+          EntityColumns,
+          'table'
+        >),
+        table: b.columns(binding.kind === 'node' ? 'nodes' : 'edges').table,
+      };
+      const json = b.dialect.entityJson(binding.kind, 'g', keyColumns);
+      outer.set(keyName(i), {
+        kind: 'column',
+        expr: { sql: json, type: 'json', atomic: false },
+      });
       return;
     }
     if (binding?.kind === 'relationships') {

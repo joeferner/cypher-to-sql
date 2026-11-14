@@ -149,6 +149,15 @@ for (const backend of testBackends()) {
       );
     });
 
+    it('keeps an entity grouping key an entity next to an aggregate in WITH', async () => {
+      const [row] = (await rows(
+        "MATCH (n:P {team: 'b', age: 20}) WITH n, [n] + collect(n.age) AS l RETURN l",
+      )) as { l: unknown[] }[];
+      expect(row!.l).toHaveLength(2);
+      expect(row!.l[0]).toMatchObject({ labels: ['P'], properties: { team: 'b', age: 20n } });
+      expect(row!.l[1]).toBe(20n);
+    });
+
     it('rejects aggregates in the wrong places', () => {
       const compile = (q: string): unknown => graph.compile(q);
       expect(() => compile('MATCH (n) WHERE count(*) > 1 RETURN n')).toThrow(SemanticError);

@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   createGraph,
+  CypherTypeError,
   LimitExceededError,
   ReadOnlyViolationError,
   SemanticError,
@@ -137,7 +138,11 @@ for (const backend of testBackends()) {
       it('rejects invalid uses of bound variables', async () => {
         const { write } = await setup();
         expect(() => write.compile('MATCH (a) CREATE (a)')).toThrow(SemanticError);
-        expect(() => write.compile('UNWIND [1] AS x CREATE (x)-[:R]->()')).toThrow(SemanticError);
+        // A value may hold a node (`WITH list[0] AS n`), so its type is checked when the query runs.
+        await expect(write.query('UNWIND [1] AS x CREATE (x)-[:R]->()')).rejects.toThrow(
+          CypherTypeError,
+        );
+        expect(() => write.compile("WITH 'a' AS x CREATE (x)-[:R]->()")).toThrow(SemanticError);
         expect(() => write.compile('MATCH (a) CREATE (a:Label)-[:R]->()')).toThrow(SemanticError);
         expect(() => write.compile('MATCH (a) CREATE ({v: b.v})')).toThrow(SemanticError);
       });
@@ -231,8 +236,28 @@ for (const backend of testBackends()) {
         expect(write.compile('CREATE (a) RETURN a').explain()).toContain(
           '(after the writes, over the written rows: a)',
         );
-        expect(() => write.compile('CREATE (a) WITH a CREATE (b) RETURN b')).toThrow(
-          /not writes again/,
+      });
+
+      it('runs writes after WITH over the rows the writes before wrote', async () => {
+        const { write, read } = await setup();
+        const count = async (query: string): Promise<unknown> => (await read.query(query))[0]!['c'];
+        // Each part runs for every row of the part before; MATCH there sees earlier writes.
+        expect(
+          await write.query(
+            'UNWIND [1, 2] AS i CREATE (a:A {i: i}) WITH a, i * 10 AS j CREATE (a)-[:R]->(:B {j: j}) WITH a MATCH (b:B) RETURN a.i AS i, count(b) AS c ORDER BY i',
+          ),
+        ).toEqual([
+          { i: 1n, c: 2n },
+          { i: 2n, c: 2n },
+        ]);
+        expect(await count('MATCH (:A)-[:R]->(:B) RETURN count(*) AS c')).toBe(2n);
+        // WITH can filter and project between the parts; aliases keep the entity.
+        await write.query(
+          'MATCH (a:A) WITH a AS x WHERE x.i = 2 SET x.seen = true WITH x AS y CREATE (y)-[:S]->(:C)',
+        );
+        expect(await count('MATCH (a:A {seen: true})-[:S]->(:C) RETURN count(*) AS c')).toBe(1n);
+        expect(write.compile('CREATE (a) WITH a CREATE (b) RETURN b').explain()).toContain(
+          '(after the writes, over the written rows: a)',
         );
       });
 

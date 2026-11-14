@@ -258,6 +258,13 @@ export interface PlanStep {
   clause?: number | undefined;
   /** The step runs once after its clause ran for every row (DELETE's node deletions). */
   afterClause?: boolean | undefined;
+  /**
+   * The query part of a write query the step belongs to (0 when unset). A part
+   * after the first starts from the rows the part before it wrote: its step
+   * with `written` selects over them, and its per-row steps run for each row
+   * that step returns (`... CREATE ... WITH ... CREATE ...`).
+   */
+  segment?: number | undefined;
   /** The step returns the ids (column `id`) of nodes it deleted; they leave `deletedNodes`. */
   forgetsDeleted?: boolean | undefined;
   /**
@@ -377,19 +384,17 @@ export async function executePlan(
   const entityIds = state.entityIds;
   let stepsRun = 0;
 
-  const final = plan.steps.find((s) => s.written);
   const afterRows = plan.steps.filter((s) => s.afterRows);
-  const steps = plan.steps.filter((s) => s !== final && !s.afterRows);
-  const firstPerRow = steps.findIndex((s) => s.perRow);
-  const once = firstPerRow < 0 ? steps : steps.slice(0, firstPerRow);
-  const perRow = firstPerRow < 0 ? [] : steps.slice(firstPerRow);
-  /** For a write query with RETURN: one JSON object per source row (see `PlanStep.written`). */
-  const written: string[] = [];
-  const collect = (row: Row | undefined): void => {
-    if (final?.written) {
-      written.push(writtenRow(final.written, entityIds, row));
-    }
-  };
+  /** The query parts, in order: steps run once (searches, the source), then per-row steps. */
+  const segments: { once: PlanStep[]; perRow: PlanStep[] }[] = [];
+  for (const step of plan.steps.filter((s) => !s.afterRows)) {
+    const segment = (segments[step.segment ?? 0] ??= { once: [], perRow: [] });
+    (step.perRow ? segment.perRow : segment.once).push(step);
+  }
+  const parts = segments.filter((s) => s !== undefined);
+  // A last part without per-row steps is the RETURN over the written rows; the
+  // deferred node deletions (`afterRows`) run before it.
+  const final = parts.at(-1)?.perRow.length === 0 ? parts.at(-1) : undefined;
 
   const rows = await executor.transaction(plan.readOnly ? 'read' : 'write', async (tx) => {
     const run = async (step: PlanStep, row: Row | undefined): Promise<Row[]> => {
@@ -439,8 +444,133 @@ export async function executePlan(
       return result;
     };
 
+    // Clause by clause: each write clause runs for every row before the next
+    // one. A row carries its entity ids and computed rows; MERGE turns a row
+    // into one per match.
+    interface Context {
+      row: Row | undefined;
+      ids: Map<number, unknown>;
+      computed: Map<number, Row>;
+    }
+    const load = (context: Context): void => {
+      entityIds.clear();
+      context.ids.forEach((v, k) => entityIds.set(k, v));
+      state.computed.clear();
+      context.computed.forEach((v, k) => state.computed.set(k, v));
+    };
+    const save = (row: Row | undefined): Context => ({
+      row,
+      ids: new Map(entityIds),
+      computed: new Map(state.computed),
+    });
+    /** Runs `steps` clause by clause over `contexts`; returns the rows after them. */
+    const runClauses = async (steps: PlanStep[], start: Context[]): Promise<Context[]> => {
+      let contexts = start;
+      const clauses = [...new Set(steps.map((s) => s.clause ?? 0))];
+      for (const clause of clauses) {
+        contexts = await runClause(
+          steps.filter((s) => (s.clause ?? 0) === clause && !s.afterClause),
+          contexts,
+        );
+        for (const step of steps.filter((s) => (s.clause ?? 0) === clause && s.afterClause)) {
+          await run(step, undefined);
+        }
+      }
+      return contexts;
+    };
+    /** One clause's steps for every row; MERGE turns a row into one per match. */
+    const runClause = async (clauseSteps: PlanStep[], contexts: Context[]): Promise<Context[]> => {
+      const next: Context[] = [];
+      for (const context of contexts) {
+        load(context);
+        let expanded = false;
+        for (const step of clauseSteps) {
+          const matches = await run(step, context.row);
+          const foreach = step.foreach;
+          if (foreach) {
+            // The inner clauses for each element; the row goes on as it was.
+            const list = foreachList(state, step.computes!, foreach.column, foreach.position);
+            const before = save(context.row);
+            for (const element of list) {
+              load(before);
+              // SQL JSON: nodes and relationships stay tagged objects, as SQL made them.
+              entityIds.set(foreach.slot, stringifySqlJson(element));
+              await runClauses(foreach.steps, [save(context.row)]);
+            }
+            load(before);
+            continue;
+          }
+          const merge = step.merge;
+          if (!merge) {
+            continue;
+          }
+          if (matches.length === 0) {
+            for (const branch of merge.onCreate) {
+              await run(branch, context.row);
+            }
+            continue;
+          }
+          const before = save(context.row);
+          for (const match of matches) {
+            load(before);
+            for (const { entity, column } of merge.bind) {
+              entityIds.set(
+                entity,
+                column.kind === 'node' || column.kind === 'relationship' ? match[column.id] : null,
+              );
+            }
+            for (const branch of merge.onMatch) {
+              await run(branch, context.row);
+            }
+            next.push(save(context.row));
+          }
+          expanded = true;
+        }
+        if (!expanded) {
+          next.push(save(context.row));
+        }
+      }
+      return next;
+    };
+
+    /**
+     * One query part: its once steps (a step with `written` selects over the
+     * rows of the part before), then its per-row steps for each source row.
+     */
+    let contexts: Context[] | undefined;
     let last: Row[] = [];
-    for (const step of once) {
+    const runPart = async (part: { once: PlanStep[]; perRow: PlanStep[] }): Promise<void> => {
+      const writtenStep = part.once.find((s) => s.written);
+      if (writtenStep?.written) {
+        // One JSON object per row of the part before (one without rows: no source).
+        const rows = (contexts ?? [save(undefined)]).map((context) => {
+          load(context);
+          return writtenRow(writtenStep.written!, entityIds, context.row);
+        });
+        state.written = `[${rows.join(',')}]`;
+        entityIds.clear();
+        state.computed.clear();
+      }
+      for (const step of part.once) {
+        await runOnce(step);
+      }
+      if (part.perRow.length > 0) {
+        const perRowEntities = part.perRow.filter((s) => s.creates).length;
+        if (last.length * perRowEntities > limits.maxCreatedEntities) {
+          throw new LimitExceededError(
+            `The query creates more than ${limits.maxCreatedEntities} entities (maxCreatedEntities)`,
+          );
+        }
+        contexts = await runClauses(
+          part.perRow,
+          last.map((row) => ({ row, ids: new Map(), computed: new Map() })),
+        );
+        last = [];
+      } else {
+        contexts = undefined;
+      }
+    };
+    const runOnce = async (step: PlanStep): Promise<void> => {
       last = await run(step, undefined);
       const search = step.search;
       if (search) {
@@ -461,125 +591,18 @@ export async function executePlan(
         });
         state.searches.set(search.index, pathsJson(found));
       }
-    }
-    if (perRow.length > 0) {
-      const perRowEntities = perRow.filter((s) => s.creates).length;
-      if (last.length * perRowEntities > limits.maxCreatedEntities) {
-        throw new LimitExceededError(
-          `The query creates more than ${limits.maxCreatedEntities} entities (maxCreatedEntities)`,
-        );
+    };
+
+    for (const part of parts) {
+      if (part !== final) {
+        await runPart(part);
       }
-      // Clause by clause: each write clause runs for every row before the next
-      // one. A row carries its entity ids and computed rows; MERGE turns a row
-      // into one per match.
-      interface Context {
-        row: Row;
-        ids: Map<number, unknown>;
-        computed: Map<number, Row>;
-      }
-      const load = (context: Context): void => {
-        entityIds.clear();
-        context.ids.forEach((v, k) => entityIds.set(k, v));
-        state.computed.clear();
-        context.computed.forEach((v, k) => state.computed.set(k, v));
-      };
-      const save = (row: Row): Context => ({
-        row,
-        ids: new Map(entityIds),
-        computed: new Map(state.computed),
-      });
-      /** Runs `steps` clause by clause over `contexts`; returns the rows after them. */
-      const runClauses = async (steps: PlanStep[], start: Context[]): Promise<Context[]> => {
-        let contexts = start;
-        const clauses = [...new Set(steps.map((s) => s.clause ?? 0))];
-        for (const clause of clauses) {
-          contexts = await runClause(
-            steps.filter((s) => (s.clause ?? 0) === clause && !s.afterClause),
-            contexts,
-          );
-          for (const step of steps.filter((s) => (s.clause ?? 0) === clause && s.afterClause)) {
-            await run(step, undefined);
-          }
-        }
-        return contexts;
-      };
-      /** One clause's steps for every row; MERGE turns a row into one per match. */
-      const runClause = async (
-        clauseSteps: PlanStep[],
-        contexts: Context[],
-      ): Promise<Context[]> => {
-        const next: Context[] = [];
-        for (const context of contexts) {
-          load(context);
-          let expanded = false;
-          for (const step of clauseSteps) {
-            const matches = await run(step, context.row);
-            const foreach = step.foreach;
-            if (foreach) {
-              // The inner clauses for each element; the row goes on as it was.
-              const list = foreachList(state, step.computes!, foreach.column, foreach.position);
-              const before = save(context.row);
-              for (const element of list) {
-                load(before);
-                // SQL JSON: nodes and relationships stay tagged objects, as SQL made them.
-                entityIds.set(foreach.slot, stringifySqlJson(element));
-                await runClauses(foreach.steps, [save(context.row)]);
-              }
-              load(before);
-              continue;
-            }
-            const merge = step.merge;
-            if (!merge) {
-              continue;
-            }
-            if (matches.length === 0) {
-              for (const branch of merge.onCreate) {
-                await run(branch, context.row);
-              }
-              continue;
-            }
-            const before = save(context.row);
-            for (const match of matches) {
-              load(before);
-              for (const { entity, column } of merge.bind) {
-                entityIds.set(
-                  entity,
-                  column.kind === 'node' || column.kind === 'relationship'
-                    ? match[column.id]
-                    : null,
-                );
-              }
-              for (const branch of merge.onMatch) {
-                await run(branch, context.row);
-              }
-              next.push(save(context.row));
-            }
-            expanded = true;
-          }
-          if (!expanded) {
-            next.push(save(context.row));
-          }
-        }
-        return next;
-      };
-      const contexts = await runClauses(
-        perRow,
-        last.map((row) => ({ row, ids: new Map(), computed: new Map() })),
-      );
-      for (const context of contexts) {
-        load(context);
-        collect(context.row);
-      }
-      last = [];
-    } else if (final) {
-      collect(undefined);
     }
     for (const step of afterRows) {
       await run(step, undefined);
     }
     if (final) {
-      state.written = `[${written.join(',')}]`;
-      last = await run(final, undefined);
+      await runPart(final);
     }
     return last;
   });

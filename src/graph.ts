@@ -120,62 +120,101 @@ function planQuery(
       // Unreachable while the gate works; kept so that a gate bug cannot reach SQL.
       throw new ReadOnlyViolationError('Write clauses are not allowed on a read-only graph');
     }
-    // Reading clauses, then CREATE, MERGE, SET, REMOVE, DELETE, and FOREACH clauses, then optionally
-    // reading clauses over the written rows and RETURN.
-    const firstWrite = clauses.findIndex(isUpdateClause);
-    const reading = clauses.slice(0, firstWrite);
-    const afterWrites = clauses.findIndex((c, i) => i > firstWrite && !isUpdateClause(c));
-    const updates = clauses.slice(firstWrite, afterWrites < 0 ? undefined : afterWrites);
-    const tail = afterWrites < 0 ? [] : clauses.slice(afterWrites);
+    // Query parts of reading clauses (MATCH, UNWIND, CALL, WITH) then write
+    // clauses, then optionally reading clauses and RETURN. Each part after the
+    // first reads the rows the part before it wrote.
+    const parts: { reading: ast.RowClause[]; updates: UpdateClause[] }[] = [];
+    let i = 0;
+    for (;;) {
+      const start = i;
+      while (i < clauses.length && isRowClause(clauses[i]!)) {
+        i++;
+      }
+      const updatesStart = i;
+      while (i < clauses.length && isUpdateClause(clauses[i]!)) {
+        i++;
+      }
+      if (i === updatesStart) {
+        i = start;
+        break;
+      }
+      parts.push({
+        reading: clauses.slice(start, updatesStart) as ast.RowClause[],
+        updates: clauses.slice(updatesStart, i) as UpdateClause[],
+      });
+    }
+    const tail = clauses.slice(i);
     const last = tail.at(-1);
     const ret = last?.type === 'Return' ? last : undefined;
     const tailReading = tail.slice(0, -1);
     const misplaced =
-      reading.find((c) => !isRowClause(c)) ??
-      (tail.length > 0 && !ret ? tail[0] : undefined) ??
-      tailReading.find((c) => !isRowClause(c));
+      (tail.length > 0 && !ret ? tail[0] : undefined) ?? tailReading.find((c) => !isRowClause(c));
     if (misplaced) {
       throw new UnsupportedFeatureError(
-        'A write query can be MATCH, UNWIND, and WITH, then CREATE, MERGE, SET, REMOVE, DELETE, and FOREACH, then MATCH, UNWIND, and WITH with RETURN for now (not writes again after them)',
+        `${misplaced.type === 'UnsupportedClause' ? misplaced.name : misplaced.type.toUpperCase()} cannot be used here: a write query ends with its write clauses or with RETURN`,
         { position: misplaced.position },
       );
     }
-    const builder = new SqlBuilder(dialect, mapping);
-    let source =
-      reading.length > 0
-        ? new RowSource(ReadScope.of(builder, reading as ast.RowClause[]))
-        : undefined;
-    const createSource: CreateSource = {
-      get current() {
-        return source;
-      },
-      need: () => (source ??= new RowSource(new ReadScope(builder))),
-    };
-    if (ret) {
-      // RETURN collects the written rows from the per-row steps.
-      createSource.need();
+
+    // Plans each part; a part's source is finished last, after the next part
+    // (or RETURN) added the columns it reads from it.
+    interface Planned {
+      builder: SqlBuilder;
+      source: RowSource | undefined;
+      /** For a part after the first: the variables of the rows it starts from. */
+      written: PlanStep['written'];
+      inserts: PlanStep[];
+      created: Map<string, CreatedEntity>;
     }
-    const { steps: inserts, created } = writer.planUpdates(
-      updates as UpdateClause[],
-      limits,
-      createSource,
-    );
+    const planned: Planned[] = [];
+    for (const [index, part] of parts.entries()) {
+      const builder = new SqlBuilder(dialect, mapping);
+      const previous = planned.at(-1);
+      let source: RowSource | undefined;
+      let written: PlanStep['written'];
+      if (previous) {
+        const before = rowVariables(previous.source!, previous.created, mapping, query.position);
+        written = before.written;
+        source = new RowSource(
+          ReadScope.of(builder, part.reading, ReadScope.written(builder, before.variables)),
+        );
+      } else if (part.reading.length > 0) {
+        source = new RowSource(ReadScope.of(builder, part.reading));
+      }
+      const createSource: CreateSource = {
+        get current() {
+          return source;
+        },
+        need: () => (source ??= new RowSource(new ReadScope(builder))),
+      };
+      if (ret || index < parts.length - 1) {
+        // The next part, or RETURN, reads the rows the per-row steps wrote.
+        createSource.need();
+      }
+      const { steps: inserts, created } = writer.planUpdates(part.updates, limits, createSource);
+      planned.push({ builder, source, written, inserts, created });
+    }
+    const lastPart = planned.at(-1)!;
     const returned = ret
       ? planReturnAfterCreate(
           tailReading as ast.RowClause[],
           ret,
-          source!,
-          created,
+          lastPart.source!,
+          lastPart.created,
           dialect,
           mapping,
         )
       : undefined;
-    const steps = [
-      ...builder.searchSteps,
-      ...(source ? [source.finish()] : []),
-      ...inserts,
-      ...(returned ? [returned.step] : []),
-    ];
+    const steps = planned.flatMap(({ builder, source, written, inserts }, segment) =>
+      [
+        ...builder.searchSteps,
+        ...(source ? [{ ...source.finish(), written }] : []),
+        ...inserts,
+      ].map((step) => ({ ...step, segment })),
+    );
+    if (returned) {
+      steps.push({ ...returned.step, segment: planned.length });
+    }
     return checkSteps(createPlan(steps, returned?.columns ?? []), limits);
   }
 
