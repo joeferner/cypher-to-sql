@@ -12,9 +12,15 @@ import { children, mapChildren, patternVariables } from './walk.js';
 interface SelectOptions {
   distinct?: boolean;
   orderBy?: string[];
-  skip?: ValueSource | undefined;
-  limit?: ValueSource | undefined;
+  skip?: RowCount | undefined;
+  limit?: RowCount | undefined;
 }
+
+/**
+ * A SKIP or LIMIT: a literal or parameter, checked when it's bound; or SQL that
+ * computes a constant expression once and checks it (see `rowCount`).
+ */
+type RowCount = ValueSource | { kind: 'sql'; sql: string };
 
 /**
  * Adds ORDER BY, LIMIT, and OFFSET to `sql`. With `distinct`, sorting happens
@@ -41,15 +47,22 @@ function finishSelect(
       sql += ` ORDER BY ${order.join(', ')}`;
     }
   }
+  const { limit, skip } = options;
   if (options.capped ?? true) {
-    sql += ` LIMIT ${b.bind({ kind: 'rowLimit', userLimit: options.limit })}`;
-  } else if (options.limit) {
-    sql += ` LIMIT ${b.bind({ kind: 'stageLimit', limit: options.limit })}`;
-  } else if (options.skip) {
+    if (limit?.kind === 'sql') {
+      // The smaller of the query's LIMIT and the row cap.
+      const cap = b.bind({ kind: 'rowLimit', userLimit: undefined });
+      sql += ` LIMIT (SELECT CASE WHEN l.v < ${cap} THEN l.v ELSE ${cap} END FROM (SELECT ${limit.sql} AS v) AS l)`;
+    } else {
+      sql += ` LIMIT ${b.bind({ kind: 'rowLimit', userLimit: limit })}`;
+    }
+  } else if (limit) {
+    sql += ` LIMIT ${limit.kind === 'sql' ? limit.sql : b.bind({ kind: 'stageLimit', limit })}`;
+  } else if (skip) {
     sql += ` LIMIT ${b.dialect.limitAll}`;
   }
-  if (options.skip) {
-    sql += ` OFFSET ${b.bind({ kind: 'rowOffset', skip: options.skip })}`;
+  if (skip) {
+    sql += ` OFFSET ${skip.kind === 'sql' ? skip.sql : b.bind({ kind: 'rowOffset', skip })}`;
   }
   return sql;
 }
@@ -1329,8 +1342,8 @@ function planProjection(
   const sql = scope.select(select, {
     distinct: proj.distinct,
     orderBy,
-    skip: proj.skip ? rowCount(proj.skip, 'SKIP') : undefined,
-    limit: proj.limit ? rowCount(proj.limit, 'LIMIT') : undefined,
+    skip: proj.skip ? rowCount(b, proj.skip, 'SKIP') : undefined,
+    limit: proj.limit ? rowCount(b, proj.limit, 'LIMIT') : undefined,
     capped: mode === 'return',
   });
   const ordered = orderBy.length > 0 || (scope.ordered && !proj.distinct);
@@ -1719,8 +1732,8 @@ function planAggregation(
     {
       distinct: ret.distinct,
       orderBy,
-      skip: ret.skip ? rowCount(ret.skip, 'SKIP') : undefined,
-      limit: ret.limit ? rowCount(ret.limit, 'LIMIT') : undefined,
+      skip: ret.skip ? rowCount(b, ret.skip, 'SKIP') : undefined,
+      limit: ret.limit ? rowCount(b, ret.limit, 'LIMIT') : undefined,
       capped: mode === 'return',
     },
   );
@@ -1846,12 +1859,10 @@ function rootedAtKey(expr: ast.PropertyAccess, keys: ast.ProjectionItem[]): bool
 }
 
 /** A SKIP or LIMIT value: a non-negative integer literal, or a parameter (checked when bound). */
-function rowCount(expr: ast.Expression, clause: 'SKIP' | 'LIMIT'): ValueSource {
+function rowCount(b: SqlBuilder, expr: ast.Expression, clause: 'SKIP' | 'LIMIT'): RowCount {
   const value = constantValue(expr);
   if (!value) {
-    throw new UnsupportedFeatureError(`${clause} must be an integer literal or a parameter`, {
-      position: expr.position,
-    });
+    return rowCountExpression(b, expr, clause);
   }
   if (value.kind === 'constant' && (typeof value.value !== 'bigint' || value.value < 0n)) {
     throw new SemanticError(`${clause} must be a non-negative integer`, {
@@ -1859,6 +1870,50 @@ function rowCount(expr: ast.Expression, clause: 'SKIP' | 'LIMIT'): ValueSource {
     });
   }
   return value;
+}
+
+/**
+ * A SKIP or LIMIT expression other than a literal or parameter, such as
+ * `toInteger(rand() * 9)`. It must not use variables (a `SemanticError`, as
+ * Cypher's NonConstantExpression). Its SQL is computed once, in a one-row
+ * subquery, and a value that is not a non-negative integer raises
+ * `CypherArgumentError` when the query runs.
+ */
+function rowCountExpression(
+  b: SqlBuilder,
+  expr: ast.Expression,
+  clause: 'SKIP' | 'LIMIT',
+): RowCount {
+  if (freeVariables(expr).length > 0 || containsAggregate(expr)) {
+    throw new SemanticError(`${clause} must be a constant: it cannot use variables or aggregates`, {
+      position: expr.position,
+    });
+  }
+  const compiler = new ExprCompiler(b, (variable) => {
+    throw new SemanticError(`${clause} cannot use variable \`${variable.name}\``, {
+      position: variable.position,
+    });
+  });
+  const e = compiler.compile(expr);
+  const d = b.dialect;
+  const raise = (code: string, message: string): string =>
+    b.raise({ kind: 'argument', code, message, position: expr.position }, 'integer');
+  const notInteger = raise('InvalidArgumentType', `${clause} must be an integer`);
+  let value: string;
+  if (e.type === 'integer') {
+    value = e.sql;
+  } else if (e.type === 'json') {
+    value = `(CASE WHEN ${d.jsonType(e.sql)} = 'integer' THEN ${d.fromJson(e.sql, 'integer')} ELSE ${notInteger} END)`;
+  } else {
+    throw new SemanticError(`${clause} must be a non-negative integer`, {
+      position: expr.position,
+    });
+  }
+  const negative = raise('NegativeIntegerArgument', `${clause} must be a non-negative integer`);
+  return {
+    kind: 'sql',
+    sql: `(SELECT CASE WHEN c.v IS NULL OR c.v < 0 THEN ${negative} ELSE c.v END FROM (SELECT ${value} AS v) AS c)`,
+  };
 }
 
 /**

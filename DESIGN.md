@@ -331,7 +331,7 @@ The defaults were checked against the reference graphs (#16, `npm run bench:limi
 | Several relationship patterns in one `MATCH`                      | `r1.id <> r2.id` for each pair (relationship uniqueness), including anonymous ones and ones bound by an earlier clause           |
 | Inline property map `{k: v}` in `MATCH`                           | `n.k = v` per entry with Cypher equality: a missing property or a null never matches. A parameter map is an error                |
 | `WHERE`                                                           | The expression compiler (see "Expressions"), with Cypher null semantics                                                          |
-| `RETURN`, `SKIP`, `LIMIT`                                         | Direct equivalents; `SKIP`/`LIMIT` are bound values checked to be non-negative integers                                          |
+| `RETURN`, `SKIP`, `LIMIT`                                         | Direct equivalents; see below for `SKIP`/`LIMIT`                                                                                 |
 | `ORDER BY`                                                        | Sort keys from `ExprCompiler.sortKeys`: aliases are substituted, then a JSON value sorts by type rank and then value             |
 | `DISTINCT` with `ORDER BY`                                        | `SELECT * FROM (SELECT DISTINCT ..., <sort keys>) AS d ORDER BY d.k0, ...`; the keys may use only projected values               |
 | Aggregates (`count`, `sum`, `avg`, `min`, `max`, `collect`)       | Two levels: SQL aggregates grouped by the non-aggregated items, then the items over those columns (see "Aggregation")            |
@@ -345,6 +345,8 @@ The defaults were checked against the reference graphs (#16, `npm run bench:limi
 | Pattern predicates, `EXISTS { }`, pattern comprehensions          | Correlated `EXISTS (SELECT ...)` or list subquery (see "Patterns in expressions")                                                |
 | `CREATE` (write mode)                                             | `INSERT` per entity, in pattern order; once per source row after `MATCH`/`UNWIND`; RETURN over the written rows                  |
 | `SET`, `REMOVE` (write mode)                                      | Per source row and item: a `SELECT` of the target and value as stored now, then `UPDATE` with a JSON merge patch or label change |
+
+`SKIP` and `LIMIT` that are an integer literal or a parameter are bound values, checked to be non-negative integers when they're bound. Any other expression, such as `toInteger(rand() * 9)` or `$n + 1`, must not use variables or aggregates: that's a `SemanticError`, like Cypher's NonConstantExpression. Its SQL goes into the `LIMIT` or `OFFSET` as a one-row subquery, so it's computed once (`rand()` is drawn once). A value that's null, negative, or not an integer raises `CypherArgumentError` when the query runs. The final step's `LIMIT` is still the smaller of the query's and `maxRowsPerStep + 1`.
 
 ## Dialect differences
 
