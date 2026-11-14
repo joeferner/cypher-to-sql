@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { PickleStep } from '@cucumber/messages';
 import {
   assertReadOnly,
@@ -14,7 +16,7 @@ import {
 } from '../../src/index.js';
 import { parseCypherJson, stringifyCypherJson } from '../../src/json.js';
 import type { TestBackend, TestDatabase } from '../support/backends.js';
-import type { TckScenario } from './features.js';
+import { FEATURES_DIR, type TckScenario } from './features.js';
 import { canonical, fromCypher, parseTckValue, toCypher } from './values.js';
 
 export type Outcome = { status: 'passed' } | { status: 'skipped'; reason: string };
@@ -72,7 +74,7 @@ async function runSteps(scenario: TckScenario, db: TestDatabase): Promise<void> 
     } else if (text.startsWith('there exists a procedure ')) {
       throw new Skip('Procedures (CALL) are a non-goal');
     } else if ((m = /^the (\S+) graph$/.exec(text))) {
-      throw new Skip(`Named TCK graph "${m[1]}" is not supported by the harness yet`);
+      await runSetup(writeGraph, namedGraph(m[1]!));
     } else if (text === 'having executed:') {
       await runSetup(writeGraph, docString(step));
     } else if (text === 'parameters are:') {
@@ -108,6 +110,15 @@ async function runSteps(scenario: TckScenario, db: TestDatabase): Promise<void> 
       throw new Error(`Unsupported TCK step: ${text}`);
     }
   }
+}
+
+/** The create script of one of the TCK's named graphs (`Given the binary-tree-1 graph`). */
+function namedGraph(name: string): string {
+  const path = join(FEATURES_DIR, '..', 'graphs', name, `${name}.cypher`);
+  if (!existsSync(path)) {
+    throw new Skip(`Named TCK graph "${name}" has no create script`);
+  }
+  return readFileSync(path, 'utf8');
 }
 
 async function runSetup(graph: Graph, cypher: string): Promise<void> {

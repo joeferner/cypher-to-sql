@@ -66,6 +66,13 @@ The tests need PostgreSQL running. They connect to `TEST_POSTGRES_URL`, which de
 
 Conformance is measured with the official [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck). [test/tck/allow-list.json](test/tck/allow-list.json) lists the scenarios that must pass on each dialect.
 
+| Dialect    | Passing scenarios | Share |
+| ---------- | ----------------: | ----: |
+| SQLite     |     3,758 / 3,897 | 96.4% |
+| PostgreSQL |     3,761 / 3,897 | 96.5% |
+
+3,758 scenarios pass on both dialects. They are all in the allow-list, so `npm test` keeps them passing. The 3 that pass only on PostgreSQL are NaN equality cases. The rest use procedures (`CALL`) or features this library does not support yet (`UNION`, writes after `WITH`, ...), or fail on a known limitation, such as reading a deleted entity. Each has an open issue. Counts are from `npm run test:tck:all` (2026-11-14), and each expanded scenario outline counts once.
+
 ## License
 
 [MIT](LICENSE)
