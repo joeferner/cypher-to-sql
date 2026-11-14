@@ -351,7 +351,7 @@ export class ExprCompiler {
   public member(entity: { kind: 'node' | 'relationship'; alias: string }, key: string): Expr {
     const b = this.b;
     const table = b.mapping[entity.kind === 'node' ? 'nodes' : 'edges'];
-    const column = `${entity.alias}.${b.ident(table.properties)}`;
+    const column = b.entityColumn(entity.alias, entity.kind, 'properties');
     const declared = table.propertyTypes?.[key];
     if (declared) {
       // Dates and date-times are ISO 8601 strings.
@@ -622,12 +622,12 @@ export class ExprCompiler {
         position: expr.position,
       });
     }
-    const labels = `${subject.sql}.${b.ident(b.mapping.nodes.labels)}`;
+    const labels = b.entityColumn(subject.sql, 'node', 'labels');
     const checks = expr.labels
       .map((l) => b.dialect.hasLabel(labels, b.bind({ kind: 'sql', value: l })))
       .join(' AND ');
     // A null node (from OPTIONAL MATCH) has no labels column: the answer is null.
-    const id = `${subject.sql}.${b.ident(b.mapping.nodes.id)}`;
+    const id = b.entityColumn(subject.sql, 'node', 'id');
     return boolean(`(CASE WHEN ${id} IS NULL THEN NULL ELSE (${checks}) END)`);
   }
 
@@ -1073,9 +1073,8 @@ export class ExprCompiler {
         return this.member({ kind: subject.type, alias: subject.sql }, key);
       }
       // By a computed key: look it up in the properties.
-      const table = b.mapping[subject.type === 'node' ? 'nodes' : 'edges'];
       subject = {
-        sql: `${subject.sql}.${b.ident(table.properties)}`,
+        sql: b.entityColumn(subject.sql, subject.type, 'properties'),
         type: 'json',
         atomic: true,
         shape: 'map',

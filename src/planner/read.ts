@@ -121,6 +121,8 @@ export class ReadScope {
       find: (name: string) => Binding | undefined;
       prefix: string;
     },
+    /** A prefix for the table aliases (the written rows' scope: they stay unique). */
+    private readonly aliasPrefix = '',
   ) {
     this.expressions = new ExprCompiler(
       b,
@@ -132,7 +134,7 @@ export class ReadScope {
 
   /** A new table alias, unique in this scope and its enclosing ones. */
   private alias(prefix: string): string {
-    return `${this.outer?.prefix ?? ''}${prefix}${this.aliasCount++}`;
+    return `${this.outer?.prefix ?? ''}${this.aliasPrefix}${prefix}${this.aliasCount++}`;
   }
 
   /** The binding of a variable of this scope or an enclosing query, or undefined. */
@@ -190,14 +192,22 @@ export class ReadScope {
     return scope;
   }
 
-  /** The scope over the rows a write query wrote (see `planWrittenReturn`). */
+  /**
+   * The scope over the rows a write query wrote (see `planWrittenReturn`).
+   * With `deletes` (the query has DELETE), an entity variable whose row is gone
+   * was deleted: reading its labels or properties raises (see
+   * `SqlBuilder.entityColumn`).
+   */
   public static written(
     b: SqlBuilder,
     variables: WrittenVariable[],
     rows: BindValue = { kind: 'writtenRows' },
+    deletes = false,
   ): ReadScope {
     const d = b.dialect;
-    const scope = new ReadScope(b);
+    // Its own alias prefix: `b.deletable` is keyed by alias, and the stages after
+    // a WITH number their aliases from 0 again.
+    const scope = new ReadScope(b, undefined, 'w');
     const u = d.unwind(d.jsonInput(b.bind(rows)), scope.alias('r'));
     scope.addFrom(u.from);
     if (u.where) {
@@ -236,12 +246,24 @@ export class ReadScope {
       const alias = scope.alias(kind === 'node' ? 'n' : 'e');
       const idName = b.mapping[table].id;
       // LEFT JOIN: a node from OPTIONAL MATCH may be null.
+      const id = d.jsonId(member, b.table(table), idName);
       scope.from.push({
-        join:
-          `LEFT JOIN ${b.table(table)} AS ${alias} ON ${alias}.${b.ident(idName)} = ` +
-          d.jsonId(member, b.table(table), idName),
+        join: `LEFT JOIN ${b.table(table)} AS ${alias} ON ${alias}.${b.ident(idName)} = ${id}`,
       });
       scope.bindings.set(name, { kind, alias });
+      if (deletes) {
+        // The row has its id, but its table has no such row: an earlier DELETE deleted it.
+        const typeMember = (): string =>
+          d.fromJson(
+            d.jsonMember(u.value, b.bind({ kind: 'sql', value: typeKey(name) }), typeKey(name)),
+            'string',
+          );
+        b.deletable.set(alias, {
+          deleted: `(${alias}.${b.ident(idName)} IS NULL AND NOT ${d.jsonIsNull(member)})`,
+          id,
+          type: kind === 'relationship' ? typeMember() : undefined,
+        });
+      }
     }
     return scope;
   }
@@ -1236,6 +1258,11 @@ export interface WrittenVariable {
   kind: 'node' | 'relationship' | 'value';
 }
 
+/** The member of a written row that keeps the type of relationship variable `name`. */
+export function typeKey(name: string): string {
+  return `~type:${name}`;
+}
+
 /**
  * Plans the reading clauses and RETURN after the CREATE of a write query, over
  * the rows it wrote: a bound JSON array with one object per source row, in
@@ -1248,8 +1275,9 @@ export function planWrittenReturn(
   reading: ast.RowClause[],
   ret: ast.ReturnClause,
   rows?: BindValue,
+  deletes = false,
 ): { step: PlanStep; columns: ColumnSpec[] } {
-  const scope = ReadScope.of(b, reading, ReadScope.written(b, variables, rows));
+  const scope = ReadScope.of(b, reading, ReadScope.written(b, variables, rows, deletes));
   const result = planProjection(b, scope, ret, 'return');
   return { step: b.finish(result.sql), columns: result.columns };
 }

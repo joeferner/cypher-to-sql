@@ -327,18 +327,7 @@ function entityOrMap(call: Call, body: (map: string) => string, shape: 'list' | 
 
 /** A column of an entity's table (`labels` only for nodes, `type` only for relationships). */
 function column(call: Call, e: Expr, name: 'id' | 'labels' | 'properties' | 'type'): string {
-  const b = call.c.b;
-  const nodes = b.mapping.nodes;
-  const edges = b.mapping.edges;
-  let columnName: string;
-  if (name === 'id') {
-    columnName = e.type === 'node' ? nodes.id : edges.id;
-  } else if (name === 'properties') {
-    columnName = e.type === 'node' ? nodes.properties : edges.properties;
-  } else {
-    columnName = name === 'labels' ? nodes.labels : edges.type;
-  }
-  return `${e.sql}.${b.ident(columnName)}`;
+  return call.c.b.entityColumn(e.sql, e.type === 'node' ? 'node' : 'relationship', name);
 }
 
 function math(name: string, arity: number): FunctionDef {

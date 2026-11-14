@@ -8,6 +8,7 @@ import {
   CypherConstraintError,
   CypherTypeError,
   createGraph,
+  EntityNotFoundError,
   ReadOnlyViolationError,
   SemanticError,
   UnsupportedFeatureError,
@@ -280,6 +281,7 @@ const ERROR_TYPES: Record<string, (new (...args: never[]) => Error)[]> = {
   ParameterMissing: [SemanticError],
   ProcedureError: [SemanticError],
   ConstraintVerificationFailed: [CypherConstraintError],
+  EntityNotFound: [EntityNotFoundError],
 };
 
 function checkError(result: QueryResult, type: string, phase: string, detail: string): void {

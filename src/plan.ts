@@ -6,6 +6,7 @@ import {
   CypherArgumentError,
   CypherConstraintError,
   CypherTypeError,
+  EntityNotFoundError,
   LimitExceededError,
   SemanticError,
   type CypherError,
@@ -175,7 +176,9 @@ export type WrittenValue =
   /** An id column of the source row (a matched node or relationship). */
   | { kind: 'rowId'; column: string }
   /** A JSON text column of the source row. */
-  | { kind: 'rowJson'; column: string };
+  | { kind: 'rowJson'; column: string }
+  /** A text column of the source row, as a JSON string (a relationship's type). */
+  | { kind: 'rowString'; column: string };
 
 /**
  * The largest number of hops of a variable-length pattern: its upper bound, or
@@ -292,7 +295,7 @@ export interface PlanStep {
 /** A Cypher error that a step's SQL raises at run time, through `Dialect.raise`. */
 export interface RaisedError {
   /** `limit` raises a `LimitExceededError`, with `code` as its hint. */
-  kind: 'type' | 'argument' | 'limit' | 'constraint';
+  kind: 'type' | 'argument' | 'limit' | 'constraint' | 'entityNotFound';
   /** openCypher's detail code, for example `InvalidArgumentType`. */
   code: string;
   message: string;
@@ -746,6 +749,9 @@ function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
     if (raised.kind === 'constraint') {
       return new CypherConstraintError(raised.message, options);
     }
+    if (raised.kind === 'entityNotFound') {
+      return new EntityNotFoundError(raised.message, options);
+    }
     return raised.kind === 'type'
       ? new CypherTypeError(raised.message, options)
       : new CypherArgumentError(raised.message, options);
@@ -809,6 +815,9 @@ function writtenRow(
       json = (entityIds.get(value.entity) as string | undefined) ?? 'null';
     } else if (value.kind === 'rowId') {
       json = idJsonOrNull(requireRow(row)[value.column]);
+    } else if (value.kind === 'rowString') {
+      const text = requireRow(row)[value.column];
+      json = typeof text === 'string' ? JSON.stringify(text) : 'null';
     } else {
       const text = requireRow(row)[value.column];
       if (text !== null && text !== undefined && typeof text !== 'string') {

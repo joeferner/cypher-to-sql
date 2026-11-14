@@ -9,7 +9,7 @@ import type { Limits } from '../limits.js';
 import type { BindValue, ColumnSpec, PlanStep, ValueSource, WrittenValue } from '../plan.js';
 import type { Dialect } from '../dialect/dialect.js';
 import type { GraphMapping } from '../mapping.js';
-import { planWrittenReturn, type RowSource, type WrittenVariable } from './read.js';
+import { planWrittenReturn, typeKey, type RowSource, type WrittenVariable } from './read.js';
 import { constantValue, SqlBuilder } from './sql-builder.js';
 import { children, mapChildren } from './walk.js';
 
@@ -53,6 +53,11 @@ export function rowVariables(
       const column = source.column(`${binding.alias}.${scope.b.ident(table.id)}`);
       written.push({ name, value: { kind: 'rowId', column } });
       variables.push({ name, kind: binding.kind });
+      if (binding.kind === 'relationship') {
+        // Kept so that type(r) still works after DELETE r.
+        const type = source.column(`${binding.alias}.${scope.b.ident(mapping.edges.type)}`);
+        written.push({ name: typeKey(name), value: { kind: 'rowString', column: type } });
+      }
     } else {
       const value = source.valueColumn({ type: 'Variable', position, name });
       if (value.kind !== 'row') {

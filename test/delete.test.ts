@@ -70,6 +70,37 @@ for (const backend of testBackends()) {
       expect(await names()).toEqual(['a', 'b', 'c', null]);
     });
 
+    it('raises EntityNotFound for the properties and labels of deleted entities', async () => {
+      for (const query of [
+        "MATCH (n {n: 'd'}) DELETE n RETURN n.n AS v",
+        "MATCH (n {n: 'd'}) DELETE n RETURN labels(n) AS v",
+        "MATCH (n {n: 'd'}) DELETE n RETURN n:N AS v",
+        "MATCH (n {n: 'd'}) DELETE n RETURN properties(n) AS v",
+        "MATCH (n {n: 'd'}) DELETE n RETURN n['n'] AS v",
+        'MATCH ()-[r {w: 1}]->() DELETE r RETURN r.w AS v',
+      ]) {
+        await expect(write.query(query), query).rejects.toMatchObject({
+          name: 'EntityNotFoundError',
+          code: 'DeletedEntityAccess',
+        });
+      }
+      // Nothing is deleted: the error rolls the query back.
+      expect(await names()).toEqual(['a', 'b', 'c', 'd']);
+    });
+
+    it('still gives the type and id of deleted entities, and reads the others', async () => {
+      const [row] = await write.query(
+        "MATCH (a {n: 'a'})-[r]->(b) DELETE r RETURN type(r) AS t, id(r) IS NOT NULL AS hasId, b.n AS b",
+      );
+      expect(row).toEqual({ t: 'R', hasId: true, b: 'b' });
+      // A variable that was not deleted, and a null one, read as before.
+      expect(
+        await write.query(
+          "MATCH (n {n: 'd'}) OPTIONAL MATCH (n)-[x]->() DELETE x RETURN n.n AS n, x IS NULL AS none",
+        ),
+      ).toEqual([{ n: 'd', none: true }]);
+    });
+
     it('rejects values that are not entities, and read-only graphs', async () => {
       expect(() => write.compile('MATCH (n) DELETE n:N')).toThrow(SemanticError);
       expect(() => write.compile('MATCH (n) DELETE 1 + 1')).toThrow(SemanticError);

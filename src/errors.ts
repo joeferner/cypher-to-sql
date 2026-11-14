@@ -78,6 +78,20 @@ export class CypherConstraintError extends CypherError {
   }
 }
 
+/**
+ * A read of an entity that is gone, found while the query ran: the properties
+ * or labels of a node or relationship that an earlier DELETE in the query
+ * deleted (`DeletedEntityAccess`).
+ */
+export class EntityNotFoundError extends CypherError {
+  public readonly code: string;
+
+  public constructor(message: string, options: RuntimeErrorOptions) {
+    super(message, options);
+    this.code = options.code;
+  }
+}
+
 /** The graph mapping is invalid. */
 export class MappingError extends CypherError {}
 

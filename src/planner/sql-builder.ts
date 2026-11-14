@@ -89,6 +89,56 @@ export class SqlBuilder {
     };
   }
 
+  /**
+   * Entities that an earlier DELETE of the query may have deleted, by table
+   * alias (the RETURN after writes; see `ReadScope.written`): `deleted` is SQL
+   * that is true when it was, and `id` and `type` give what the written row
+   * kept of it.
+   */
+  public readonly deletable = new Map<
+    string,
+    { deleted: string; id: string; type: string | undefined }
+  >();
+
+  /**
+   * A column of the entity in table alias `alias`. For an entity an earlier
+   * DELETE deleted, its labels and properties raise `EntityNotFoundError`
+   * (DeletedEntityAccess), and its id and type come from the written row, as
+   * in Neo4j.
+   */
+  public entityColumn(
+    alias: string,
+    kind: 'node' | 'relationship',
+    field: 'id' | 'labels' | 'properties' | 'type',
+  ): string {
+    const columns = this.columns(kind === 'node' ? 'nodes' : 'edges');
+    const name = columns[field];
+    if (name === undefined) {
+      throw new Error(`Internal error: a ${kind} has no ${field} column`);
+    }
+    const column = `${alias}.${name}`;
+    const gone = this.deletable.get(alias);
+    if (!gone) {
+      return column;
+    }
+    if (field === 'id') {
+      return `COALESCE(${column}, ${gone.id})`;
+    }
+    if (field === 'type') {
+      return gone.type === undefined ? column : `COALESCE(${column}, ${gone.type})`;
+    }
+    const raised = this.raise(
+      {
+        kind: 'entityNotFound',
+        code: 'DeletedEntityAccess',
+        message: `The ${kind} was deleted earlier in the query; its ${field} cannot be read`,
+        position: undefined,
+      },
+      'json',
+    );
+    return `(CASE WHEN ${gone.deleted} THEN ${raised} ELSE ${column} END)`;
+  }
+
   /** The tagged JSON object of the entity in table alias `alias`; JSON null when the alias's row is null. */
   public entityJson(kind: 'node' | 'relationship', alias: string): string {
     const columns = this.columns(kind === 'node' ? 'nodes' : 'edges');

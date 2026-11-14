@@ -195,6 +195,10 @@ function planQuery(
       created: Map<string, CreatedEntity>;
     }
     const planned: Planned[] = [];
+    /** The query deletes (also inside FOREACH): reads after it check for deleted entities. */
+    const deleting = (clause: ast.Clause): boolean =>
+      clause.type === 'Delete' || (clause.type === 'Foreach' && clause.clauses.some(deleting));
+    const deletes = parts.some((part) => part.updates.some(deleting));
     for (const [index, part] of parts.entries()) {
       const builder = new SqlBuilder(dialect, mapping);
       const previous = planned.at(-1);
@@ -204,7 +208,11 @@ function planQuery(
         const before = rowVariables(previous.source!, previous.created, mapping, query.position);
         written = before.written;
         source = new RowSource(
-          ReadScope.of(builder, part.reading, ReadScope.written(builder, before.variables)),
+          ReadScope.of(
+            builder,
+            part.reading,
+            ReadScope.written(builder, before.variables, undefined, deletes),
+          ),
         );
       } else if (part.reading.length > 0) {
         source = new RowSource(ReadScope.of(builder, part.reading));
@@ -231,6 +239,7 @@ function planQuery(
           lastPart.created,
           dialect,
           mapping,
+          deletes,
         )
       : undefined;
     const steps = planned.flatMap(({ builder, source, written, inserts }, segment) =>
@@ -278,10 +287,11 @@ function planReturnAfterCreate(
   created: Map<string, CreatedEntity>,
   dialect: Dialect,
   mapping: GraphMapping,
+  deletes: boolean,
 ): { step: PlanStep; columns: ColumnSpec[] } {
   const { written, variables } = rowVariables(source, created, mapping, ret.position);
   const b = new SqlBuilder(dialect, mapping);
-  const { step, columns } = planWrittenReturn(b, variables, reading, ret);
+  const { step, columns } = planWrittenReturn(b, variables, reading, ret, undefined, deletes);
   if (b.searchSteps.length > 0) {
     throw new UnsupportedFeatureError('shortestPath() after CREATE is not supported yet', {
       position: ret.position,
