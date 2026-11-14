@@ -104,6 +104,23 @@ for (const backend of testBackends()) {
       expect(await v('1.0 / 0')).toBe(Infinity);
     });
 
+    it('raises InvalidArgumentType for range() arguments that are not integers, when it runs', async () => {
+      for (const [expr, params] of [
+        ['range(true, 1)', {}],
+        ['range(0, 1.5)', {}],
+        ["range(0, 1, 'x')", {}],
+        ['range($x, 1)', { x: 'a' }],
+        ['range(0, $x)', { x: 0.0 }],
+      ] as const) {
+        const e = await error(`RETURN ${expr} AS v`, params);
+        expect(e, expr).toBeInstanceOf(CypherArgumentError);
+        expect((e as CypherArgumentError).code, expr).toBe('InvalidArgumentType');
+      }
+      // Compiling does not raise: the error is a runtime one, as in Cypher.
+      expect(() => graph.compile('RETURN range(true, 1) AS v')).not.toThrow();
+      expect(await v('CASE WHEN false THEN range(0, 1.5) ELSE 0 END')).toBe(0n);
+    });
+
     it('does not raise for branches that are not taken', async () => {
       expect(await v('CASE WHEN false THEN $x + 1 ELSE 0 END', { x: 'a' })).toBe(0n);
       expect(

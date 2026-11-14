@@ -115,22 +115,38 @@ function apply(
   type: ExprType,
   body: (values: string[]) => string,
   shape?: 'list' | 'map',
+  /** Raise a wrong argument type when the query runs, not when it compiles (as the TCK wants for range()). */
+  runtimeTypeErrors = false,
 ): Expr {
   const { c, node, args } = call;
   const d = c.b.dialect;
   if (args.some((a) => a.type === 'null')) {
     return NULL;
   }
-  args.forEach((arg, i) => {
+  /** SQL that raises ArgumentError (InvalidArgumentType) when it runs. */
+  const runtimeError = (): string =>
+    c.b.raise(
+      {
+        kind: 'argument',
+        code: 'InvalidArgumentType',
+        message: `Type mismatch: invalid argument type for ${node.name}()`,
+        position: node.position,
+      },
+      sqlType(type),
+    );
+  for (const [i, arg] of args.entries()) {
     const kind = kinds[i]!;
     const ok =
       arg.type === 'json'
         ? arg.shape === undefined || arg.shape === kind
         : arg.type === kind || (kind === 'float' && arg.type === 'integer');
     if (!ok) {
+      if (runtimeTypeErrors) {
+        return result(runtimeError(), type, shape);
+      }
       throw typeError(`${article(kind)} ${kind}`, arg.shape ?? arg.type, node.args[i]!.position);
     }
-  });
+  }
   const sql = c.share(args, (refs) => {
     const checks: string[] = [];
     const nulls: string[] = [];
@@ -151,7 +167,7 @@ function apply(
     const value = body(values);
     return checks.length > 0
       ? `(CASE WHEN ${nulls.join(' OR ')} THEN NULL WHEN ${checks.join(' AND ')} THEN ${value} ` +
-          `ELSE ${argumentError(call, sqlType(type))} END)`
+          `ELSE ${runtimeTypeErrors ? runtimeError() : argumentError(call, sqlType(type))} END)`
       : value;
   });
   return result(sql, type, shape);
@@ -458,6 +474,7 @@ const FUNCTIONS: Record<string, FunctionDef> = {
         return `(CASE WHEN ${step} = 0 THEN ${zero} ELSE ${range} END)`;
       },
       'list',
+      true,
     ),
   ),
   split: fn(2, 2, (call) =>
