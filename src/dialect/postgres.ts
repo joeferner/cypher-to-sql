@@ -266,6 +266,8 @@ export function postgres(): Dialect {
       `(CASE WHEN ${divisor} = 0 THEN CASE WHEN ${dividend} > 0 THEN 'Infinity'::float8 ` +
       `WHEN ${dividend} < 0 THEN '-Infinity'::float8 ELSE 'NaN'::float8 END ` +
       `ELSE ${dividend} / ${divisor} END)`,
+    // PostgreSQL's NaN equals itself; this is how to tell it apart.
+    isNaN: (float) => `(${float} = 'NaN'::float8)`,
     concatLists: (left, right) => `(${left} || ${right})`,
     // Walks both values in parallel with a recursive CTE: one row per pair of
     // values at the same position, then a three-valued AND over the rows.

@@ -739,7 +739,8 @@ export class ExprCompiler {
     if (left.type !== 'json' && right.type !== 'json') {
       const cls = typeClass(left.type);
       if (cls === typeClass(right.type)) {
-        return boolean(this.compareSame(op, left.sql, right.sql, cls));
+        const floats = [left, right].filter((e) => e.type === 'float').map((e) => e.sql);
+        return boolean(this.compareSame(op, left.sql, right.sql, cls, floats));
       }
       return boolean(
         this.share(
@@ -772,7 +773,7 @@ export class ExprCompiler {
           const [ls, rs] = left.type === 'json' ? [value, s.sql] : [s.sql, value];
           return (
             `(CASE WHEN ${j.jsonType} IS NULL OR ${j.jsonType} = 'null' OR ${s.sql} IS NULL THEN NULL ` +
-            `WHEN ${j.jsonType} IN ${types} THEN ${this.compareSame(op, ls, rs, cls)} ` +
+            `WHEN ${j.jsonType} IN ${types} THEN ${this.compareSame(op, ls, rs, cls, scalarSide.type === 'float' ? [s.sql] : [])} ` +
             `ELSE ${mismatch} END)`
           );
         }),
@@ -849,10 +850,31 @@ export class ExprCompiler {
   }
 
   /** Comparison of two non-null native values of the same class. */
-  private compareSame(op: Comparison, left: string, right: string, cls: TypeClass): string {
-    return cls === 'string'
-      ? this.b.dialect.compareStrings(left, op, right)
-      : `(${left} ${op} ${right})`;
+  /**
+   * `left op right` for two values of one type class. `nan` lists the sides
+   * that are native floats, which may be NaN on a database that has it: in
+   * Cypher NaN is equal to nothing (so `<>` is true) and ordered against
+   * nothing. Integer comparisons stay plain, so an index can serve them.
+   */
+  private compareSame(
+    op: Comparison,
+    left: string,
+    right: string,
+    cls: TypeClass,
+    nan: string[] = [],
+  ): string {
+    if (cls === 'string') {
+      return this.b.dialect.compareStrings(left, op, right);
+    }
+    const isNaN = this.b.dialect.isNaN;
+    if (!isNaN || nan.length === 0) {
+      return `(${left} ${op} ${right})`;
+    }
+    const d = this.b.dialect;
+    return (
+      `(CASE WHEN ${nan.map(isNaN).join(' OR ')} THEN ${d.booleanLiteral(op === '<>')} ` +
+      `ELSE (${left} ${op} ${right}) END)`
+    );
   }
 
   /**

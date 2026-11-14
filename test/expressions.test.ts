@@ -70,6 +70,28 @@ for (const backend of testBackends()) {
       expect(await v('$p < $q', { p: 'a', q: 1n })).toBe(null);
     });
 
+    it('compares NaN as Cypher does where the database has NaN', async () => {
+      const nan = '0.0 / 0.0';
+      if (backend.name === 'postgres') {
+        // NaN is equal to nothing, not even itself, and ordered against nothing.
+        expect(await v(`${nan} = ${nan}`)).toBe(false);
+        expect(await v(`${nan} <> ${nan}`)).toBe(true);
+        expect(await v(`${nan} = 1`)).toBe(false);
+        for (const op of ['<', '<=', '>', '>=']) {
+          expect(await v(`${nan} ${op} 1.0`), op).toBe(false);
+          expect(await v(`1 ${op} ${nan}`), op).toBe(false);
+        }
+        expect(await v(`${nan} < 'a'`)).toBe(null);
+        expect(Number.isNaN(await v(nan))).toBe(true);
+        // A float that is not NaN compares as before.
+        expect(await v('1.5 > 1')).toBe(true);
+      } else {
+        // SQLite has no NaN: 0.0 / 0.0 is null, so comparisons with it are null.
+        expect(await v(nan)).toBe(null);
+        expect(await v(`${nan} = 1`)).toBe(null);
+      }
+    });
+
     it('compares strings by code point, case sensitively', async () => {
       expect(await v("'B' < 'a'")).toBe(true);
       expect(await v("'a' = 'A'")).toBe(false);

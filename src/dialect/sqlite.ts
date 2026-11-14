@@ -350,6 +350,7 @@ export function sqlite(options: SqliteOptions = {}): Dialect {
     floatDivide: (dividend, divisor) =>
       `(CASE WHEN ${divisor} = 0 THEN CASE WHEN ${dividend} > 0 THEN 9e999 ` +
       `WHEN ${dividend} < 0 THEN -9e999 END ELSE ${dividend} * 1.0 / ${divisor} END)`,
+    isNaN: undefined,
     concatLists: (left, right) =>
       `(SELECT json_group_array(json(v)) FROM (` +
       `SELECT ${elementJson('a')} AS v, 0 AS side, a.key AS k FROM json_each(${left}) AS a ` +

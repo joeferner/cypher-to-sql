@@ -232,6 +232,13 @@ export interface Dialect {
    */
   floatDivide(dividend: string, divisor: string): string;
 
+  /**
+   * Condition: the float `float` is NaN. Undefined for a database without NaN
+   * (SQLite, where it is NULL). Comparisons use it because Cypher's NaN is
+   * equal to nothing and ordered against nothing, unlike PostgreSQL's.
+   */
+  readonly isNaN: ((float: string) => string) | undefined;
+
   /** Concatenation of two JSON values known to be lists. */
   concatLists(left: string, right: string): string;
 
