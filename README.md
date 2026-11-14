@@ -85,10 +85,10 @@ Conformance is measured with the official [openCypher TCK](https://github.com/op
 
 | Dialect    | Passing scenarios | Share |
 | ---------- | ----------------: | ----: |
-| SQLite     |     3,832 / 3,897 | 98.3% |
-| PostgreSQL |     3,835 / 3,897 | 98.4% |
+| SQLite     |     3,844 / 3,897 | 98.6% |
+| PostgreSQL |     3,847 / 3,897 | 98.7% |
 
-3,832 scenarios pass on both dialects. They are all in the allow-list, so `npm test` keeps them passing. The 3 that pass only on PostgreSQL are NaN equality cases. The rest use features this library does not support yet (`UNION`, writes after `WITH`, ...), or fail on a known limitation, such as reading a deleted entity. Each has an open issue. Counts are from `npm run test:tck:all` (2026-11-14), and each expanded scenario outline counts once.
+3,844 scenarios pass on both dialects. They are all in the allow-list, so `npm test` keeps them passing. The 3 that pass only on PostgreSQL are NaN equality cases. The rest use features this library does not support yet (`UNION`, writes after `WITH`, ...), or fail on a known limitation, such as reading a deleted entity. Each has an open issue. Counts are from `npm run test:tck:all` (2026-11-14), and each expanded scenario outline counts once.
 
 ## License
 

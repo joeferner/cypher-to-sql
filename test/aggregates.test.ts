@@ -105,6 +105,50 @@ for (const backend of testBackends()) {
       ).toHaveLength(1);
     });
 
+    it('computes percentiles, per group, skipping nulls and non-numbers', async () => {
+      const cont = (p: string, list = '[10, 20, 30, 40]'): Promise<CypherValue> =>
+        one(`UNWIND ${list} AS x RETURN percentileCont(x, ${p})`);
+      const disc = (p: string, list = '[10, 20, 30, 40]'): Promise<CypherValue> =>
+        one(`UNWIND ${list} AS x RETURN percentileDisc(x, ${p})`);
+      expect(await cont('0.5')).toBe(25);
+      expect(await cont('0.25')).toBe(17.5);
+      expect(await cont('1')).toBe(40);
+      expect(await cont('0.5', '[3, 1, 2]')).toBe(2);
+      // Disc keeps the type: integers stay integers, mixed values keep theirs.
+      expect(await disc('0.5')).toBe(20n);
+      expect(await disc('0.51')).toBe(30n);
+      expect(await disc('0')).toBe(10n);
+      expect(await disc('0.5', "[1, null, 'x', 2.5, 4]")).toBe(2.5);
+      expect(await disc('0.5', '[null]')).toBe(null);
+      expect(await cont('0.5', '[]')).toBe(null);
+      expect(await disc('null')).toBe(null);
+      expect(
+        await rows(
+          'MATCH (n:P) RETURN n.team AS t, percentileDisc(n.age, 1.0) AS p, percentileCont(n.age, 0.5) AS c ORDER BY t',
+        ),
+      ).toEqual([
+        { t: 'a', p: 40n, c: 35 },
+        { t: 'b', p: 20n, c: 20 },
+      ]);
+    });
+
+    it('raises NumberOutOfRange for a percentile outside 0 to 1, when the query runs', async () => {
+      for (const p of [1.5, -0.1, 2n]) {
+        const query = 'UNWIND [1, 2] AS x RETURN percentileCont(x, $p) AS v';
+        expect(() => graph.compile(query)).not.toThrow();
+        await expect(rows(query, { p })).rejects.toMatchObject({ code: 'NumberOutOfRange' });
+      }
+      await expect(
+        rows('UNWIND [1] AS x RETURN percentileDisc(x, $p) AS v', { p: 'half' }),
+      ).rejects.toThrow(/must be a number/);
+      expect(() => graph.compile("UNWIND [1] AS x RETURN percentileDisc(x, 'a')")).toThrow(
+        SemanticError,
+      );
+      expect(() => graph.compile('UNWIND [1] AS x RETURN percentileDisc(x)')).toThrow(
+        SemanticError,
+      );
+    });
+
     it('rejects aggregates in the wrong places', () => {
       const compile = (q: string): unknown => graph.compile(q);
       expect(() => compile('MATCH (n) WHERE count(*) > 1 RETURN n')).toThrow(SemanticError);

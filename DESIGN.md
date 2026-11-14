@@ -136,7 +136,9 @@ A node or relationship bound by MATCH is a table alias. Inside a JSON value (a l
 
 ### Aggregation
 
-`count(*)`, `count`, `sum`, `avg`, `min`, `max`, and `collect` (each with `DISTINCT`) are in `src/planner/aggregates.ts`. They skip nulls. `sum` of integers is an integer and becomes a float when any value is a float; no values sum to `0`. `avg` is always a float. `min`/`max` of JSON values of different types use Cypher's order across types. `collect` gives a list in no particular order; of nodes or relationships, a list of them as entity values (see "Entities as values"). `stDev`, the percentiles, and `min`/`max` of nodes or relationships are not supported yet.
+`count(*)`, `count`, `sum`, `avg`, `min`, `max`, `collect`, `percentileDisc`, and `percentileCont` (each with `DISTINCT`) are in `src/planner/aggregates.ts`. They skip nulls. `sum` of integers is an integer and becomes a float when any value is a float; no values sum to `0`. `avg` is always a float. `min`/`max` of JSON values of different types use Cypher's order across types. `collect` gives a list in no particular order; of nodes or relationships, a list of them as entity values (see "Entities as values"). `stDev` and `min`/`max` of nodes or relationships are not supported yet.
+
+The percentiles have no portable SQL aggregate (SQLite has none), so each one aggregates the group's numbers into a sorted JSON list (other values are skipped, as in `sum`) and picks from it with Neo4j's rules. `percentileDisc(x, p)` takes the element at `max(ceil(p * n) - 1, 0)`, keeping its type. `percentileCont(x, p)` interpolates linearly between the elements at `floor(p * (n - 1))` and `ceil(p * (n - 1))`, as a float. The percentile `p` is not aggregated. It may use the grouping keys, so it's checked per group: outside 0.0 to 1.0 raises `CypherArgumentError` (`NumberOutOfRange`) when the query runs. No values, or a null `p`, gives null.
 
 A RETURN with an aggregate is planned as two levels:
 

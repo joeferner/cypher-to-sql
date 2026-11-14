@@ -6,8 +6,17 @@ import { children } from './walk.js';
 // Aggregate functions. They skip null values, as in Cypher, and are compiled
 // to SQL aggregates over the groups of the RETURN's grouping keys.
 
-const SUPPORTED = new Set(['count', 'sum', 'avg', 'min', 'max', 'collect']);
-const UNSUPPORTED = new Set(['stdev', 'stdevp', 'percentilecont', 'percentiledisc']);
+const SUPPORTED = new Set([
+  'count',
+  'sum',
+  'avg',
+  'min',
+  'max',
+  'collect',
+  'percentilecont',
+  'percentiledisc',
+]);
+const UNSUPPORTED = new Set(['stdev', 'stdevp']);
 
 export function isAggregateCall(call: ast.FunctionCall): boolean {
   const name = call.name.toLowerCase();
@@ -55,10 +64,12 @@ export function compileAggregate(c: ExprCompiler, node: ast.FunctionCall | ast.C
       position: node.position,
     });
   }
-  if (node.args.length !== 1) {
-    throw new SemanticError(`Function ${node.name}() takes 1 argument, got ${node.args.length}`, {
-      position: node.position,
-    });
+  const arity = fn.startsWith('percentile') ? 2 : 1;
+  if (node.args.length !== arity) {
+    throw new SemanticError(
+      `Function ${node.name}() takes ${arity} argument${arity === 1 ? '' : 's'}, got ${node.args.length}`,
+      { position: node.position },
+    );
   }
   if (callsRand(node.args[0]!)) {
     throw new SemanticError(`The argument of ${node.name}() must not call rand()`, {
@@ -72,13 +83,19 @@ export function compileAggregate(c: ExprCompiler, node: ast.FunctionCall | ast.C
   }
   c.aggregation = 'inside';
   let arg: Expr;
+  let percentile: Expr | undefined;
   try {
     arg = c.compile(node.args[0]!);
+    // The percentile is per group (it may use the grouping keys), not aggregated.
+    percentile = node.args[1] ? c.compile(node.args[1]) : undefined;
   } finally {
     c.aggregation = 'allowed';
   }
   const aggregate = { c, node, arg, distinct: node.distinct ? 'DISTINCT ' : '' };
   switch (fn) {
+    case 'percentiledisc':
+    case 'percentilecont':
+      return percentileOf(aggregate, percentile!, fn === 'percentilecont');
     case 'count':
       return count(aggregate);
     case 'sum':
@@ -209,6 +226,89 @@ function minMax({ c, node, arg }: Aggregate, fn: 'min' | 'max'): Expr {
         },
       );
   }
+}
+
+/**
+ * `percentileDisc(x, p)` and `percentileCont(x, p)` over the group's numbers
+ * (other values are skipped, as in sum()), sorted into a JSON list of `n`
+ * values, with Neo4j's rules:
+ *
+ * - disc: the value at index `max(ceil(p * n) - 1, 0)`, of its own type.
+ * - cont: a float between the values at `floor(p * (n - 1))` and `ceil(...)`,
+ *   interpolated linearly.
+ *
+ * Null when there are no values or `p` is null; `p` outside 0.0 to 1.0 raises
+ * ArgumentError (NumberOutOfRange) when the query runs.
+ */
+function percentileOf(
+  { c, node, arg, distinct }: Aggregate,
+  percentile: Expr,
+  continuous: boolean,
+): Expr {
+  const d = c.b.dialect;
+  if (arg.type === 'null' || percentile.type === 'null') {
+    return result('NULL', 'null');
+  }
+  if (arg.type !== 'integer' && arg.type !== 'float' && arg.type !== 'json') {
+    throw typeError('a number', arg.shape ?? arg.type, node.args[0]!.position);
+  }
+  const resultType = continuous ? 'float' : arg.type;
+  const notNumber = (): string =>
+    c.b.typeError(
+      `Type mismatch: the percentile of ${node.name}() must be a number`,
+      node.args[1]!.position,
+      'float',
+    );
+  let p: string;
+  if (percentile.type === 'integer' || percentile.type === 'float') {
+    p = d.toFloat(percentile.sql);
+  } else if (percentile.type === 'json') {
+    const t = d.jsonType(percentile.sql);
+    p =
+      `(CASE WHEN ${d.jsonIsNull(percentile.sql)} THEN NULL WHEN ${t} IN ${NUMBER_TYPES} ` +
+      `THEN ${d.toFloat(d.fromJson(percentile.sql, 'number'))} ELSE ${notNumber()} END)`;
+  } else {
+    throw typeError('a number', percentile.shape ?? percentile.type, node.args[1]!.position);
+  }
+
+  // The numbers in ascending order, as a JSON list.
+  const number = arg.type === 'json' ? d.toFloat(d.fromJson(arg.sql, 'number')) : arg.sql;
+  const list = d.jsonAggregate(arg.type === 'json' ? arg.sql : d.toJson(arg.sql, arg.type), {
+    distinct: distinct !== '',
+    orderBy: [`${number} ASC`],
+    filter:
+      arg.type === 'json' ? `${d.jsonType(arg.sql)} IN ${NUMBER_TYPES}` : `${arg.sql} IS NOT NULL`,
+  });
+  const n = d.listLength(list);
+  const at = (index: string): string => d.jsonElement(list, index);
+  let value: string;
+  if (continuous) {
+    const f = `(${p} * (${n} - 1))`;
+    const lo = d.truncate(d.math('floor', [f]));
+    const hi = d.truncate(d.math('ceil', [f]));
+    const v = (index: string): string => d.toFloat(d.fromJson(at(index), 'number'));
+    value =
+      `(CASE WHEN ${lo} = ${hi} THEN ${v(lo)} ` +
+      `ELSE ${v(lo)} * (${hi} - ${f}) + ${v(hi)} * (${f} - ${lo}) END)`;
+  } else {
+    const ceil = d.truncate(d.math('ceil', [`${p} * ${n}`]));
+    const element = at(`(CASE WHEN ${ceil} < 1 THEN 0 ELSE ${ceil} - 1 END)`);
+    value = arg.type === 'json' ? element : d.fromJson(element, arg.type);
+  }
+  const outOfRange = c.b.raise(
+    {
+      kind: 'argument',
+      code: 'NumberOutOfRange',
+      message: `The percentile of ${node.name}() must be between 0.0 and 1.0`,
+      position: node.args[1]!.position,
+    },
+    resultType,
+  );
+  return result(
+    `(CASE WHEN ${p} IS NULL THEN NULL WHEN ${p} < 0 OR ${p} > 1 THEN ${outOfRange} ` +
+      `WHEN COALESCE(${n}, 0) = 0 THEN NULL ELSE ${value} END)`,
+    resultType,
+  );
 }
 
 /** A list of the non-null values (in no particular order). */
