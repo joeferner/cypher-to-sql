@@ -773,7 +773,11 @@ export class ExprCompiler {
           const [ls, rs] = left.type === 'json' ? [value, s.sql] : [s.sql, value];
           return (
             `(CASE WHEN ${j.jsonType} IS NULL OR ${j.jsonType} = 'null' OR ${s.sql} IS NULL THEN NULL ` +
-            `WHEN ${j.jsonType} IN ${types} THEN ${this.compareSame(op, ls, rs, cls, scalarSide.type === 'float' ? [s.sql] : [])} ` +
+            `WHEN ${j.jsonType} IN ${types} THEN ${this.compareSame(op, ls, rs, cls, [
+              ...(scalarSide.type === 'float' ? [s.sql] : []),
+              // The JSON side may be a tagged NaN.
+              ...(cls === 'number' ? [value] : []),
+            ])} ` +
             `ELSE ${mismatch} END)`
           );
         }),
@@ -784,6 +788,9 @@ export class ExprCompiler {
       this.share([left, right], ([l, r]) => {
         const lt = l!.jsonType;
         const rt = r!.jsonType;
+        // Either may be NaN (a tagged float, see Dialect.toJson).
+        const ln = d.fromJson(l!.sql, 'number');
+        const rn = d.fromJson(r!.sql, 'number');
         const same = (cls: 'string' | 'boolean'): string =>
           this.compareSame(op, d.fromJson(l!.sql, cls), d.fromJson(r!.sql, cls), cls);
         const sortKey = (j: string): string =>
@@ -800,7 +807,7 @@ export class ExprCompiler {
         return (
           `(CASE WHEN ${lt} IS NULL OR ${lt} = 'null' OR ${rt} IS NULL OR ${rt} = 'null' THEN NULL ` +
           `WHEN ${lt} IN ${NUMBER_TYPES} AND ${rt} IN ${NUMBER_TYPES} THEN ` +
-          `${d.fromJson(l!.sql, 'number')} ${op} ${d.fromJson(r!.sql, 'number')} ` +
+          `${this.compareSame(op, ln, rn, 'number', [ln, rn])} ` +
           `WHEN ${lt} <> ${rt} THEN ${mismatch} ` +
           // Temporal values of one kind compare by their sort key (by instant).
           `WHEN ${lt} IN ${TEMPORAL_TYPES} THEN ${d.compareStrings(sortKey(l!.sql), op, sortKey(r!.sql))} ` +

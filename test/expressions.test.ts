@@ -85,6 +85,18 @@ for (const backend of testBackends()) {
         expect(Number.isNaN(await v(nan))).toBe(true);
         // A float that is not NaN compares as before.
         expect(await v('1.5 > 1')).toBe(true);
+        // In JSON (lists, UNWIND) NaN and infinities are tagged floats, and stay numbers.
+        expect(await v(`[${nan}, 1.0 / 0.0, -1.0 / 0.0, 1.5]`)).toEqual([
+          NaN,
+          Infinity,
+          -Infinity,
+          1.5,
+        ]);
+        const unwound = await graph.query(
+          `UNWIND [${nan}] AS x RETURN x = x AS eq, x <> 1 AS ne, x > 1 AS gt, x + 1 AS plus, toString(x) AS s`,
+        );
+        expect(unwound).toEqual([{ eq: false, ne: true, gt: false, plus: NaN, s: 'NaN' }]);
+        expect(await v(`[1.0 / 0.0][0] > 1e300`)).toBe(true);
       } else {
         // SQLite has no NaN: 0.0 / 0.0 is null, so comparisons with it are null.
         expect(await v(nan)).toBe(null);

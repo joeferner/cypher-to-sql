@@ -23,9 +23,23 @@ const SQL_TYPES: Record<ScalarType, string> = {
  * shortest exact form. NaN and infinity have no JSON form. A subquery computes
  * the value once.
  */
+/** Condition: the JSON value is a tagged NaN or infinity (see `floatToJsonb`). */
+function isSpecialFloat(json: string): string {
+  return `(jsonb_typeof(${json}) = 'object' AND (${json}) ->> '${ENTITY_TAG}' = 'float')`;
+}
+
+/**
+ * A float as JSON. JSON has no NaN or infinity, so those are tagged objects
+ * (`{"~cypher": "float", "~s": "NaN"}`), which `jsonType` reads as a float and
+ * `fromJson` as the number.
+ */
 function floatToJsonb(value: string): string {
+  const special = (text: string): string =>
+    `jsonb_build_object('${ENTITY_TAG}', 'float', '~s', '${text}')`;
   return (
-    `(SELECT CASE WHEN f IN ('NaN'::float8, 'Infinity'::float8, '-Infinity'::float8) THEN NULL ` +
+    `(SELECT CASE WHEN f = 'NaN'::float8 THEN ${special('NaN')} ` +
+    `WHEN f = 'Infinity'::float8 THEN ${special('Infinity')} ` +
+    `WHEN f = '-Infinity'::float8 THEN ${special('-Infinity')} ` +
     `WHEN f::text::numeric = trunc(f::text::numeric) THEN to_jsonb(round(f::text::numeric, 1)) ` +
     `ELSE to_jsonb(f::text::numeric) END FROM (SELECT (${value})::double precision AS f) AS ft)`
   );
@@ -149,15 +163,21 @@ export function postgres(): Dialect {
         case 'boolean':
           return `(CASE WHEN jsonb_typeof(${json}) = 'boolean' THEN ${json} END)::boolean`;
         case 'number':
-          return `(CASE WHEN jsonb_typeof(${json}) = 'number' THEN ${json} END)::numeric`;
+          return (
+            `(CASE WHEN jsonb_typeof(${json}) = 'number' THEN (${json})::numeric ` +
+            `WHEN ${isSpecialFloat(json)} THEN ((${json}) ->> '~s')::numeric END)`
+          );
         case 'integer':
           // Also guarded by range: a constant float such as 1e21 must not fail the cast.
           return (
             `(CASE WHEN jsonb_typeof(${json}) = 'number' THEN CASE WHEN (${json})::numeric ` +
             `BETWEEN -9223372036854775808 AND 9223372036854775807 THEN ${json} END END)::bigint`
           );
-        default:
-          return `(CASE WHEN jsonb_typeof(${json}) = 'number' THEN ${json} END)::${SQL_TYPES[type]}`;
+        case 'float':
+          return (
+            `(CASE WHEN jsonb_typeof(${json}) = 'number' THEN (${json})::double precision ` +
+            `WHEN ${isSpecialFloat(json)} THEN ((${json}) ->> '~s')::double precision END)`
+          );
       }
     },
     toJson: (value, type) => (type === 'float' ? floatToJsonb(value) : `to_jsonb(${value})`),

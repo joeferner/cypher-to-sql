@@ -55,6 +55,10 @@ export function parseCypherJson(text: string): CypherValue {
       if (tag === 'duration') {
         return new CypherDuration(String((value as Record<string, unknown>)['~s']));
       }
+      // NaN or infinity, which JSON numbers cannot hold.
+      if (tag === 'float') {
+        return Number((value as Record<string, unknown>)['~s']);
+      }
     }
     return value;
   }) as CypherValue;

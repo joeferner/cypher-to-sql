@@ -24,7 +24,7 @@ for (const backend of testBackends()) {
       graph = createGraph({ dialect, executor, mapping });
       await createGraph({ dialect, executor, mapping, readOnly: false }).query(
         `CREATE (:P {name: 'b', age: 30, v: 2}), (:P {name: 'B', age: 20, v: 'x'}),
-                (:P {name: 'a', age: 30}), (:P {name: 'c', v: true})`,
+                (a:P {name: 'a', age: 30})-[:R]->(a), (:P {name: 'c', v: true})`,
       );
     });
     afterAll(() => backend.dispose?.());
@@ -56,6 +56,36 @@ for (const backend of testBackends()) {
       expect(
         await column('UNWIND [2, 1.5, {a: 1}, [1], null, false, "z"] AS x RETURN x ORDER BY x'),
       ).toEqual([{ a: 1n }, [1n], 'z', false, 1.5, 2n, null]);
+    });
+
+    it('orders entities and paths among the other types', async () => {
+      const query = (dir: string): string =>
+        "MATCH p = (n:P {name: 'a'})-[r]->() " +
+        "UNWIND [n, r, p, 1.5, ['list'], 'text', null, false, {a: 'map'}] AS x " +
+        `RETURN x ORDER BY x ${dir}`;
+      const kinds = (rows: CypherValue[]): string[] =>
+        rows.map((x) =>
+          x === null
+            ? 'null'
+            : Array.isArray(x)
+              ? 'list'
+              : typeof x === 'object'
+                ? x.constructor.name.replace('Cypher', '').toLowerCase()
+                : typeof x,
+        );
+      const ascending = [
+        'object',
+        'node',
+        'relationship',
+        'list',
+        'path',
+        'string',
+        'boolean',
+        'number',
+        'null',
+      ];
+      expect(kinds(await column(query('')))).toEqual(ascending);
+      expect(kinds(await column(query('DESC')))).toEqual([...ascending].reverse());
     });
 
     it('orders by expressions and by variables that are not returned', async () => {
