@@ -13,6 +13,7 @@ import { defaultMapping, validateMapping, type GraphMapping } from './mapping.js
 import { parse } from './parser/parse.js';
 import {
   createPlan,
+  createUnionPlan,
   executePlan,
   type ColumnSpec,
   type CompiledPlan,
@@ -76,14 +77,41 @@ export function createGraph(options: GraphOptions): Graph {
     if (readOnly) {
       assertQueryReadOnly(parsed);
     }
-    const query = resolveCalls(parsed, procedures);
-    assertSupported(query);
-    const plan = planQuery(query, options.dialect, mapping, writer, effective);
-    const first = query.clauses[0];
-    // A standalone call of a void procedure has no columns.
-    return first?.type === 'Call' && first.standalone && first.definition!.outputs.length === 0
-      ? createPlan([...plan.steps], [])
-      : plan;
+    const compileOne = (single: ast.Query): CompiledPlan => {
+      const query = resolveCalls(single, procedures);
+      assertSupported(query);
+      const plan = planQuery(query, options.dialect, mapping, writer, effective);
+      const first = query.clauses[0];
+      // A standalone call of a void procedure has no columns.
+      return first?.type === 'Call' && first.standalone && first.definition!.outputs.length === 0
+        ? createPlan([...plan.steps], [])
+        : plan;
+    };
+    const unions = parsed.unions ?? [];
+    if (unions.length === 0) {
+      return compileOne(parsed);
+    }
+    const all = unions[0]!.all;
+    const mixed = unions.find((u) => u.all !== all);
+    if (mixed) {
+      throw new SemanticError('UNION and UNION ALL cannot be mixed in one query', {
+        position: mixed.position,
+      });
+    }
+    const plans = [compileOne({ ...parsed, unions: undefined })];
+    const names = (plan: CompiledPlan): string =>
+      JSON.stringify(plan.columns.map((c) => c.name).sort());
+    for (const union of unions) {
+      const plan = compileOne(union.query);
+      if (names(plan) !== names(plans[0]!)) {
+        throw new SemanticError(
+          `All queries in a UNION must return the same column names: ${names(plans[0]!)} and ${names(plan)}`,
+          { position: union.position },
+        );
+      }
+      plans.push(plan);
+    }
+    return checkSteps(createUnionPlan(plans, !all), effective);
   };
 
   return {

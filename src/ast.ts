@@ -13,6 +13,11 @@ interface Node {
 export interface Query extends Node {
   type: 'Query';
   clauses: Clause[];
+  /**
+   * `UNION [ALL]` and the queries after it, in order; `clauses` is the first
+   * query. The results are put together; `UNION` removes duplicate records.
+   */
+  unions?: { all: boolean; position: SourcePosition; query: Query }[] | undefined;
 }
 
 export type Clause =

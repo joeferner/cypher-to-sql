@@ -82,12 +82,14 @@ export function parse(cypher: string): ast.Query {
     const clause = new AstBuilder(cypher).standaloneCall(query.oC_StandaloneCall()!);
     return { type: 'Query', position: pos(query), clauses: [clause] };
   }
-  if (regular.oC_Union().length > 0) {
-    throw new UnsupportedFeatureError('UNION is not supported yet', {
-      position: pos(regular.oC_Union(0)!),
-    });
-  }
-  return new AstBuilder(cypher).query(regular.oC_SingleQuery());
+  const builder = new AstBuilder(cypher);
+  const first = builder.query(regular.oC_SingleQuery());
+  const unions = regular.oC_Union().map((union) => ({
+    all: union.ALL() !== null,
+    position: pos(union),
+    query: builder.query(union.oC_SingleQuery()!),
+  }));
+  return unions.length > 0 ? { ...first, unions } : first;
 }
 
 class ThrowingErrorListener extends BaseErrorListener {
@@ -918,7 +920,7 @@ class AstBuilder {
     const regular = exists.oC_RegularQuery();
     if (regular) {
       if (regular.oC_Union().length > 0) {
-        throw new UnsupportedFeatureError('UNION is not supported yet', {
+        throw new UnsupportedFeatureError('UNION inside EXISTS { } is not supported yet', {
           position: pos(regular.oC_Union(0)!),
         });
       }

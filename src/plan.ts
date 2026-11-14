@@ -1,6 +1,6 @@
 import type { ScalarType } from './dialect/dialect.js';
 import type { SourcePosition } from './errors.js';
-import type { Row, SqlExecutor } from './executor.js';
+import type { Row, SqlExecutor, SqlTx } from './executor.js';
 import type { Limits } from './limits.js';
 import {
   CypherArgumentError,
@@ -322,6 +322,11 @@ export interface CompiledPlan {
   readonly steps: readonly PlanStep[];
   /** Result columns, built from the rows of the last step. Empty for queries without `RETURN`. */
   readonly columns: readonly ColumnSpec[];
+  /**
+   * For `UNION [ALL]`: the plan of each query, run in order in one transaction
+   * (`steps` holds all their steps, for reading). `distinct` for UNION.
+   */
+  readonly union?: { readonly parts: readonly CompiledPlan[]; readonly distinct: boolean };
   /** Readable form of the plan, for logging and tests. */
   explain(): string;
 }
@@ -367,12 +372,110 @@ export function createPlan(steps: PlanStep[], columns: ColumnSpec[]): CompiledPl
   };
 }
 
+/** The plan of `q1 UNION [ALL] q2 ...`, from the plans of its queries. */
+export function createUnionPlan(parts: CompiledPlan[], distinct: boolean): CompiledPlan {
+  return {
+    readOnly: parts.every((p) => p.readOnly),
+    steps: parts.flatMap((p) => p.steps),
+    columns: parts[0]!.columns,
+    union: { parts, distinct },
+    explain: () =>
+      parts
+        .map((p, i) => `-- query ${i + 1} of ${distinct ? 'UNION' : 'UNION ALL'}\n${p.explain()}`)
+        .join('\n'),
+  };
+}
+
 export async function executePlan(
   plan: CompiledPlan,
   options: ExecuteOptions,
 ): Promise<Record<string, CypherValue>[]> {
   const { executor, limits } = options;
   const deadline = Date.now() + limits.timeoutMs;
+  const records = await executor.transaction(plan.readOnly ? 'read' : 'write', async (tx) => {
+    const union = plan.union;
+    if (!union) {
+      return runPlan(tx, plan, options, deadline);
+    }
+    // Every query of the UNION in the same transaction, in order; their records
+    // put together, and for UNION (not UNION ALL) each distinct record once.
+    const all: Record<string, CypherValue>[] = [];
+    const seen = new Set<string>();
+    for (const part of union.parts) {
+      for (const raw of await runPlan(tx, part, options, deadline)) {
+        // In the column order of the first query.
+        const record = Object.fromEntries(plan.columns.map((c) => [c.name, raw[c.name] ?? null]));
+        if (union.distinct) {
+          const key = plan.columns.map((c) => equivalenceKey(record[c.name] ?? null)).join('|');
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+        }
+        all.push(record);
+      }
+    }
+    return all;
+  });
+  if (records.length > limits.maxResultRows) {
+    throw new LimitExceededError(
+      `The query returned more than ${limits.maxResultRows} records (maxResultRows)`,
+      { hint: 'Add LIMIT to the query.' },
+    );
+  }
+  return records;
+}
+
+/**
+ * A text that is the same for values that are equivalent in Cypher, as DISTINCT
+ * and UNION compare them: `1` and `1.0` are, `null` is equivalent to `null`,
+ * entities compare by id, and lists and maps by their elements.
+ */
+function equivalenceKey(value: CypherValue): string {
+  if (value === null) {
+    return 'null';
+  }
+  if (typeof value === 'bigint') {
+    return `#${value}`;
+  }
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? `#${BigInt(value)}` : `#${value}`;
+  }
+  if (typeof value === 'string' || typeof value === 'boolean') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(equivalenceKey).join(',')}]`;
+  }
+  if (value instanceof CypherNode) {
+    return `node:${value.id}`;
+  }
+  if (value instanceof CypherRelationship) {
+    return `relationship:${value.id}`;
+  }
+  if (value instanceof CypherPath) {
+    return `path:${[...value.nodes, ...value.relationships].map(equivalenceKey).join(',')}`;
+  }
+  if (value instanceof CypherTemporal) {
+    return `${value.kind}:${value.text}`;
+  }
+  if (value instanceof CypherDuration) {
+    return `duration:${value.text}`;
+  }
+  return `{${Object.keys(value)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${equivalenceKey(value[k] ?? null)}`)
+    .join(',')}}`;
+}
+
+/** Runs one plan (not a UNION) in `tx`, and assembles its records. */
+async function runPlan(
+  tx: SqlTx,
+  plan: CompiledPlan,
+  options: ExecuteOptions,
+  deadline: number,
+): Promise<Record<string, CypherValue>[]> {
+  const { limits } = options;
   const state: RunState = {
     entityIds: new Map(),
     searches: new Map(),
@@ -396,7 +499,7 @@ export async function executePlan(
   // deferred node deletions (`afterRows`) run before it.
   const final = parts.at(-1)?.perRow.length === 0 ? parts.at(-1) : undefined;
 
-  const rows = await executor.transaction(plan.readOnly ? 'read' : 'write', async (tx) => {
+  const rows = await (async (): Promise<Row[]> => {
     const run = async (step: PlanStep, row: Row | undefined): Promise<Row[]> => {
       if (Date.now() > deadline) {
         throw new LimitExceededError(`Query exceeded the time limit of ${limits.timeoutMs} ms`);
@@ -605,7 +708,7 @@ export async function executePlan(
       await runPart(final);
     }
     return last;
-  });
+  })();
 
   if (plan.columns.length === 0) {
     return [];

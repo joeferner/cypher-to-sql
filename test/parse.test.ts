@@ -163,8 +163,17 @@ describe('parse: clauses', () => {
     });
   });
 
-  it('rejects constructs that change the query shape', () => {
-    expect(() => parse('RETURN 1 UNION RETURN 2')).toThrow(/UNION is not supported/);
+  it('parses UNION and UNION ALL as the first query plus the ones after it', () => {
+    const query = parse('RETURN 1 AS x UNION RETURN 2 AS x UNION ALL MATCH (n) RETURN n AS x');
+    expect(query.clauses).toMatchObject([{ type: 'Return' }]);
+    expect(query.unions).toMatchObject([
+      { all: false, query: { clauses: [{ type: 'Return' }] } },
+      { all: true, query: { clauses: [{ type: 'Match' }, { type: 'Return' }] } },
+    ]);
+    expect(parse('RETURN 1').unions).toBeUndefined();
+    expect(() => parse('MATCH (n) WHERE EXISTS { RETURN 1 UNION RETURN 2 } RETURN n')).toThrow(
+      /UNION inside EXISTS/,
+    );
   });
 
   it('parses a standalone CALL, explicit or implicit, with or without YIELD', () => {

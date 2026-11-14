@@ -30,8 +30,14 @@ export function hasWriteClause(query: ast.Query): boolean {
   return query.clauses.some((c) => writeClauseName(c) !== undefined);
 }
 
-/** Rejects every write clause. Runs before any feature check, so the error is always the same. */
+/** Rejects every write clause, in every query of a UNION. Runs before any feature check, so the error is always the same. */
 export function assertQueryReadOnly(query: ast.Query): void {
+  for (const part of [query, ...(query.unions ?? []).map((u) => u.query)]) {
+    assertPartReadOnly(part);
+  }
+}
+
+function assertPartReadOnly(query: ast.Query): void {
   for (const clause of query.clauses) {
     const name = writeClauseName(clause);
     if (name !== undefined) {

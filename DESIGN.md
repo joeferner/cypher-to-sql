@@ -280,6 +280,10 @@ Pattern predicates (`WHERE (a)-[:T]->()`), `EXISTS { pattern WHERE c }`, `EXISTS
 - Aggregates inside a comprehension's WHERE or projection are a `SemanticError`; a quantifier needs WHERE. `[x IN l]` without WHERE or `|` is a list literal holding `x IN l`, as the grammar reads it.
 - Known types that do not fit (`true[0]`, `[1][1.5]`, `[x IN 5 | x]`) are compile-time type errors; values known only at run time raise a `CypherTypeError`.
 
+### UNION
+
+`q1 UNION q2 ...` and `q1 UNION ALL q2 ...` compile each query to its own plan (`createUnionPlan`). The runner runs them in order in one transaction and puts their records together, in the first query's column order. Each query may return different kinds of values in a column (nodes in one, JSON in another), so the records are combined in TypeScript, not with SQL `UNION`. `UNION` keeps the first of each set of equivalent records, as Cypher compares them for DISTINCT: `1` and `1.0` are the same, entities compare by id, and null equals null. (SQL `DISTINCT` in a RETURN still compares JSON text, so it keeps `1` and `1.0` apart.) Every query must return the same column names, in any order, and `UNION` and `UNION ALL` cannot be mixed; both are `SemanticError`s. The read-only gate checks every query. UNION inside `EXISTS { }` is not supported yet.
+
 ### Procedures
 
 `createGraph({ procedures })` registers read-only procedures by name (`my.proc`, case-sensitive): typed inputs and outputs, and a TypeScript `call(args)` that returns rows. There are no built-in procedures. The graph resolves each `CALL` before planning (`resolveCalls` in `src/graph.ts`): an unknown name or a wrong number of arguments is a `SemanticError`, and an implicit call (`CALL my.proc`, standalone only) takes the parameters named like the inputs.
