@@ -1,4 +1,5 @@
 import type { SourcePosition } from './errors.js';
+import type { Procedure } from './procedures.js';
 
 // Typed AST for the subset of openCypher the library understands. Constructs the
 // parser recognizes but the library does not support yet are kept as
@@ -24,8 +25,28 @@ export type Clause =
   | DeleteClause
   | MergeClause
   | ForeachClause
+  | CallClause
   | ReturnClause
   | UnsupportedClause;
+
+/**
+ * `CALL proc(args) YIELD out AS name, ... WHERE condition`: the rows of a
+ * procedure the caller registered (see `GraphOptions.procedures`).
+ */
+export interface CallClause extends Node {
+  type: 'Call';
+  /** As written, with the namespace (`test.my.proc`). */
+  procedure: string;
+  /** `undefined` for an implicit call (`CALL proc`, standalone only): the arguments are parameters of the inputs' names. */
+  args: Expression[] | undefined;
+  /** `YIELD` items; `undefined` without YIELD or with `YIELD *`. */
+  yields: { output: string; variable: string; position: SourcePosition }[] | undefined;
+  where: Expression | undefined;
+  /** The whole query is this CALL (it then returns the procedure's outputs). */
+  standalone: boolean;
+  /** The registered procedure; the graph sets it before planning. */
+  definition?: Procedure | undefined;
+}
 
 /** `SET item, ...`: the items apply in order, each for every row. */
 export interface SetClause extends Node {
@@ -95,7 +116,7 @@ export interface LabelsItem {
 }
 
 /** Clauses that read rows (they come before any updating clause in a query part). */
-export type ReadingClause = MatchClause | UnwindClause;
+export type ReadingClause = MatchClause | UnwindClause | CallClause;
 
 /** Clauses that produce the rows a RETURN or CREATE works on. */
 export type RowClause = ReadingClause | WithClause;

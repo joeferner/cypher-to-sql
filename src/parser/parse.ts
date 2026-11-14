@@ -57,6 +57,9 @@ import {
   type OC_SymbolicNameContext,
   OC_UpdatingClauseContext,
   OC_WithContext,
+  type OC_ProcedureNameContext,
+  type OC_StandaloneCallContext,
+  type OC_YieldItemsContext,
 } from './generated/CypherParser.js';
 
 const MAX_INT64 = 2n ** 63n - 1n;
@@ -76,9 +79,8 @@ export function parse(cypher: string): ast.Query {
   const query = tree.oC_Statement().oC_Query();
   const regular = query.oC_RegularQuery();
   if (!regular) {
-    throw new UnsupportedFeatureError('Procedure calls (CALL) are not supported', {
-      position: pos(query),
-    });
+    const clause = new AstBuilder(cypher).standaloneCall(query.oC_StandaloneCall()!);
+    return { type: 'Query', position: pos(query), clauses: [clause] };
   }
   if (regular.oC_Union().length > 0) {
     throw new UnsupportedFeatureError('UNION is not supported yet', {
@@ -169,7 +171,61 @@ class AstBuilder {
         variable: this.symbolicName(unwind.oC_Variable().oC_SymbolicName()),
       };
     }
-    return { type: 'UnsupportedClause', position: pos(ctx), name: 'CALL', write: false };
+    const call = ctx.oC_InQueryCall()!;
+    const invocation = call.oC_ExplicitProcedureInvocation();
+    return {
+      type: 'Call',
+      position: pos(call),
+      procedure: this.procedureName(invocation.oC_ProcedureName()),
+      args: invocation.oC_Expression().map((e) => this.expression(e)),
+      ...this.yieldItems(call.oC_YieldItems()),
+      standalone: false,
+    };
+  }
+
+  /** `CALL proc(args)` or `CALL proc` as the whole query, with `YIELD *`, items, or nothing. */
+  public standaloneCall(call: OC_StandaloneCallContext): ast.CallClause {
+    const explicit = call.oC_ExplicitProcedureInvocation();
+    const name = explicit
+      ? explicit.oC_ProcedureName()
+      : call.oC_ImplicitProcedureInvocation()!.oC_ProcedureName();
+    return {
+      type: 'Call',
+      position: pos(call),
+      procedure: this.procedureName(name),
+      args: explicit ? explicit.oC_Expression().map((e) => this.expression(e)) : undefined,
+      ...this.yieldItems(call.oC_YieldItems()),
+      standalone: true,
+    };
+  }
+
+  private procedureName(ctx: OC_ProcedureNameContext): string {
+    const namespace = ctx
+      .oC_Namespace()
+      .oC_SymbolicName()
+      .map((part) => `${this.symbolicName(part)}.`)
+      .join('');
+    return namespace + this.symbolicName(ctx.oC_SymbolicName());
+  }
+
+  /** YIELD items (`undefined` for none or `*`) and the WHERE after them. */
+  private yieldItems(ctx: OC_YieldItemsContext | null): Pick<ast.CallClause, 'yields' | 'where'> {
+    if (!ctx) {
+      return { yields: undefined, where: undefined };
+    }
+    const where = ctx.oC_Where();
+    return {
+      yields: ctx.oC_YieldItem().map((item) => {
+        const variable = this.symbolicName(item.oC_Variable().oC_SymbolicName());
+        const field = item.oC_ProcedureResultField();
+        return {
+          output: field ? this.symbolicName(field.oC_SymbolicName()) : variable,
+          variable,
+          position: pos(item),
+        };
+      }),
+      where: where ? this.expression(where.oC_Expression()) : undefined,
+    };
   }
 
   private updatingClause(ctx: OC_UpdatingClauseContext): ast.Clause {

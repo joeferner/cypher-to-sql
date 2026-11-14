@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CypherSyntaxError, parse, UnsupportedFeatureError, type ast } from '../src/index.js';
+import { CypherSyntaxError, parse, type ast } from '../src/index.js';
 
 /** The only clause of the RETURN-only query `RETURN <expr>`, as its expression. */
 function expr(text: string): ast.Expression {
@@ -116,10 +116,18 @@ describe('parse: clauses', () => {
       type: 'Delete',
       detach: true,
     });
-    expect(parse('MATCH (n) CALL db.labels() YIELD label RETURN label').clauses[1]).toMatchObject({
-      type: 'UnsupportedClause',
-      name: 'CALL',
-      write: false,
+    expect(
+      parse('MATCH (n) CALL db.labels(1) YIELD label AS l, x WHERE l > 0 RETURN l').clauses[1],
+    ).toMatchObject({
+      type: 'Call',
+      procedure: 'db.labels',
+      args: [{ type: 'Literal', value: 1n }],
+      yields: [
+        { output: 'label', variable: 'l' },
+        { output: 'x', variable: 'x' },
+      ],
+      where: { type: 'Binary', operator: '>' },
+      standalone: false,
     });
   });
 
@@ -156,8 +164,16 @@ describe('parse: clauses', () => {
   });
 
   it('rejects constructs that change the query shape', () => {
-    expect(() => parse('CALL db.labels()')).toThrow(UnsupportedFeatureError);
     expect(() => parse('RETURN 1 UNION RETURN 2')).toThrow(/UNION is not supported/);
+  });
+
+  it('parses a standalone CALL, explicit or implicit, with or without YIELD', () => {
+    expect(parse('CALL db.labels()').clauses).toMatchObject([
+      { type: 'Call', procedure: 'db.labels', args: [], yields: undefined, standalone: true },
+    ]);
+    expect(parse('CALL my.proc YIELD *').clauses).toMatchObject([
+      { type: 'Call', procedure: 'my.proc', args: undefined, yields: undefined, standalone: true },
+    ]);
   });
 
   it('parses query parts ending in WITH, in order', () => {

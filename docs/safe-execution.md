@@ -12,6 +12,8 @@ A main use of the library is running queries you did not write, for example quer
 
 For writes, make a separate graph with `readOnly: false` and its own executor and database role. Never pass it untrusted queries. A query without write clauses still runs in a `'read'` transaction on a write graph.
 
+Procedures you register (`createGraph({ procedures })`) can be called from a read-only graph, with arguments that the query chooses. They run your TypeScript, not SQL, so the database role doesn't limit them. Register only procedures that are safe for anyone who can send queries, and check their arguments.
+
 ## PostgreSQL role
 
 Give the executor of a read-only graph a role that can only read the graph's tables, and set its defaults there, so they hold even if an executor forgets them:

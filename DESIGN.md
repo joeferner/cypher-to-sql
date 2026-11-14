@@ -6,7 +6,7 @@ How cypher-to-sql works and the rules it keeps. For the roadmap and progress, se
 
 Version 1 runs read-only openCypher on PostgreSQL (including managed PostgreSQL such as RDS and Aurora, where graph extensions are not available) and SQLite. `CREATE`, `MERGE`, `SET`, `REMOVE`, and `DELETE` are available behind an explicit write mode, mainly so that the TCK can build its test graphs with the library itself. Coverage grows feature by feature, and every unsupported construct fails with a clear `UnsupportedFeatureError`.
 
-**Non-goals:** procedures (`CALL`), APOC, vendor-specific functions, and `LOAD CSV`. Managing application schemas: the library reads a mapping and never creates application tables. Database drivers, connections, and pooling: the caller runs the SQL with their own driver, and the library has no runtime dependency on any driver.
+**Non-goals:** built-in procedures (Neo4j's `db.*`, APOC, GDS), vendor-specific functions, and `LOAD CSV`. `CALL` works only with procedures the caller registers (see [Procedures](#procedures)). Managing application schemas: the library reads a mapping and never creates application tables. Database drivers, connections, and pooling: the caller runs the SQL with their own driver, and the library has no runtime dependency on any driver.
 
 Generated queries (for example, from an LLM) are a main use case. Error messages therefore say what is unsupported and, where possible, give a `hint` with a rewrite, so that an automated retry loop can fix the query.
 
@@ -276,6 +276,15 @@ Pattern predicates (`WHERE (a)-[:T]->()`), `EXISTS { pattern WHERE c }`, `EXISTS
 - `x` is a JSON value, except over a list literal of literals of one type, where it has that type, so that `none(x IN ['a'] WHERE x % 2 = 0)` is a compile-time type error.
 - Aggregates inside a comprehension's WHERE or projection are a `SemanticError`; a quantifier needs WHERE. `[x IN l]` without WHERE or `|` is a list literal holding `x IN l`, as the grammar reads it.
 - Known types that do not fit (`true[0]`, `[1][1.5]`, `[x IN 5 | x]`) are compile-time type errors; values known only at run time raise a `CypherTypeError`.
+
+### Procedures
+
+`createGraph({ procedures })` registers read-only procedures by name (`my.proc`, case-sensitive): typed inputs and outputs, and a TypeScript `call(args)` that returns rows. There are no built-in procedures. The graph resolves each `CALL` before planning (`resolveCalls` in `src/graph.ts`): an unknown name or a wrong number of arguments is a `SemanticError`, and an implicit call (`CALL my.proc`, standalone only) takes the parameters named like the inputs.
+
+- **In-query** `CALL my.proc(args) YIELD out AS x WHERE c` is planned like UNWIND over the procedure's rows (`ReadScope.addCall`): a `procedure` bind calls it when its step is bound and gives a JSON array with one list of output values per row, and each yielded variable is an element of the row. So each row of the query is joined with every row of the procedure, and none means no rows. A void procedure (no outputs) leaves the rows as they are.
+- **Standalone** `CALL my.proc(args)` becomes the CALL plus a RETURN of what it yields: every output in declared order without YIELD or with `YIELD *`. A void procedure gives no columns and no rows.
+- **Arguments** must be known before the query runs (literals, parameters, lists and maps of them, as for temporal functions), so the procedure runs once per query; arguments from the rows are an `UnsupportedFeatureError` for now. A literal of the wrong type is a `SemanticError` when compiling; a parameter of the wrong type is a `CypherTypeError` when the query runs. An integer for a FLOAT input arrives as a float; null fits every type.
+- `CALL` is a reading clause, so it works on a read-only graph. Aggregates in arguments and yielding a variable that is already bound (or twice) are `SemanticError`s.
 
 ## Ids (write mode)
 

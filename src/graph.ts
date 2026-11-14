@@ -1,6 +1,12 @@
 import type * as ast from './ast.js';
 import type { Dialect } from './dialect/dialect.js';
-import { LimitExceededError, ReadOnlyViolationError, UnsupportedFeatureError } from './errors.js';
+import {
+  LimitExceededError,
+  ReadOnlyViolationError,
+  SemanticError,
+  UnsupportedFeatureError,
+} from './errors.js';
+import { findProcedure, type Procedures } from './procedures.js';
 import type { SqlExecutor } from './executor.js';
 import { defaultLimits, lowerLimits, type Limits } from './limits.js';
 import { defaultMapping, validateMapping, type GraphMapping } from './mapping.js';
@@ -36,6 +42,8 @@ export interface GraphOptions {
   limits?: Partial<Limits> | undefined;
   /** How new entities get their ids (write mode). Defaults to `{ kind: 'database' }`. */
   idStrategy?: IdStrategy | undefined;
+  /** Procedures for `CALL name(args) YIELD ...`, by name. There are no built-in ones. */
+  procedures?: Procedures | undefined;
 }
 
 export interface QueryOptions {
@@ -58,17 +66,24 @@ export function createGraph(options: GraphOptions): Graph {
   const mapping = validateMapping(options.mapping ?? defaultMapping);
   const limits: Limits = { ...defaultLimits, ...options.limits };
   const idStrategy = options.idStrategy ?? { kind: 'database' };
+  const procedures = options.procedures ?? {};
   // A read-only graph has no write planner at all (see WritePlanner).
   const writer = readOnly ? undefined : new WritePlanner(options.dialect, mapping, idStrategy);
 
   const compile = (cypher: string, queryOptions?: QueryOptions): CompiledPlan => {
     const effective = lowerLimits(limits, queryOptions?.limits);
-    const query = parse(cypher);
+    const parsed = parse(cypher);
     if (readOnly) {
-      assertQueryReadOnly(query);
+      assertQueryReadOnly(parsed);
     }
+    const query = resolveCalls(parsed, procedures);
     assertSupported(query);
-    return planQuery(query, options.dialect, mapping, writer, effective);
+    const plan = planQuery(query, options.dialect, mapping, writer, effective);
+    const first = query.clauses[0];
+    // A standalone call of a void procedure has no columns.
+    return first?.type === 'Call' && first.standalone && first.definition!.outputs.length === 0
+      ? createPlan([...plan.steps], [])
+      : plan;
   };
 
   return {
@@ -220,7 +235,75 @@ function isUpdateClause(clause: ast.Clause): boolean {
 }
 
 function isRowClause(clause: ast.Clause): clause is ast.RowClause {
-  return clause.type === 'Match' || clause.type === 'Unwind' || clause.type === 'With';
+  return (
+    clause.type === 'Match' ||
+    clause.type === 'Unwind' ||
+    clause.type === 'Call' ||
+    clause.type === 'With'
+  );
+}
+
+/**
+ * Gives each CALL its registered procedure and its arguments (an implicit call
+ * takes parameters of the inputs' names). A standalone CALL becomes CALL plus
+ * a RETURN of what it yields (every output, without YIELD or with `YIELD *`).
+ */
+function resolveCalls(query: ast.Query, procedures: Procedures): ast.Query {
+  const clauses = query.clauses.flatMap((clause): ast.Clause[] => {
+    if (clause.type !== 'Call') {
+      return [clause];
+    }
+    const definition = findProcedure(procedures, clause.procedure, clause.position);
+    const args =
+      clause.args ??
+      definition.inputs.map((input): ast.Expression => ({
+        type: 'Parameter',
+        position: clause.position,
+        name: input.name,
+      }));
+    if (args.length !== definition.inputs.length) {
+      throw new SemanticError(
+        `${clause.procedure}() takes ${definition.inputs.length} argument(s), got ${args.length}`,
+        { position: clause.position },
+      );
+    }
+    if (!clause.standalone) {
+      return [{ ...clause, args, definition }];
+    }
+    const position = clause.position;
+    const yields =
+      clause.yields ??
+      definition.outputs.map((o) => ({ output: o.name, variable: o.name, position }));
+    const items: ast.ProjectionItem[] = yields.map((y) => ({
+      position: y.position,
+      expression: { type: 'Variable', position: y.position, name: y.variable },
+      alias: y.variable,
+      name: y.variable,
+    }));
+    const ret: ast.ReturnClause = {
+      type: 'Return',
+      position,
+      distinct: false,
+      star: false,
+      // A void procedure returns no rows and no columns (see planQuery).
+      items:
+        items.length > 0
+          ? items
+          : [
+              {
+                position,
+                expression: { type: 'Literal', position, value: null },
+                alias: 'void',
+                name: 'void',
+              },
+            ],
+      orderBy: [],
+      skip: undefined,
+      limit: items.length > 0 ? undefined : { type: 'Literal', position, value: 0n },
+    };
+    return [{ ...clause, args, yields, definition }, ret];
+  });
+  return { ...query, clauses };
 }
 
 /**

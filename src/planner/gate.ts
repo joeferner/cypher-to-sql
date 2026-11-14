@@ -115,6 +115,8 @@ function clauseExpressions(clause: ast.Clause): { expr: ast.Expression; where: b
           i.kind === 'property' ? [i.target, i.value] : i.kind === 'labels' ? [] : [i.value],
         ),
       ]);
+    case 'Call':
+      return [...plain(clause.args ?? []), ...where(clause.where)];
     case 'UnsupportedClause':
       return [];
   }

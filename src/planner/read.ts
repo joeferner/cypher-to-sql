@@ -5,6 +5,8 @@ import type { BindValue, ColumnSpec, PlanStep, ValueSource } from '../plan.js';
 import { containsAggregate, isAggregateCall } from './aggregates.js';
 import { ExprCompiler, orderTerm, type Expr, type VariableBinding } from './expr.js';
 import { constantValue, type SqlBuilder } from './sql-builder.js';
+import { acceptsValue } from '../procedures.js';
+import { isKnownBeforeRun } from '../temporal-functions.js';
 import { children, mapChildren, patternVariables } from './walk.js';
 
 interface SelectOptions {
@@ -166,6 +168,8 @@ export class ReadScope {
         scope.addMatch(clause);
       } else if (clause.type === 'Unwind') {
         scope.addUnwind(clause);
+      } else if (clause.type === 'Call') {
+        scope.addCall(clause);
       } else {
         scope = scope.project(clause);
       }
@@ -965,6 +969,88 @@ export class ReadScope {
     this.order.push(u.order);
     this.ordered = true;
     this.bindings.set(unwind.variable, { kind: 'value', sql: u.value });
+  }
+
+  /**
+   * `CALL proc(args) YIELD ...`: like UNWIND over the procedure's rows, which
+   * the runner gets by calling it when the step is bound (so the arguments must
+   * be known before the query runs). Each yielded output is a value of the row.
+   * A void procedure leaves the rows as they are.
+   */
+  private addCall(call: ast.CallClause): void {
+    const procedure = call.definition;
+    if (!procedure) {
+      throw new Error(`Internal error: procedure ${call.procedure} was not resolved`);
+    }
+    const args = call.args ?? [];
+    for (const arg of args) {
+      if (containsAggregate(arg)) {
+        throw new SemanticError('Aggregate functions cannot be used in procedure arguments', {
+          position: arg.position,
+        });
+      }
+      if (!isKnownBeforeRun(arg)) {
+        throw new UnsupportedFeatureError(
+          'Procedure arguments must be literals or parameters (or lists and maps of them) for now',
+          { position: arg.position },
+        );
+      }
+    }
+    procedure.inputs.forEach((input, i) => {
+      const arg = args[i]!;
+      const value = arg.type === 'Literal' ? arg.value : undefined;
+      if (value !== undefined && !acceptsValue(input.type, value)) {
+        throw new SemanticError(
+          `Type mismatch: argument \`${input.name}\` of ${call.procedure}() must be ${input.type}`,
+          { position: arg.position },
+        );
+      }
+    });
+    const yields = call.yields ?? [];
+    const seen = new Set<string>();
+    for (const item of yields) {
+      if (!procedure.outputs.some((o) => o.name === item.output)) {
+        throw new SemanticError(`${call.procedure}() has no output \`${item.output}\``, {
+          position: item.position,
+        });
+      }
+      if (seen.has(item.variable) || this.has(item.variable)) {
+        throw new SemanticError(`Variable \`${item.variable}\` already declared`, {
+          position: item.position,
+        });
+      }
+      seen.add(item.variable);
+    }
+    if (procedure.outputs.length === 0) {
+      return;
+    }
+    const d = this.b.dialect;
+    const rows = d.jsonInput(
+      this.b.bind({
+        kind: 'procedure',
+        name: call.procedure,
+        procedure,
+        args,
+        position: call.position,
+      }),
+    );
+    const u = d.unwind(rows, this.alias('c'));
+    this.addFrom(u.from);
+    if (u.where) {
+      this.where.push(u.where);
+    }
+    this.order.push(u.order);
+    this.ordered = true;
+    for (const item of yields) {
+      const index = procedure.outputs.findIndex((o) => o.name === item.output);
+      this.bindings.set(item.variable, {
+        kind: 'value',
+        sql: d.jsonElement(u.value, String(index)),
+      });
+    }
+    if (call.where) {
+      this.where.push(this.expressions.condition(call.where));
+    }
   }
 
   /**

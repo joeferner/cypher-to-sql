@@ -9,6 +9,7 @@ export { defaultMapping, type GraphMapping } from './mapping.js';
 export { PROPERTY_TYPES, type PropertyType, type PropertyTypes } from './property-types.js';
 export type { CompiledPlan, PlanStep, BindValue } from './plan.js';
 export type { IdStrategy } from './planner/write.js';
+export type { Procedure, ProcedureField, ProcedureType, Procedures } from './procedures.js';
 export type { Dialect } from './dialect/dialect.js';
 export {
   sqlite,

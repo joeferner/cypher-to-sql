@@ -26,6 +26,23 @@ const records = await graph.query('MATCH (p:Person) RETURN p, p.name AS name LIM
 console.log(graph.compile('MATCH (p:Person) RETURN p LIMIT 5').explain());
 ```
 
+`CALL` works with procedures you register. They're read-only TypeScript functions that return rows, and there are no built-in ones:
+
+```ts
+const graph = createGraph({
+  dialect: postgres(),
+  executor: pgExecutor(pool),
+  procedures: {
+    'geo.lookup': {
+      inputs: [{ name: 'code', type: 'STRING' }],
+      outputs: [{ name: 'country', type: 'STRING' }],
+      call: ({ code }) => (code === 'SE' ? [{ country: 'Sweden' }] : []),
+    },
+  },
+});
+await graph.query("CALL geo.lookup('SE') YIELD country RETURN country");
+```
+
 For SQLite, use `sqlite()` with the [`better-sqlite3`](examples/executors/better-sqlite3.ts) or [`node:sqlite`](examples/executors/node-sqlite.ts) executor.
 
 `CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, and `FOREACH` work only on a graph created with `readOnly: false`. Use a separate executor and database role for that graph, and never pass it untrusted queries:
@@ -68,10 +85,10 @@ Conformance is measured with the official [openCypher TCK](https://github.com/op
 
 | Dialect    | Passing scenarios | Share |
 | ---------- | ----------------: | ----: |
-| SQLite     |     3,780 / 3,897 | 97.0% |
-| PostgreSQL |     3,783 / 3,897 | 97.1% |
+| SQLite     |     3,832 / 3,897 | 98.3% |
+| PostgreSQL |     3,835 / 3,897 | 98.4% |
 
-3,780 scenarios pass on both dialects. They are all in the allow-list, so `npm test` keeps them passing. The 3 that pass only on PostgreSQL are NaN equality cases. The rest use procedures (`CALL`) or features this library does not support yet (`UNION`, writes after `WITH`, ...), or fail on a known limitation, such as reading a deleted entity. Each has an open issue. Counts are from `npm run test:tck:all` (2026-11-14), and each expanded scenario outline counts once.
+3,832 scenarios pass on both dialects. They are all in the allow-list, so `npm test` keeps them passing. The 3 that pass only on PostgreSQL are NaN equality cases. The rest use features this library does not support yet (`UNION`, writes after `WITH`, ...), or fail on a known limitation, such as reading a deleted entity. Each has an open issue. Counts are from `npm run test:tck:all` (2026-11-14), and each expanded scenario outline counts once.
 
 ## License
 

@@ -5,7 +5,6 @@ import {
   ReadOnlyViolationError,
   SemanticError,
   sqlite,
-  UnsupportedFeatureError,
   type CypherError,
   type Graph,
   type SqlExecutor,
@@ -80,12 +79,12 @@ describe('read-only gate', () => {
 });
 
 describe('feature gate', () => {
-  it('rejects unsupported clauses on a write graph', () => {
+  it('rejects a CALL of a procedure that is not registered, at its position', () => {
     const error = errorOf(() =>
       writeGraph.compile('MATCH (n) CALL db.labels() YIELD label RETURN label'),
     );
-    expect(error).toBeInstanceOf(UnsupportedFeatureError);
-    expect(error.message).toMatch(/^CALL is not supported yet/);
+    expect(error).toBeInstanceOf(SemanticError);
+    expect(error.message).toMatch(/^There is no procedure `db.labels`/);
     expect(error.position).toMatchObject({ line: 1, column: 10 });
   });
 

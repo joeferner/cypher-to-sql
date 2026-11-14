@@ -13,6 +13,10 @@ import {
   UnsupportedFeatureError,
   type CypherValue,
   type Graph,
+  type Procedure,
+  type ProcedureField,
+  type Procedures,
+  type ProcedureType,
 } from '../../src/index.js';
 import { parseCypherJson, stringifyCypherJson } from '../../src/json.js';
 import type { TestBackend, TestDatabase } from '../support/backends.js';
@@ -57,7 +61,9 @@ export async function runScenario(scenario: TckScenario, backend: TestBackend): 
 }
 
 async function runSteps(scenario: TckScenario, db: TestDatabase): Promise<void> {
-  const options = { dialect: db.dialect, executor: db.executor };
+  // Filled by `there exists a procedure` steps; the graphs read it when they compile.
+  const procedures: Procedures = {};
+  const options = { dialect: db.dialect, executor: db.executor, procedures };
   const writeGraph = createGraph({ ...options, readOnly: false });
   const readGraph = createGraph({ ...options, readOnly: true });
   let params: Record<string, CypherValue> = {};
@@ -72,7 +78,8 @@ async function runSteps(scenario: TckScenario, db: TestDatabase): Promise<void> 
     if (text === 'an empty graph' || text === 'any graph') {
       continue;
     } else if (text.startsWith('there exists a procedure ')) {
-      throw new Skip('Procedures (CALL) are a non-goal');
+      const [name, procedure] = tckProcedure(text, table(step));
+      procedures[name] = procedure;
     } else if ((m = /^the (\S+) graph$/.exec(text))) {
       await runSetup(writeGraph, namedGraph(m[1]!));
     } else if (text === 'having executed:') {
@@ -110,6 +117,49 @@ async function runSteps(scenario: TckScenario, db: TestDatabase): Promise<void> 
       throw new Error(`Unsupported TCK step: ${text}`);
     }
   }
+}
+
+/**
+ * A TCK procedure: `test.my.proc(name :: STRING?, id :: INTEGER?) :: (city :: STRING?)`
+ * with a table of inputs and outputs. A call returns the outputs of the rows
+ * whose inputs equal the arguments.
+ */
+function tckProcedure(text: string, rows: string[][]): [string, Procedure] {
+  const m = /^there exists a procedure ([\w.]+)\((.*?)\) :: \((.*?)\) ?:$/.exec(text);
+  if (!m) {
+    throw new Error(`Cannot read procedure signature: ${text}`);
+  }
+  const fields = (list: string): ProcedureField[] =>
+    list
+      .split(',')
+      .map((f) => f.trim())
+      .filter((f) => f !== '')
+      .map((f) => {
+        const [name, type] = f.split('::').map((s) => s.trim());
+        return { name: name!, type: type!.replace(/\?$/, '') as ProcedureType };
+      });
+  const inputs = fields(m[2]!);
+  const outputs = fields(m[3]!);
+  const [header = [], ...body] = rows;
+  const data = body.map((row) =>
+    Object.fromEntries(row.map((cell, i) => [header[i]!, parseTckValue(cell)])),
+  );
+  return [
+    m[1]!,
+    {
+      inputs,
+      outputs,
+      call: (args) =>
+        data
+          .filter((row) =>
+            inputs.every(
+              (input) =>
+                canonical(row[input.name]!) === canonical(fromCypher(args[input.name] ?? null)),
+            ),
+          )
+          .map((row) => Object.fromEntries(outputs.map((o) => [o.name, toCypher(row[o.name]!)]))),
+    },
+  ];
 }
 
 /** The create script of one of the TCK's named graphs (`Given the binary-tree-1 graph`). */
@@ -228,6 +278,7 @@ const ERROR_TYPES: Record<string, (new (...args: never[]) => Error)[]> = {
   TypeError: [SemanticError, CypherTypeError],
   ArgumentError: [SemanticError, CypherArgumentError],
   ParameterMissing: [SemanticError],
+  ProcedureError: [SemanticError],
   ConstraintVerificationFailed: [CypherConstraintError],
 };
 
@@ -246,8 +297,16 @@ function checkError(result: QueryResult, type: string, phase: string, detail: st
   if (!accepted.some((cls) => error instanceof cls)) {
     throw new Error(`Expected ${type} (${detail}), got ${String(error)}`, { cause: error });
   }
+  // compile() takes no parameters, so a missing one is found when the query
+  // runs, before any SQL does: the earliest this library can.
   const expectedPhase =
-    phase === 'compile time' ? 'compile' : phase === 'runtime' ? 'runtime' : undefined;
+    type === 'ParameterMissing'
+      ? undefined
+      : phase === 'compile time'
+        ? 'compile'
+        : phase === 'runtime'
+          ? 'runtime'
+          : undefined;
   if (expectedPhase && result.phase !== expectedPhase) {
     throw new Error(
       `Expected ${type} (${detail}) at ${phase}, but it was raised at ${result.phase}`,

@@ -16,6 +16,7 @@ import { idsJson, pathsJson, shortestPaths } from './search.js';
 import type { Expression } from './ast.js';
 import { TemporalError } from './temporal.js';
 import { evaluateKnown, TypeMismatch } from './temporal-functions.js';
+import { runProcedure, type Procedure } from './procedures.js';
 import { ENTITY_TAG, RESERVED_KEYS } from './dialect/dialect.js';
 import {
   CypherNode,
@@ -98,6 +99,18 @@ export type BindValue =
    * bound, as JSON.
    */
   | { kind: 'temporal'; expression: Expression }
+  /**
+   * A registered procedure's rows for arguments known before the query runs,
+   * called when the step is bound: a JSON array with one list of the output
+   * values per row.
+   */
+  | {
+      kind: 'procedure';
+      name: string;
+      procedure: Procedure;
+      args: Expression[];
+      position: SourcePosition;
+    }
   /**
    * The current source row of a write query as a one-element JSON array, in the
    * form of `writtenRows`: what SET reads its values from, after earlier writes.
@@ -783,6 +796,14 @@ function resolveBind(
       return state.written;
     case 'currentRow':
       return `[${writtenRow(bind.written, entityIds, row)}]`;
+    case 'procedure': {
+      const values = bind.args.map((arg) =>
+        evaluateKnown(arg, (name, position) =>
+          resolveValue({ kind: 'parameter', name, position }, options.params, row),
+        ),
+      );
+      return stringifyCypherJson(runProcedure(bind.name, bind.procedure, values, bind.position));
+    }
     case 'temporal':
       try {
         return stringifyCypherJson(
@@ -1240,6 +1261,8 @@ function describeBind(bind: BindValue): string {
       return 'writtenRows';
     case 'currentRow':
       return `currentRow(${bind.written.map((w) => w.name).join(', ')})`;
+    case 'procedure':
+      return `${bind.name}(...)`;
     case 'temporal':
       return bind.expression.type === 'FunctionCall'
         ? `${bind.expression.name}(...)`
