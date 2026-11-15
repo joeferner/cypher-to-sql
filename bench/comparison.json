@@ -1,0 +1,2297 @@
+{
+  "meta": {
+    "date": "2026-11-15T01:16:29.129Z",
+    "commit": "70eb8fa",
+    "node": "v22.23.4",
+    "platform": "linux 7.3.4-arch1-1",
+    "cpu": "Intel(R) Core(TM) i7-10510U CPU @ 1.80GHz (8 cores)"
+  },
+  "load": [
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "ms": 278.3817839999999,
+      "nodes": 10000,
+      "edges": 45000
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "ms": 2785.6845040000003,
+      "nodes": 10000,
+      "edges": 45000
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "ms": 9387.233707,
+      "nodes": 10000,
+      "edges": 45000
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "ms": 8487.207953999998,
+      "nodes": 10000,
+      "edges": 45000
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "ms": 657.9888109999993,
+      "nodes": 10000,
+      "edges": 153000
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "ms": 6786.553602,
+      "nodes": 10000,
+      "edges": 153000
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "ms": 93140.937304,
+      "nodes": 10000,
+      "edges": 153000
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "ms": 97110.668879,
+      "nodes": 10000,
+      "edges": 153000
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "ms": 2712.252557,
+      "nodes": 100000,
+      "edges": 450000
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "ms": 20026.395049000013,
+      "nodes": 100000,
+      "edges": 450000
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "ms": 679637.2711130001,
+      "nodes": 100000,
+      "edges": 450000
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "ms": 691467.769008,
+      "nodes": 100000,
+      "edges": 450000
+    }
+  ],
+  "results": [
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "lookup by name",
+      "medianMs": 12.547469999999976,
+      "minMs": 12.102693999999929,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "lookup by name (declared)",
+      "medianMs": 1.0751030000001265,
+      "minMs": 0.5625600000000759,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "range filter count",
+      "medianMs": 9.053931000000148,
+      "minMs": 8.679994000000079,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "range filter count (declared)",
+      "medianMs": 1.2598699999998644,
+      "minMs": 0.9773219999999583,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "order by limit",
+      "medianMs": 49.62797999999998,
+      "minMs": 48.79135900000006,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "one hop",
+      "medianMs": 0.8302949999999782,
+      "minMs": 0.7077479999998104,
+      "runs": 5,
+      "rows": 4
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "two hops distinct",
+      "medianMs": 0.9348290000000361,
+      "minMs": 0.8927490000000944,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "aggregate by company",
+      "medianMs": 20.416064000000006,
+      "minMs": 20.06743799999981,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 7.5871759999999995,
+      "minMs": 6.744474999999966,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 7.114512000000104,
+      "minMs": 6.414389000000028,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 2.5935680000000048,
+      "minMs": 2.5389729999999417,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "var-length *1..2 into one node",
+      "medianMs": null,
+      "minMs": null,
+      "runs": 0,
+      "rows": null,
+      "error": "LimitExceededError: A variable-length pattern found more paths than maxRowsPerStep allows (line 1, column 9)"
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 3.1838870000001407,
+      "minMs": 3.0179749999999785,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": 9.130127999999786,
+      "minMs": 8.733451999999943,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 3.5658150000003843,
+      "minMs": 3.134885999999824,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 4.341963000000305,
+      "minMs": 4.261409000000185,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "optional match count",
+      "medianMs": 28.22983000000022,
+      "minMs": 28.07367000000022,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 10.308990999999878,
+      "minMs": 9.609593000000132,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "pattern comprehension degree",
+      "medianMs": 3.420140999999603,
+      "minMs": 2.9839340000003176,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "collect, comprehension, slice",
+      "medianMs": 2.8452650000003814,
+      "minMs": 2.6278110000002926,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "sqlite",
+      "query": "with stages and order",
+      "medianMs": 17.949387000000115,
+      "minMs": 16.13579299999992,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "lookup by name",
+      "medianMs": 14.217115999999805,
+      "minMs": 13.827628000000004,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "lookup by name (declared)",
+      "medianMs": 1.0465729999996256,
+      "minMs": 0.8890460000002349,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "range filter count",
+      "medianMs": 24.71802900000057,
+      "minMs": 24.410605000000032,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "range filter count (declared)",
+      "medianMs": 1.391950999999608,
+      "minMs": 1.2877779999998893,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "order by limit",
+      "medianMs": 228.59839100000045,
+      "minMs": 226.23842800000057,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "one hop",
+      "medianMs": 2.316805000000386,
+      "minMs": 2.2591529999999693,
+      "runs": 5,
+      "rows": 4
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "two hops distinct",
+      "medianMs": 4.942861999999877,
+      "minMs": 4.674125000000458,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "aggregate by company",
+      "medianMs": 31.90603899999951,
+      "minMs": 27.97193899999911,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 2.8016120000002047,
+      "minMs": 2.555019999999786,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 4.06576799999948,
+      "minMs": 3.389071000000513,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 6.251777000000402,
+      "minMs": 6.074598000000151,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "var-length *1..2 into one node",
+      "medianMs": null,
+      "minMs": null,
+      "runs": 0,
+      "rows": null,
+      "error": "LimitExceededError: A variable-length pattern found more paths than maxRowsPerStep allows (line 1, column 9)"
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 9.687926999999945,
+      "minMs": 9.154759000000013,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": 23.45008400000006,
+      "minMs": 18.772178999999596,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 8.726420999999391,
+      "minMs": 7.901327000000492,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 9.385807999999997,
+      "minMs": 7.957325999999739,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "optional match count",
+      "medianMs": 41.52541099999962,
+      "minMs": 40.96313099999952,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 18.911181999999826,
+      "minMs": 18.52089799999976,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "pattern comprehension degree",
+      "medianMs": 9.872259000001577,
+      "minMs": 8.021185999999943,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "collect, comprehension, slice",
+      "medianMs": 9.186095999999452,
+      "minMs": 8.730768999999782,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "postgres",
+      "query": "with stages and order",
+      "medianMs": 40.45685299999968,
+      "minMs": 35.17318599999999,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "lookup by name",
+      "medianMs": 2.6793980000002193,
+      "minMs": 2.582514000001538,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "lookup by name (declared)",
+      "medianMs": 3.027217999999266,
+      "minMs": 2.570608000001812,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "range filter count",
+      "medianMs": 2.9033010000021022,
+      "minMs": 2.8801669999993464,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "range filter count (declared)",
+      "medianMs": 2.8655130000006466,
+      "minMs": 2.67453100000057,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "order by limit",
+      "medianMs": 9.814673000000766,
+      "minMs": 9.299738000001526,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "one hop",
+      "medianMs": 2.871870000002673,
+      "minMs": 2.7672249999995984,
+      "runs": 5,
+      "rows": 4
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "two hops distinct",
+      "medianMs": 3.2853829999985464,
+      "minMs": 2.8350050000008196,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "aggregate by company",
+      "medianMs": 12.769661999998789,
+      "minMs": 11.563145000000077,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 3.3453149999986636,
+      "minMs": 3.261234000001423,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 3.047129999999015,
+      "minMs": 2.9800969999996596,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 3.6684060000006866,
+      "minMs": 3.512705000001006,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "var-length *1..2 into one node",
+      "medianMs": 2.8178340000013122,
+      "minMs": 2.578722000002017,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 3.2036889999981213,
+      "minMs": 3.152740999998059,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": 2.9526420000001963,
+      "minMs": 2.8574399999997695,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 2.965331999999762,
+      "minMs": 2.6180959999983315,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 3.3507529999988037,
+      "minMs": 2.973900999997568,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "optional match count",
+      "medianMs": 11.61419300000125,
+      "minMs": 8.347967000001518,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 6.685093000000052,
+      "minMs": 5.712545999998838,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "pattern comprehension degree",
+      "medianMs": 3.3291539999991073,
+      "minMs": 2.340551000001142,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "collect, comprehension, slice",
+      "medianMs": 3.205810000003112,
+      "minMs": 2.8631720000012137,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "neo4j",
+      "query": "with stages and order",
+      "medianMs": 16.09211900000082,
+      "minMs": 15.290043000000878,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "lookup by name",
+      "medianMs": 1.895262999998522,
+      "minMs": 1.803727999998955,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "lookup by name (declared)",
+      "medianMs": 1.8972859999994398,
+      "minMs": 1.8098019999997632,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "range filter count",
+      "medianMs": 6.898757999999361,
+      "minMs": 4.690050000001065,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "range filter count (declared)",
+      "medianMs": 4.863745999999082,
+      "minMs": 4.552657000000181,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "order by limit",
+      "medianMs": 27.153699000002234,
+      "minMs": 20.88304199999766,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "one hop",
+      "medianMs": 1.976353999998537,
+      "minMs": 1.769259000000602,
+      "runs": 5,
+      "rows": 4
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "two hops distinct",
+      "medianMs": 2.8919150000001537,
+      "minMs": 2.352201999998215,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "aggregate by company",
+      "medianMs": 8.966190999999526,
+      "minMs": 6.776355000001786,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 2.04656999999861,
+      "minMs": 1.968963999999687,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 2.4438020000015968,
+      "minMs": 2.0939029999972263,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 3.2898369999966235,
+      "minMs": 2.99626200000057,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "var-length *1..2 into one node",
+      "medianMs": 215.208633000002,
+      "minMs": 199.47160299999814,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 1.5254219999987981,
+      "minMs": 1.5059349999974074,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": 1.8523999999997613,
+      "minMs": 1.6956810000010591,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 2.7716570000011416,
+      "minMs": 2.384406000001036,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 2.660846999999194,
+      "minMs": 2.6170359999996435,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "optional match count",
+      "medianMs": 17.02759800000058,
+      "minMs": 16.05894199999966,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 21.508428999997705,
+      "minMs": 20.428085999999894,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "pattern comprehension degree",
+      "medianMs": 3.298075999999128,
+      "minMs": 2.867639000000054,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "collect, comprehension, slice",
+      "medianMs": 2.113415999996505,
+      "minMs": 2.074192000000039,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "medium",
+      "dialect": "arcadedb",
+      "query": "with stages and order",
+      "medianMs": 24.025392000003194,
+      "minMs": 23.514047000000573,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "lookup by name",
+      "medianMs": 10.901162000001932,
+      "minMs": 10.715503999999783,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "lookup by name (declared)",
+      "medianMs": 0.4830120000005991,
+      "minMs": 0.32253399999899557,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "range filter count",
+      "medianMs": 8.264071999998123,
+      "minMs": 8.01607199999853,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "range filter count (declared)",
+      "medianMs": 0.6161600000014005,
+      "minMs": 0.5613659999980882,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "order by limit",
+      "medianMs": 67.35626100000081,
+      "minMs": 52.93541600000026,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "one hop",
+      "medianMs": 0.571380000001227,
+      "minMs": 0.5399689999976545,
+      "runs": 5,
+      "rows": 16
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "two hops distinct",
+      "medianMs": 0.9368880000001809,
+      "minMs": 0.8875750000006519,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "aggregate by company",
+      "medianMs": 23.561227000001963,
+      "minMs": 20.660366000000067,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 6.867092000000412,
+      "minMs": 6.775700999998662,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 18.05025300000125,
+      "minMs": 17.563773000001675,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 122.88867100000061,
+      "minMs": 101.03790700000172,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 6.804000000000087,
+      "minMs": 6.6060489999981655,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": 59.71923400000014,
+      "minMs": 45.0155130000021,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 4.226576000000932,
+      "minMs": 3.7694960000007995,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 95.12844899999982,
+      "minMs": 93.1970269999947,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "optional match count",
+      "medianMs": 28.434631999996782,
+      "minMs": 27.876078999994206,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 10.821398000000045,
+      "minMs": 10.77187099999719,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "pattern comprehension degree",
+      "medianMs": 6.458340000004682,
+      "minMs": 6.2288250000056,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "collect, comprehension, slice",
+      "medianMs": 1.66746399999829,
+      "minMs": 1.6491430000023684,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "sqlite",
+      "query": "with stages and order",
+      "medianMs": 17.735341999999946,
+      "minMs": 17.530601999998908,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "lookup by name",
+      "medianMs": 14.117723999996088,
+      "minMs": 13.737655999997514,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "lookup by name (declared)",
+      "medianMs": 0.9851669999989099,
+      "minMs": 0.8248330000060378,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "range filter count",
+      "medianMs": 24.96476100000291,
+      "minMs": 24.86767200000031,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "range filter count (declared)",
+      "medianMs": 1.5898089999973308,
+      "minMs": 1.3898360000021057,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "order by limit",
+      "medianMs": 229.33490800000436,
+      "minMs": 225.97491699999955,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "one hop",
+      "medianMs": 1.4241469999979017,
+      "minMs": 1.3313120000020717,
+      "runs": 5,
+      "rows": 16
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "two hops distinct",
+      "medianMs": 3.052400000000489,
+      "minMs": 3.003504000000248,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "aggregate by company",
+      "medianMs": 26.06319000000076,
+      "minMs": 25.663352000003215,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 2.8909350000030827,
+      "minMs": 2.7769120000011753,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 13.834257999995316,
+      "minMs": 13.377532000005885,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 170.24490499999956,
+      "minMs": 148.83982200000173,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 8.345025999995414,
+      "minMs": 7.922615000003134,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": 72.92998799999623,
+      "minMs": 63.993932999997924,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 8.497299999995448,
+      "minMs": 8.356511999998474,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 153.88112700000056,
+      "minMs": 149.5229990000007,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "optional match count",
+      "medianMs": 32.44636300000275,
+      "minMs": 32.331339999997,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 37.94023200000083,
+      "minMs": 37.1327420000016,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "pattern comprehension degree",
+      "medianMs": 16.686580000001413,
+      "minMs": 16.13652500000171,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "collect, comprehension, slice",
+      "medianMs": 6.694997999999032,
+      "minMs": 6.497898000001442,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "postgres",
+      "query": "with stages and order",
+      "medianMs": 31.188484999998764,
+      "minMs": 28.905230999997002,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "lookup by name",
+      "medianMs": 2.57870099999127,
+      "minMs": 2.0896730000094976,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "lookup by name (declared)",
+      "medianMs": 1.8293330000014976,
+      "minMs": 1.7484180000028573,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "range filter count",
+      "medianMs": 2.8013190000201575,
+      "minMs": 2.5894229999976233,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "range filter count (declared)",
+      "medianMs": 2.4842230000067502,
+      "minMs": 2.4009850000147708,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "order by limit",
+      "medianMs": 8.661843000008957,
+      "minMs": 8.647203000000445,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "one hop",
+      "medianMs": 2.657861000014236,
+      "minMs": 2.5299010000017006,
+      "runs": 5,
+      "rows": 16
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "two hops distinct",
+      "medianMs": 4.371696999995038,
+      "minMs": 4.324322000000393,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "aggregate by company",
+      "medianMs": 6.19748700002674,
+      "minMs": 6.07523499999661,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 2.5850890000001527,
+      "minMs": 2.530188000004273,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 4.211536999995587,
+      "minMs": 3.6847100000013597,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 32.346117999986745,
+      "minMs": 31.692796999996062,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 2.843202000018209,
+      "minMs": 2.4593750000058208,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": 2.9716349999944214,
+      "minMs": 2.8214419999858364,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 2.6768710000033025,
+      "minMs": 2.3126439999905415,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 31.91821499998332,
+      "minMs": 27.89917400002014,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "optional match count",
+      "medianMs": 7.016866999998456,
+      "minMs": 6.846421000023838,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 5.609570000000531,
+      "minMs": 5.480181000020821,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "pattern comprehension degree",
+      "medianMs": 2.999141000007512,
+      "minMs": 2.9650890000048093,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "collect, comprehension, slice",
+      "medianMs": 2.545358999981545,
+      "minMs": 2.3589040000224486,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "neo4j",
+      "query": "with stages and order",
+      "medianMs": 31.067658999993,
+      "minMs": 30.17268899999908,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "lookup by name",
+      "medianMs": 1.1549700000032317,
+      "minMs": 1.0423510000109673,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "lookup by name (declared)",
+      "medianMs": 1.0999569999985397,
+      "minMs": 1.0958370000007562,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "range filter count",
+      "medianMs": 4.137427999987267,
+      "minMs": 3.9397549999994226,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "range filter count (declared)",
+      "medianMs": 3.454924999998184,
+      "minMs": 3.084316000022227,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "order by limit",
+      "medianMs": 18.08534000001964,
+      "minMs": 15.996875999990152,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "one hop",
+      "medianMs": 1.4892929999914486,
+      "minMs": 1.3908850000007078,
+      "runs": 5,
+      "rows": 16
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "two hops distinct",
+      "medianMs": 2.327270000008866,
+      "minMs": 2.260315999999875,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "aggregate by company",
+      "medianMs": 5.249586999998428,
+      "minMs": 5.16168099999777,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 2.6212409999861848,
+      "minMs": 2.4412050000100862,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 7.342869999993127,
+      "minMs": 5.11506099998951,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 36.05826399999205,
+      "minMs": 35.591560000000754,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 1.9085910000139847,
+      "minMs": 1.7946400000073481,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": 1.9646979999961331,
+      "minMs": 1.8414500000071712,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 3.438216000009561,
+      "minMs": 3.386538999999175,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 34.7210030000133,
+      "minMs": 31.744487999996636,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "optional match count",
+      "medianMs": 12.231807000003755,
+      "minMs": 12.082594999985304,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 19.580255999986548,
+      "minMs": 19.432557000021916,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "pattern comprehension degree",
+      "medianMs": 4.217364000011003,
+      "minMs": 4.067107000009855,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "collect, comprehension, slice",
+      "medianMs": 1.532718999980716,
+      "minMs": 1.4483250000048429,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "dense",
+      "dialect": "arcadedb",
+      "query": "with stages and order",
+      "medianMs": 26.449755999987246,
+      "minMs": 26.40144899999723,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "lookup by name",
+      "medianMs": 102.11424300001818,
+      "minMs": 101.63670599999023,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "lookup by name (declared)",
+      "medianMs": 0.3177680000080727,
+      "minMs": 0.3072729999839794,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "range filter count",
+      "medianMs": 83.71949200000381,
+      "minMs": 83.16630199999781,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "range filter count (declared)",
+      "medianMs": 4.098614999995334,
+      "minMs": 3.9536560000269674,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "order by limit",
+      "medianMs": 503.713465000008,
+      "minMs": 470.83619400000316,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "one hop",
+      "medianMs": 0.4234320000105072,
+      "minMs": 0.38676500000292435,
+      "runs": 5,
+      "rows": 4
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "two hops distinct",
+      "medianMs": 0.5852759999979753,
+      "minMs": 0.5443950000044424,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "aggregate by company",
+      "medianMs": 146.96106800000416,
+      "minMs": 145.2354859999905,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 53.96555399999488,
+      "minMs": 53.192408000002615,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 72.04856399999699,
+      "minMs": 61.772578999982215,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 4.463520999997854,
+      "minMs": 3.40574800001923,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 8.75622400001157,
+      "minMs": 8.685924999997951,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": null,
+      "minMs": null,
+      "runs": 0,
+      "rows": null,
+      "error": "LimitExceededError: A SQL step returned more than 100000 rows (maxRowsPerStep)"
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 12.16711199999554,
+      "minMs": 9.801502999995137,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 5.10808000000543,
+      "minMs": 4.539935000007972,
+      "runs": 5,
+      "rows": 0
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "optional match count",
+      "medianMs": 281.5791530000279,
+      "minMs": 274.274751000019,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 126.97003799999948,
+      "minMs": 121.40364899998531,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "pattern comprehension degree",
+      "medianMs": 20.145579999982147,
+      "minMs": 19.994976000016322,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "collect, comprehension, slice",
+      "medianMs": 1.9992889999994077,
+      "minMs": 1.8688470000051893,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "sqlite",
+      "query": "with stages and order",
+      "medianMs": 236.86015600000974,
+      "minMs": 205.48010200000135,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "lookup by name",
+      "medianMs": 115.05105499998899,
+      "minMs": 114.90026900003431,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "lookup by name (declared)",
+      "medianMs": 1.1706000000122003,
+      "minMs": 1.1112399999983609,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "range filter count",
+      "medianMs": 262.8795939999982,
+      "minMs": 256.18800799996825,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "range filter count (declared)",
+      "medianMs": 10.280733999970835,
+      "minMs": 9.592433999991044,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "order by limit",
+      "medianMs": 739.3155325000116,
+      "minMs": 667.9875099999481,
+      "runs": 4,
+      "rows": 10
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "one hop",
+      "medianMs": 1.993440999998711,
+      "minMs": 1.934032000019215,
+      "runs": 5,
+      "rows": 4
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "two hops distinct",
+      "medianMs": 4.340564999962226,
+      "minMs": 4.140875999990385,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "aggregate by company",
+      "medianMs": 115.34754700004123,
+      "minMs": 114.972145000007,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 2.055515000014566,
+      "minMs": 1.8798529999912716,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 2.3212300000013784,
+      "minMs": 1.9996309999842197,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 5.7170700000133365,
+      "minMs": 5.639718999969773,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 15.575516999990214,
+      "minMs": 15.235189999977592,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": null,
+      "minMs": null,
+      "runs": 0,
+      "rows": null,
+      "error": "LimitExceededError: A SQL step returned more than 100000 rows (maxRowsPerStep)"
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 16.53007699997397,
+      "minMs": 15.99775799998315,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 10.353784999984782,
+      "minMs": 9.01622699998552,
+      "runs": 5,
+      "rows": 0
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "optional match count",
+      "medianMs": 480.98213199997554,
+      "minMs": 367.39295499998843,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 77.694422999979,
+      "minMs": 76.51374600001145,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "pattern comprehension degree",
+      "medianMs": 43.00069600000279,
+      "minMs": 41.998881999985315,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "collect, comprehension, slice",
+      "medianMs": 6.621395999973174,
+      "minMs": 6.437816000019666,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "postgres",
+      "query": "with stages and order",
+      "medianMs": 140.8095789999934,
+      "minMs": 139.1999899999937,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "lookup by name",
+      "medianMs": 2.2804319999413565,
+      "minMs": 2.0810180000262335,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "lookup by name (declared)",
+      "medianMs": 2.644478000001982,
+      "minMs": 2.5493749999441206,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "range filter count",
+      "medianMs": 3.1444710000650957,
+      "minMs": 2.8939770000288263,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "range filter count (declared)",
+      "medianMs": 2.7641270000021905,
+      "minMs": 2.6128439999883994,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "order by limit",
+      "medianMs": 54.14912099996582,
+      "minMs": 47.77861099992879,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "one hop",
+      "medianMs": 2.327439000015147,
+      "minMs": 2.2667969999602064,
+      "runs": 5,
+      "rows": 4
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "two hops distinct",
+      "medianMs": 2.665794000029564,
+      "minMs": 2.658311999985017,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "aggregate by company",
+      "medianMs": 41.83646499994211,
+      "minMs": 40.76696500007529,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 2.4009620000142604,
+      "minMs": 2.165123999933712,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 2.1732290000654757,
+      "minMs": 1.9657410000218078,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 3.7679199998965487,
+      "minMs": 3.5959699999075383,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 2.664642999996431,
+      "minMs": 2.6072670000139624,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": 3.2015949999913573,
+      "minMs": 2.7914749999763444,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 2.957058999920264,
+      "minMs": 2.5688289999961853,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 2.496845000074245,
+      "minMs": 2.484556999988854,
+      "runs": 5,
+      "rows": 0
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "optional match count",
+      "medianMs": 57.8166060000658,
+      "minMs": 55.302304000011645,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 35.97656699991785,
+      "minMs": 35.5852550000418,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "pattern comprehension degree",
+      "medianMs": 4.427035000058822,
+      "minMs": 4.276293000089936,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "collect, comprehension, slice",
+      "medianMs": 2.6070489999838173,
+      "minMs": 2.299146999954246,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "neo4j",
+      "query": "with stages and order",
+      "medianMs": 166.04297800001223,
+      "minMs": 153.39508100005332,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "lookup by name",
+      "medianMs": 1.268269999884069,
+      "minMs": 1.134885999839753,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "lookup by name (declared)",
+      "medianMs": 1.3176549999043345,
+      "minMs": 1.1640519998036325,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "range filter count",
+      "medianMs": 23.19856599997729,
+      "minMs": 21.66479799989611,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "range filter count (declared)",
+      "medianMs": 20.20418499992229,
+      "minMs": 18.115296999923885,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "order by limit",
+      "medianMs": 196.01809099991806,
+      "minMs": 193.70031999982893,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "one hop",
+      "medianMs": 1.701327000046149,
+      "minMs": 1.6690680000465363,
+      "runs": 5,
+      "rows": 4
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "two hops distinct",
+      "medianMs": 2.3222610000520945,
+      "minMs": 2.2450510000344366,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "aggregate by company",
+      "medianMs": 80.77453099982813,
+      "minMs": 65.32637500017881,
+      "runs": 5,
+      "rows": 10
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "var-length *1..2 from one node",
+      "medianMs": 2.7857660001609474,
+      "minMs": 2.533130999887362,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "var-length *1..3 from one node",
+      "medianMs": 3.1153429998084903,
+      "minMs": 2.9159949999302626,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "var-length *1..3 between two nodes",
+      "medianMs": 5.0512359999120235,
+      "minMs": 4.409971999935806,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "shortestPath near (multi-step)",
+      "medianMs": 2.3406259999610484,
+      "minMs": 1.9022500000428408,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "shortestPath far (multi-step)",
+      "medianMs": 3.2021880000829697,
+      "minMs": 2.9988329999614507,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "allShortestPaths near (multi-step)",
+      "medianMs": 8.801890000002459,
+      "minMs": 6.434571999823675,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "shortest near (single statement, *..3)",
+      "medianMs": 4.428662999998778,
+      "minMs": 4.291163999820128,
+      "runs": 5,
+      "rows": 0
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "optional match count",
+      "medianMs": 160.37769200000912,
+      "minMs": 150.12489000009373,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "pattern predicate (no incoming)",
+      "medianMs": 198.75230799987912,
+      "minMs": 191.77431000000797,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "pattern comprehension degree",
+      "medianMs": 18.922558000078425,
+      "minMs": 13.85362199996598,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "collect, comprehension, slice",
+      "medianMs": 2.0975639999378473,
+      "minMs": 1.8812080000061542,
+      "runs": 5,
+      "rows": 1
+    },
+    {
+      "graph": "large",
+      "dialect": "arcadedb",
+      "query": "with stages and order",
+      "medianMs": 255.8816039999947,
+      "minMs": 215.73596299998462,
+      "runs": 5,
+      "rows": 1
+    }
+  ]
+}

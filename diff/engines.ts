@@ -45,7 +45,7 @@ const message = (error: unknown): string =>
  * reference engines can connect relationships (and every engine has the same
  * properties).
  */
-function generated(spec: GraphSpec): Graph {
+export function generated(spec: GraphSpec): Graph {
   const graph = generateGraph(spec);
   return {
     ...graph,
@@ -72,8 +72,10 @@ const props = (p: Record<string, string | number>): Record<string, CypherValue> 
  * reference engine: nodes per label, then relationships per (start label,
  * type, end label), matched by `gid`.
  */
-function createStatements(graph: Graph): { cypher: string; params: Record<string, CypherValue> }[] {
-  const BATCH = 500;
+export function createStatements(
+  graph: Graph,
+  BATCH = 500,
+): { cypher: string; params: Record<string, CypherValue> }[] {
   const out: { cypher: string; params: Record<string, CypherValue> }[] = [];
   const label = new Map(graph.nodes.map((n) => [n.id, n.labels[0]!]));
   const groups = new Map<string, Record<string, CypherValue>[]>();
@@ -167,7 +169,16 @@ export function neo4jEngine(url: string): Engine {
   return {
     name: 'neo4j',
     async load(_name, source): Promise<void> {
-      await write('MATCH (n) DETACH DELETE n');
+      // In batches: one transaction runs out of memory on a large graph (one
+      // the benchmarks left, say).
+      for (;;) {
+        const { records } = await driver.executeQuery(
+          'MATCH (n) WITH n LIMIT 10000 DETACH DELETE n RETURN count(*) AS c',
+        );
+        if (Number(records[0]?.get('c') ?? 0) === 0) {
+          break;
+        }
+      }
       if ('create' in source) {
         await write(source.create);
         return;

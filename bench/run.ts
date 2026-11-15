@@ -1,8 +1,10 @@
 // Benchmarks: runs the query corpus (queries.ts) on reference graphs
-// (graphs.ts) in SQLite and PostgreSQL, and prints the median time of each.
+// (graphs.ts) in SQLite and PostgreSQL, and optionally in Neo4j and ArcadeDB
+// (engines.ts), and prints the median time of each.
 //
 //   npm run bench                                 # small, medium, dense; both dialects
 //   npm run bench -- --graphs large --dialects postgres
+//   npm run bench -- --dialects sqlite,postgres,neo4j,arcadedb   # npm run db:up:reference
 //   npm run bench -- --filter shortest            # queries whose name contains "shortest"
 //   npm run bench -- --save bench/baseline.json   # record results
 //   npm run bench -- --compare bench/baseline.json
@@ -19,6 +21,7 @@ import { createGraph, CypherError, type Graph as CypherGraph } from '../src/inde
 import { DEFAULT_GRAPHS, GRAPHS, generateGraph, type Graph } from './graphs.js';
 import { DECLARED, loadPostgres, loadSqlite, type LoadedGraph } from './load.js';
 import { QUERIES } from './queries.js';
+import { arcadeBench, neo4jBench, type ReferenceEngine } from './engines.js';
 
 interface Result {
   graph: string;
@@ -55,6 +58,13 @@ const POSTGRES_URL =
   process.env['BENCH_POSTGRES_URL'] ??
   process.env['TEST_POSTGRES_URL'] ??
   'postgres://cypher:cypher@localhost:55432/cypher';
+const NEO4J_URL = process.env['NEO4J_URL'] ?? 'bolt://localhost:57687';
+const ARCADEDB_URL = process.env['ARCADEDB_URL'] ?? 'http://localhost:52480';
+/** The reference engines, by the name `--dialects` takes (see engines.ts). */
+const REFERENCES: Record<string, (() => ReferenceEngine) | undefined> = {
+  neo4j: () => neo4jBench(NEO4J_URL),
+  arcadedb: () => arcadeBench(ARCADEDB_URL),
+};
 const RUNS = Number(args.runs);
 const BUDGET_MS = Number(args.budget);
 
@@ -66,19 +76,24 @@ function median(values: number[]): number {
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
-/** One warm-up run (which also counts the rows), then timed runs within the budget. */
+/**
+ * One warm-up run (which also counts the rows), then timed runs within the
+ * budget. `run` runs the query and returns its number of rows.
+ */
 async function measure(
-  graph: CypherGraph,
-  cypher: string,
-  params: Parameters<CypherGraph['query']>[1],
+  run: () => Promise<number>,
 ): Promise<Pick<Result, 'medianMs' | 'minMs' | 'runs' | 'rows' | 'error'>> {
   let rows: number;
   const warmStart = performance.now();
   try {
-    rows = (await graph.query(cypher, params)).length;
+    rows = await run();
   } catch (error) {
     const message =
-      error instanceof CypherError ? `${error.name}: ${error.message}` : String(error);
+      error instanceof CypherError
+        ? `${error.name}: ${error.message}`
+        : error instanceof Error
+          ? error.message.split('\n')[0]!
+          : String(error);
     return { medianMs: null, minMs: null, runs: 0, rows: null, error: message };
   }
   const warmMs = performance.now() - warmStart;
@@ -90,7 +105,7 @@ async function measure(
   }
   while (times.length < RUNS && (times.length === 0 || performance.now() < deadline)) {
     const start = performance.now();
-    await graph.query(cypher, params);
+    await run();
     times.push(performance.now() - start);
   }
   return { medianMs: median(times), minMs: Math.min(...times), runs: times.length, rows };
@@ -140,8 +155,16 @@ async function main(): Promise<void> {
     );
     for (const dialect of dialects) {
       const start = performance.now();
-      const loaded: LoadedGraph =
-        dialect === 'sqlite' ? await loadSqlite(graph) : await loadPostgres(graph, POSTGRES_URL);
+      const reference = REFERENCES[dialect]?.();
+      let loaded: LoadedGraph | undefined;
+      if (reference) {
+        await reference.load(spec);
+      } else if (dialect === 'sqlite' || dialect === 'postgres') {
+        loaded =
+          dialect === 'sqlite' ? await loadSqlite(graph) : await loadPostgres(graph, POSTGRES_URL);
+      } else {
+        throw new Error(`Unknown dialect ${dialect}; known: sqlite, postgres, neo4j, arcadedb`);
+      }
       const loadMs = performance.now() - start;
       report.load.push({
         graph: spec.name,
@@ -155,18 +178,28 @@ async function main(): Promise<void> {
         `| query | median ms | min ms | runs | rows |${baseline ? ' baseline ms | ratio |' : ''}`,
       );
       write(`| --- | ---: | ---: | ---: | ---: |${baseline ? ' ---: | ---: |' : ''}`);
-      const plain = createGraph({ dialect: loaded.dialect, executor: loaded.executor });
-      const declared = createGraph({
-        dialect: loaded.dialect,
-        executor: loaded.executor,
-        mapping: DECLARED,
-      });
+      // This library: the default mapping, or the one that declares name and age.
+      const ours = (mapping?: typeof DECLARED): CypherGraph | undefined =>
+        loaded &&
+        createGraph({
+          dialect: loaded.dialect,
+          executor: loaded.executor,
+          ...(mapping && { mapping }),
+        });
+      const plain = ours();
+      const declared = ours(DECLARED);
       try {
         for (const q of queries) {
           if (q.skip?.includes(spec.name)) {
             continue;
           }
-          const measured = await measure(q.declared ? declared : plain, q.cypher, q.params(graph));
+          const params = q.params(graph);
+          const lib = q.declared ? declared : plain;
+          const measured = await measure(
+            reference
+              ? (): Promise<number> => reference.query(q.cypher, params)
+              : async (): Promise<number> => (await lib!.query(q.cypher, params)).length,
+          );
           const result: Result = { graph: spec.name, dialect, query: q.name, ...measured };
           report.results.push(result);
           let compared = '';
@@ -186,7 +219,8 @@ async function main(): Promise<void> {
           );
         }
       } finally {
-        await loaded.close();
+        await loaded?.close();
+        await reference?.close();
       }
     }
   }

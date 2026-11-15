@@ -10,9 +10,12 @@ npm run bench -- --filter shortest              # only queries whose name contai
 npm run bench -- --compare bench/baseline.json  # ratio to the baseline; ⚠ marks > 1.5x slower
 npm run bench -- --save bench/baseline.json     # record a new baseline
 npm run bench:limits                            # the measurements behind the default limits
+
+npm run db:up:reference                         # also Neo4j and ArcadeDB
+npm run bench -- --graphs medium,dense,large --dialects sqlite,postgres,neo4j,arcadedb
 ```
 
-Options: `--runs` (timed runs per query, default 5) and `--budget` (milliseconds of timed runs per query, default 3000; a query slower than that runs twice). PostgreSQL comes from `BENCH_POSTGRES_URL` or `TEST_POSTGRES_URL`. Each graph is loaded into the schema `bench_<graph>`, which stays after the run so that plans can be inspected with `EXPLAIN` (`graph.compile(cypher).explain()` prints the SQL).
+Options: `--runs` (timed runs per query, default 5) and `--budget` (milliseconds of timed runs per query, default 3000; a query slower than that runs twice). PostgreSQL comes from `BENCH_POSTGRES_URL` or `TEST_POSTGRES_URL`, Neo4j from `NEO4J_URL`, and ArcadeDB from `ARCADEDB_URL` (the compose defaults otherwise). Each graph is loaded into the schema `bench_<graph>`, which stays after the run so that plans can be inspected with `EXPLAIN` (`graph.compile(cypher).explain()` prints the SQL).
 
 ## Files
 
@@ -28,6 +31,45 @@ Options: `--runs` (timed runs per query, default 5) and `--budget` (milliseconds
 - [load.ts](load.ts): loads a graph with the [example schema](../examples/schema) and its indexes, plus expression indexes for `name` and `age`, which the `declared` queries declare in the mapping.
 - [queries.ts](queries.ts): the corpus. Queries whose cost grows too fast skip the bigger graphs.
 - [baseline.json](baseline.json): the last recorded results, with the commit, Node.js version, and CPU. Timings depend on the machine; compare runs on the same one.
+- [engines.ts](engines.ts): Neo4j and ArcadeDB as benchmark targets. They load the same graph with the differential tests' statements ([diff/engines.ts](../diff/engines.ts)) and indexes comparable to load.ts: `Person(name)`, `Person(age)`, and the `gid` key the loader matches relationships by. A query is timed until its rows arrive; they are counted, not converted.
+- [comparison.json](comparison.json): the results of the four-engine run below.
+
+## Compared with Neo4j and ArcadeDB (#47)
+
+The whole corpus, unchanged, on all four engines. Median milliseconds of 5 runs after a warm-up, on the large graph (100,000 nodes, 450,000 relationships). The medium and dense graphs are in [comparison.json](comparison.json). Every engine returned the same number of rows for every query.
+
+| Query                                   | SQLite | PostgreSQL | Neo4j | ArcadeDB |
+| --------------------------------------- | -----: | ---------: | ----: | -------: |
+| lookup by name (undeclared)             |    102 |        115 |   2.3 |      1.3 |
+| lookup by name (declared, indexed)      |    0.3 |        1.2 |   2.6 |      1.3 |
+| range filter count (undeclared)         |     84 |        263 |   3.1 |       23 |
+| range filter count (declared)           |    4.1 |         10 |   2.8 |       20 |
+| order by limit                          |    504 |        739 |    54 |      196 |
+| one hop                                 |    0.4 |        2.0 |   2.3 |      1.7 |
+| two hops distinct                       |    0.6 |        4.3 |   2.7 |      2.3 |
+| aggregate by company                    |    147 |        115 |    42 |       81 |
+| var-length `*1..2` from one node        |     54 |        2.1 |   2.4 |      2.8 |
+| var-length `*1..3` from one node        |     72 |        2.3 |   2.2 |      3.1 |
+| var-length `*1..3` between two nodes    |    4.5 |        5.7 |   3.8 |      5.1 |
+| `shortestPath` near (multi-step)        |    8.8 |         16 |   2.7 |      2.3 |
+| `shortestPath` far (multi-step)         |  limit |      limit |   3.2 |      3.2 |
+| `allShortestPaths` near (multi-step)    |     12 |         17 |   3.0 |      8.8 |
+| shortest path as one statement (`*..3`) |    5.1 |         10 |   2.5 |      4.4 |
+| optional match count                    |    282 |        481 |    58 |      160 |
+| pattern predicate (no incoming)         |    127 |         78 |    36 |      199 |
+| pattern comprehension degree            |     20 |         43 |   4.4 |       19 |
+| collect, comprehension, slice           |    2.0 |        6.6 |   2.6 |      2.1 |
+| `WITH` stages                           |    237 |        141 |   166 |      256 |
+
+Setup: Intel i7-10510U laptop, commit `70eb8fa`. PostgreSQL 18, Neo4j 2026.10 Community, and ArcadeDB 26.11 run in Docker with the compose settings: PostgreSQL's defaults, Neo4j with a 1 GB heap and a 256 MB page cache, ArcadeDB with a 1 GB heap. SQLite runs in memory in the same process, so it pays no network round trip. Neo4j and ArcadeDB pay one over Bolt or HTTP, about 2 ms here, which is the floor of their numbers. Load times aren't compared: SQL is bulk-inserted, while the reference engines load through batched Cypher, not their bulk importers.
+
+What it shows:
+
+1. **Indexed lookups and short patterns from a known node are as fast or faster.** With declared properties, a lookup, one hop, or two hops take 0.3–4 ms. That's the same as the native engines' round trip, and SQLite has none.
+2. **Undeclared properties are the big gap for filters.** Without a declared type, `name = $a` scans every node's JSON: 100 ms against 2 ms. Declaring the key closes it.
+3. **Scans and aggregates over the whole graph are 2–9 times slower than Neo4j,** and often close to ArcadeDB: ORDER BY with LIMIT, OPTIONAL MATCH counts, aggregates, and pattern predicates. Each reads properties from JSON and filters labels in a JSON array.
+4. **Path search is the other big gap.** From one node, PostgreSQL's recursive CTE is on par (about 2 ms), but SQLite's is 25–30 times slower on the large graph. On the dense graph, `*1..3` between two nodes takes 120–170 ms against 32–36 ms, and a shortest path to a far node takes 60–73 ms against 2–3 ms. On the large graph, the far shortest path's breadth-first steps exceed `maxRowsPerStep` (100,000 rows), while the native engines follow adjacency in 3 ms.
+5. **Typed storage (#26) would help 2 and 3, but not 4.** Properties in real columns and a table per label would serve undeclared filters and whole-graph scans. Path search is bound by the SQL search itself (a recursive CTE or one breadth-first step per depth), which typed tables don't change.
 
 ## Findings (baseline, medium graph)
 
