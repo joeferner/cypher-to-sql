@@ -700,6 +700,10 @@ export class ReadScope {
   ): Matched & { kind: 'list' } {
     const b = this.b;
     const d = b.dialect;
+    const bound = rel.variable !== undefined ? this.find(rel.variable) : undefined;
+    if ((bound?.kind === 'value' || bound?.kind === 'column') && !boundHere.has(rel.variable!)) {
+      return this.matchBoundList(rel, left, right, withNodes);
+    }
     this.checkListPattern(rel, boundHere);
     const min = rel.range!.min ?? 1;
     const max = rel.range!.max;
@@ -901,6 +905,90 @@ export class ReadScope {
       boundHere.add(rel.variable);
     }
     return { kind: 'list', path, nodes: withNodes ? `${v}.nodes` : undefined };
+  }
+
+  /**
+   * `(a)-[rs*]->(b)` with `rs` already bound to a list of relationships (`WITH
+   * [r1, r2] AS rs`): matches that exact chain instead of searching. The list
+   * must hold relationships (of the pattern's types, if any), its length must
+   * be in the pattern's range, each must end where the next starts (in the
+   * arrow's direction), and the chain must go from `left` to `right`. An empty
+   * list matches `left` = `right` for a range from 0. The variable keeps its
+   * list; the match's path is the ids, for relationship uniqueness.
+   */
+  private matchBoundList(
+    rel: ast.RelationshipPattern,
+    left: string,
+    right: string,
+    withNodes: boolean,
+  ): Matched & { kind: 'list' } {
+    const unsupported = (what: string): never => {
+      throw new UnsupportedFeatureError(
+        `${what} over a bound list of relationships is not supported yet`,
+        {
+          position: rel.position,
+        },
+      );
+    };
+    if (withNodes) {
+      unsupported('A named path');
+    }
+    if (rel.direction === 'both') {
+      unsupported('An undirected variable-length pattern');
+    }
+    if (rel.properties) {
+      unsupported('A variable-length pattern with properties');
+    }
+    const b = this.b;
+    const d = b.dialect;
+    const list = this.value({ type: 'Variable', position: rel.position, name: rel.variable! });
+    const key = (json: string, k: string): string =>
+      d.jsonMember(json, b.bind({ kind: 'sql', value: k }), k);
+    const [from, to] = rel.direction === 'right' ? ['~start', '~end'] : ['~end', '~start'];
+    const nodeId = b.ident(b.mapping.nodes.id);
+    const min = rel.range!.min ?? 1;
+    const max = rel.range!.max;
+    const n = d.listLength(list);
+    const where = (u: { where?: string | undefined }, ...more: string[]): string =>
+      [u.where, ...more].filter(Boolean).join(' AND ');
+
+    // Every element a relationship, of one of the pattern's types.
+    const e = d.unwind(list, this.alias('bl'));
+    const types =
+      rel.types.length > 0
+        ? ` AND ${d.fromJson(key(e.value, '~type'), 'string')} IN (${rel.types
+            .map((t) => b.bind({ kind: 'sql', value: t }))
+            .join(', ')})`
+        : '';
+    const wrongElement =
+      `EXISTS (SELECT 1 FROM ${e.from} WHERE ` +
+      `${where(e, `NOT (${d.jsonType(e.value)} = 'relationship'${types})`)})`;
+    // Each element ends where the next one starts.
+    const x = d.unwind(list, this.alias('bl'));
+    const y = d.unwind(list, this.alias('bl'));
+    const broken =
+      `EXISTS (SELECT 1 FROM ${x.from} JOIN ${y.from} ON ${y.order} = ${x.order} + 1 WHERE ` +
+      `${where(x, ...(y.where ? [y.where] : []), `NOT ${d.jsonDeepEquals(key(x.value, to), key(y.value, from))}`)})`;
+    const ends =
+      `(CASE WHEN ${n} = 0 THEN ${left}.${nodeId} = ${right}.${nodeId} ` +
+      `ELSE ${d.jsonIdEquals(`${left}.${nodeId}`, key(d.jsonElement(list, '0'), from))} ` +
+      `AND ${d.jsonIdEquals(`${right}.${nodeId}`, key(d.jsonElement(list, '-1'), to))} END)`;
+    this.where.push(
+      `${d.jsonType(list)} = 'list'`,
+      `${n} >= ${min}`,
+      ...(max !== undefined ? [`${n} <= ${max}`] : []),
+      `NOT ${wrongElement}`,
+      `NOT ${broken}`,
+      ends,
+    );
+
+    const ids = d.unwind(list, this.alias('bl'));
+    const id = d.jsonId(key(ids.value, '~id'), b.table('edges'), b.mapping.edges.id);
+    const whereIds = where(ids);
+    const path =
+      `(SELECT ${d.idListAggregate(id, ids.order)} FROM ${ids.from}` +
+      `${whereIds ? ` WHERE ${whereIds}` : ''})`;
+    return { kind: 'list', path, nodes: undefined };
   }
 
   /** Checks the variable and inline properties of a variable-length relationship pattern. */

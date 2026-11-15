@@ -326,6 +326,7 @@ export function sqlite(options: SqliteOptions = {}): Dialect {
     // JSON arrays of ids.
     idListEmpty: () => 'json_array()',
     idListAppend: (list, id) => `json_insert(${list}, '$[#]', ${id})`,
+    idListAggregate: (id, order) => `json_group_array(${id} ORDER BY ${order})`,
     idListHas: (list, id) =>
       `EXISTS (SELECT 1 FROM json_each(${list}) AS vj WHERE vj.value = ${id})`,
     idListsOverlap: (left, right) =>

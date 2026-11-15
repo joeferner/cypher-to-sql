@@ -328,6 +328,7 @@ export function postgres(): Dialect {
     idListEmpty: (table, id) =>
       `COALESCE((SELECT array_agg(ve.${id}) FROM ${table} AS ve WHERE FALSE), '{}')`,
     idListAppend: (list, id) => `(${list} || ${id})`,
+    idListAggregate: (id, order) => `array_agg(${id} ORDER BY ${order})`,
     idListHas: (list, id) => `(${id} = ANY(${list}))`,
     idListsOverlap: (left, right) => `(${left} && ${right})`,
     idListLength: (list) => `cardinality(${list})::bigint`,

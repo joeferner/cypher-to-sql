@@ -290,6 +290,8 @@ export interface Dialect {
   idListEmpty(table: string, id: string): string;
   /** The list with `id` appended. */
   idListAppend(list: string, id: string): string;
+  /** Aggregate: the ids `id` of the group's rows as a list, in `order`. */
+  idListAggregate(id: string, order: string): string;
   /** Condition: the list contains `id`. */
   idListHas(list: string, id: string): string;
   /** Condition: the two lists have an id in common. */

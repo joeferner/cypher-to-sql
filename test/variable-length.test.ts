@@ -135,10 +135,51 @@ for (const backend of testBackends()) {
       ).toEqual([{ n: 2n }]);
     });
 
+    it('matches the chain of a bound list of relationships', async () => {
+      const ends = async (list: string, pattern: string, where = ''): Promise<unknown[]> =>
+        (
+          await graph.query(
+            `MATCH (a {n: 'a'})-[r1:R]->(b)-[r2:R]->(c) WITH ${list} AS rs ` +
+              `MATCH (x)${pattern}(y) ${where} RETURN x.n + y.n AS e`,
+          )
+        ).map((r) => r['e']);
+      // a -r1-> b -r2-> c: in the arrow's direction only, and with fitting types and lengths.
+      expect(await ends('[r1, r2]', '-[rs*]->')).toEqual(['ac']);
+      expect(await ends('[r2, r1]', '<-[rs*]-')).toEqual(['ca']);
+      expect(await ends('[r1, r2]', '<-[rs*]-')).toEqual([]);
+      expect(await ends('[r1]', '-[rs*1..1]->')).toEqual(['ab']);
+      expect(await ends('[r1, r2]', '-[rs:R*]->')).toEqual(['ac']);
+      expect(await ends('[r1, r2]', '-[rs:S*]->')).toEqual([]);
+      expect(await ends('[r1, r2]', '-[rs*..1]->')).toEqual([]);
+      expect(await ends('[r1, r2]', '-[rs*3..]->')).toEqual([]);
+      // Not a chain, not relationships, or empty.
+      expect(await ends('[r2, r1]', '-[rs*]->')).toEqual([]);
+      expect(await ends('[r1, 1]', '-[rs*]->')).toEqual([]);
+      expect(await ends('[]', '-[rs*0..]->', "WHERE x.n = 'b'")).toEqual(['bb']);
+      // Bound nodes that do not fit.
+      expect(
+        (
+          await graph.query(
+            "MATCH (a {n: 'a'})-[r1:R]->(b)-[r2:R]->(c) WITH [r1, r2] AS rs, c AS x, a AS y MATCH (x)-[rs*]->(y) RETURN x",
+          )
+        ).length,
+      ).toBe(0);
+    });
+
     it('rejects what it does not support yet', async () => {
       await expect(
         graph.query(`MATCH ()-[r*]->() WITH r MATCH ()-[r*]->() RETURN r`),
       ).rejects.toThrow(/not supported yet/);
+      const bound = 'MATCH ()-[r1]->() WITH [r1] AS rs';
+      for (const pattern of [
+        'MATCH p = ()-[rs*]->() RETURN p',
+        'MATCH ()-[rs*]-() RETURN 1',
+        'MATCH ()-[rs* {w: 1}]->() RETURN 1',
+      ]) {
+        await expect(graph.query(`${bound} ${pattern}`), pattern).rejects.toThrow(
+          /over a bound list of relationships is not supported yet/,
+        );
+      }
     });
 
     it('rejects variables of another type', async () => {
