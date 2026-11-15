@@ -15,6 +15,7 @@
   "runArgs": ["--add-host=host.docker.internal:host-gateway"],
   "containerEnv": {
     "TEST_POSTGRES_URL": "postgres://cypher:cypher@host.docker.internal:55432/cypher",
+    "TEST_MYSQL_URL": "mysql://cypher:cypher@host.docker.internal:53306/cypher",
     "NEO4J_URL": "bolt://host.docker.internal:57687",
     "ARCADEDB_URL": "http://host.docker.internal:52480"
   },

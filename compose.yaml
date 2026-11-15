@@ -22,6 +22,31 @@ services:
       timeout: 3s
       retries: 30
 
+  mysql:
+    image: mysql:${MYSQL_VERSION:-8.4}
+    environment:
+      MYSQL_USER: cypher
+      MYSQL_PASSWORD: cypher
+      MYSQL_DATABASE: cypher
+      MYSQL_ROOT_PASSWORD: cypher
+    ports:
+      - '${MYSQL_PORT:-53306}:3306'
+    tmpfs:
+      - /var/lib/mysql
+    # Durability off, as for PostgreSQL: the data is thrown away. The data
+    # directory is in memory (tmpfs), so the temporary tablespace, which grows
+    # with large temporary tables and never shrinks, is capped.
+    command: >-
+      --innodb-flush-log-at-trx-commit=0 --sync-binlog=0 --skip-log-bin
+      --innodb-buffer-pool-size=256M
+      --innodb-temp-data-file-path=ibtmp1:12M:autoextend:max:1G
+      --temptable-max-ram=256M --temptable-max-mmap=512M --performance-schema=OFF
+    healthcheck:
+      test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -ucypher -pcypher --silent']
+      interval: 1s
+      timeout: 3s
+      retries: 60
+
   neo4j:
     image: neo4j:${NEO4J_VERSION:-2026.10.2}-community
     profiles: [reference]

@@ -5,6 +5,7 @@ import {
   createGraph,
   CypherArgumentError,
   CypherTypeError,
+  UnsupportedFeatureError,
   type CypherValue,
   type Graph,
 } from '../src/index.js';
@@ -164,166 +165,184 @@ describe('temporal values', () => {
 });
 
 for (const backend of testBackends()) {
-  describe(`temporal functions of row values on ${backend.name}`, () => {
-    let graph: Graph;
-    beforeAll(async () => {
+  // MySQL has no temporal SQL port yet (Dialect.temporalCall is undefined).
+  describe.runIf(backend.name === 'mysql')(`temporal functions on ${backend.name}`, () => {
+    it('evaluates calls with known arguments, and rejects row values as unsupported', async () => {
       const { dialect, executor } = await backend.open();
-      graph = createGraph({ dialect, executor });
-    });
-    afterAll(() => backend.dispose?.());
-
-    /** `RETURN toString(<expr>)` for each `x` in `xs` (so the arguments are row values). */
-    const each = async (expr: string, xs: CypherValue[]): Promise<CypherValue[]> =>
-      (await graph.query(`UNWIND $xs AS x RETURN toString(${expr}) AS v`, { xs })).map(
-        (r) => r['v']!,
+      const graph = createGraph({ dialect, executor });
+      expect(await graph.query("RETURN toString(date('2015-07-21')) AS v")).toEqual([
+        { v: '2015-07-21' },
+      ]);
+      expect(() => graph.compile('UNWIND $xs AS x RETURN date(x) AS v')).toThrow(
+        UnsupportedFeatureError,
       );
+      await backend.dispose?.();
+    });
+  });
 
-    it('builds values from strings, maps, and other values in the database', async () => {
-      expect(
-        await each('date(x)', [
+  describe.skipIf(backend.name === 'mysql')(
+    `temporal functions of row values on ${backend.name}`,
+    () => {
+      let graph: Graph;
+      beforeAll(async () => {
+        const { dialect, executor } = await backend.open();
+        graph = createGraph({ dialect, executor });
+      });
+      afterAll(() => backend.dispose?.());
+
+      /** `RETURN toString(<expr>)` for each `x` in `xs` (so the arguments are row values). */
+      const each = async (expr: string, xs: CypherValue[]): Promise<CypherValue[]> =>
+        (await graph.query(`UNWIND $xs AS x RETURN toString(${expr}) AS v`, { xs })).map(
+          (r) => r['v']!,
+        );
+
+      it('builds values from strings, maps, and other values in the database', async () => {
+        expect(
+          await each('date(x)', [
+            '2015-07-21',
+            '20150721',
+            '2015-W30-2',
+            '2015202',
+            '2015-07',
+            '2015',
+          ]),
+        ).toEqual([
           '2015-07-21',
-          '20150721',
-          '2015-W30-2',
-          '2015202',
-          '2015-07',
-          '2015',
-        ]),
-      ).toEqual([
-        '2015-07-21',
-        '2015-07-21',
-        '2015-07-21',
-        '2015-07-21',
-        '2015-07-01',
-        '2015-01-01',
-      ]);
-      expect(await each('localtime(x)', ['214032.142', '21:40', '21'])).toEqual([
-        '21:40:32.142',
-        '21:40',
-        '21:00',
-      ]);
-      expect(
-        await each('datetime(x)', [
-          '2015-07-21T21:40:32.142+0100',
-          '2015-W30T2140-00:00',
-          '2015-07-21T21:40:32.142[Europe/London]',
-          '1818-07-21T21:40:32.142[Europe/Stockholm]',
-        ]),
-      ).toEqual([
-        '2015-07-21T21:40:32.142+01:00',
-        '2015-07-20T21:40Z',
-        '2015-07-21T21:40:32.142+01:00[Europe/London]',
-        '1818-07-21T21:40:32.142+00:53:28[Europe/Stockholm]',
-      ]);
-      expect(
-        await each('date(x)', [
-          { year: 1817n, week: 1n },
-          { year: 1984n, ordinalDay: 202n },
-          { year: 1984n, quarter: 3n, dayOfQuarter: 45n },
-        ]),
-      ).toEqual(['1816-12-30', '1984-07-20', '1984-08-14']);
-      expect(
-        await each('time(x)', [{ hour: 12n, minute: 34n, second: 56n, timezone: '+02:05:59' }]),
-      ).toEqual(['12:34:56+02:05:59']);
-      const stockholm = "datetime('1984-10-11T12:00+01:00[Europe/Stockholm]')";
-      expect(
-        await graph.query(
-          `WITH ${stockholm} AS o UNWIND [1] AS one
+          '2015-07-21',
+          '2015-07-21',
+          '2015-07-21',
+          '2015-07-01',
+          '2015-01-01',
+        ]);
+        expect(await each('localtime(x)', ['214032.142', '21:40', '21'])).toEqual([
+          '21:40:32.142',
+          '21:40',
+          '21:00',
+        ]);
+        expect(
+          await each('datetime(x)', [
+            '2015-07-21T21:40:32.142+0100',
+            '2015-W30T2140-00:00',
+            '2015-07-21T21:40:32.142[Europe/London]',
+            '1818-07-21T21:40:32.142[Europe/Stockholm]',
+          ]),
+        ).toEqual([
+          '2015-07-21T21:40:32.142+01:00',
+          '2015-07-20T21:40Z',
+          '2015-07-21T21:40:32.142+01:00[Europe/London]',
+          '1818-07-21T21:40:32.142+00:53:28[Europe/Stockholm]',
+        ]);
+        expect(
+          await each('date(x)', [
+            { year: 1817n, week: 1n },
+            { year: 1984n, ordinalDay: 202n },
+            { year: 1984n, quarter: 3n, dayOfQuarter: 45n },
+          ]),
+        ).toEqual(['1816-12-30', '1984-07-20', '1984-08-14']);
+        expect(
+          await each('time(x)', [{ hour: 12n, minute: 34n, second: 56n, timezone: '+02:05:59' }]),
+        ).toEqual(['12:34:56+02:05:59']);
+        const stockholm = "datetime('1984-10-11T12:00+01:00[Europe/Stockholm]')";
+        expect(
+          await graph.query(
+            `WITH ${stockholm} AS o UNWIND [1] AS one
            RETURN toString(datetime({datetime: o, timezone: '+05:00'})) AS a,
                   toString(datetime({datetime: o, day: 28, second: 42, timezone: 'Pacific/Honolulu'})) AS b,
                   toString(date({date: o, week: 1})) AS c, toString(localtime(o)) AS d,
                   toString(time({time: time('10:00+01:00'), timezone: '+05:00'})) AS e`,
-        ),
-      ).toEqual([
-        {
-          a: '1984-10-11T16:00+05:00',
-          b: '1984-10-28T01:00:42-10:00[Pacific/Honolulu]',
-          c: '1984-01-05',
-          d: '12:00',
-          e: '14:00+05:00',
-        },
-      ]);
-    });
+          ),
+        ).toEqual([
+          {
+            a: '1984-10-11T16:00+05:00',
+            b: '1984-10-28T01:00:42-10:00[Pacific/Honolulu]',
+            c: '1984-01-05',
+            d: '12:00',
+            e: '14:00+05:00',
+          },
+        ]);
+      });
 
-    it('truncates row values, with fields and time zones over the result', async () => {
-      const x = "datetime('1984-10-11T12:31:14.645876123+01:00')";
-      const run = async (expr: string): Promise<CypherValue> =>
-        (await graph.query(`WITH ${x} AS x UNWIND [1] AS one RETURN toString(${expr}) AS v`))[0]![
-          'v'
-        ]!;
-      expect(await run(`date.truncate('millennium', x, {day: 2})`)).toBe('1000-01-02');
-      expect(await run(`date.truncate('weekYear', x)`)).toBe('1984-01-02');
-      expect(await run(`date.truncate('week', x, {dayOfWeek: 2})`)).toBe('1984-10-09');
-      expect(await run(`datetime.truncate('quarter', x)`)).toBe('1984-10-01T00:00+01:00');
-      expect(await run(`datetime.truncate('year', x, {timezone: 'Europe/Stockholm'})`)).toBe(
-        '1984-01-01T00:00+01:00[Europe/Stockholm]',
-      );
-      expect(await run(`localdatetime.truncate('millisecond', x, {nanosecond: 2})`)).toBe(
-        '1984-10-11T12:31:14.645000002',
-      );
-      expect(await run(`time.truncate('minute', x)`)).toBe('12:31+01:00');
-      expect(await run(`localtime.truncate('microsecond', x)`)).toBe('12:31:14.645876');
-      expect(await run(`localtime.truncate('day', x)`)).toBe('00:00');
-    });
+      it('truncates row values, with fields and time zones over the result', async () => {
+        const x = "datetime('1984-10-11T12:31:14.645876123+01:00')";
+        const run = async (expr: string): Promise<CypherValue> =>
+          (await graph.query(`WITH ${x} AS x UNWIND [1] AS one RETURN toString(${expr}) AS v`))[0]![
+            'v'
+          ]!;
+        expect(await run(`date.truncate('millennium', x, {day: 2})`)).toBe('1000-01-02');
+        expect(await run(`date.truncate('weekYear', x)`)).toBe('1984-01-02');
+        expect(await run(`date.truncate('week', x, {dayOfWeek: 2})`)).toBe('1984-10-09');
+        expect(await run(`datetime.truncate('quarter', x)`)).toBe('1984-10-01T00:00+01:00');
+        expect(await run(`datetime.truncate('year', x, {timezone: 'Europe/Stockholm'})`)).toBe(
+          '1984-01-01T00:00+01:00[Europe/Stockholm]',
+        );
+        expect(await run(`localdatetime.truncate('millisecond', x, {nanosecond: 2})`)).toBe(
+          '1984-10-11T12:31:14.645000002',
+        );
+        expect(await run(`time.truncate('minute', x)`)).toBe('12:31+01:00');
+        expect(await run(`localtime.truncate('microsecond', x)`)).toBe('12:31:14.645876');
+        expect(await run(`localtime.truncate('day', x)`)).toBe('00:00');
+      });
 
-    it('builds durations and computes with them on row values', async () => {
-      expect(
-        await each('duration(x)', [
+      it('builds durations and computes with them on row values', async () => {
+        expect(
+          await each('duration(x)', [
+            'P14DT16H12M',
+            'P0.75M',
+            'P2012-02-02T14:37:21.545',
+            { days: 14n, hours: 16n, minutes: 12n },
+            { months: 5n, days: 1.5 },
+            { minutes: 12n, seconds: -60n },
+          ]),
+        ).toEqual([
           'P14DT16H12M',
-          'P0.75M',
-          'P2012-02-02T14:37:21.545',
-          { days: 14n, hours: 16n, minutes: 12n },
-          { months: 5n, days: 1.5 },
-          { minutes: 12n, seconds: -60n },
-        ]),
-      ).toEqual([
-        'P14DT16H12M',
-        'P22DT19H51M49.5S',
-        'P2012Y2M2DT14H37M21.545S',
-        'P14DT16H12M',
-        'P5M1DT12H',
-        'PT11M',
-      ]);
-      const d =
-        'duration({years: 12, months: 5, days: 14, hours: 16, minutes: 12, seconds: 70, nanoseconds: 2})';
-      const [row] = await graph.query(
-        `WITH ${d} AS d, date('1984-10-11') AS a, localtime('12:31:14.000000001') AS b,
+          'P22DT19H51M49.5S',
+          'P2012Y2M2DT14H37M21.545S',
+          'P14DT16H12M',
+          'P5M1DT12H',
+          'PT11M',
+        ]);
+        const d =
+          'duration({years: 12, months: 5, days: 14, hours: 16, minutes: 12, seconds: 70, nanoseconds: 2})';
+        const [row] = await graph.query(
+          `WITH ${d} AS d, date('1984-10-11') AS a, localtime('12:31:14.000000001') AS b,
               datetime('1984-10-11T12:31:14.000000001+01:00') AS c UNWIND [1] AS one
          RETURN toString(a + d) AS a1, toString(a - d) AS a2, toString(b + d) AS b1,
                 toString(c + d) AS c1, toString(d + d) AS dd, toString(d * 0.5) AS half,
                 toString(d / 2) AS div, d.days AS days, d.monthsOfYear AS moy,
                 toString(duration.between(a, c)) AS between,
                 toString(duration.inSeconds(b, c)) AS secs, d = d AS same`,
-      );
-      expect(row).toEqual({
-        a1: '1997-03-25',
-        a2: '1972-04-27',
-        b1: '04:44:24.000000003',
-        c1: '1997-03-26T04:44:24.000000003+01:00',
-        dd: 'P24Y10M28DT32H26M20.000000004S',
-        half: 'P6Y2M22DT13H21M8.000000001S',
-        div: 'P6Y2M22DT13H21M8.000000001S',
-        days: 14n,
-        moy: 5n,
-        between: 'PT12H31M14.000000001S',
-        secs: 'PT0S',
-        same: true,
+        );
+        expect(row).toEqual({
+          a1: '1997-03-25',
+          a2: '1972-04-27',
+          b1: '04:44:24.000000003',
+          c1: '1997-03-26T04:44:24.000000003+01:00',
+          dd: 'P24Y10M28DT32H26M20.000000004S',
+          half: 'P6Y2M22DT13H21M8.000000001S',
+          div: 'P6Y2M22DT13H21M8.000000001S',
+          days: 14n,
+          moy: 5n,
+          between: 'PT12H31M14.000000001S',
+          secs: 'PT0S',
+          same: true,
+        });
+        await expect(
+          graph.query(`WITH ${d} AS d UNWIND [1] AS one RETURN d + 1 AS x`),
+        ).rejects.toThrow(CypherTypeError);
       });
-      await expect(
-        graph.query(`WITH ${d} AS d UNWIND [1] AS one RETURN d + 1 AS x`),
-      ).rejects.toThrow(CypherTypeError);
-    });
 
-    it('gives components that match values built in the library', async () => {
-      const [row] = await graph.query(
-        `UNWIND ['1984-10-11T12:31:14.645876123+01:00'] AS s
+      it('gives components that match values built in the library', async () => {
+        const [row] = await graph.query(
+          `UNWIND ['1984-10-11T12:31:14.645876123+01:00'] AS s
          WITH datetime(s) AS x, datetime('1984-10-11T12:31:14.645876123+01:00') AS y
          RETURN x = y AS same, x.week AS week, x.ordinalDay AS ordinal, x.epochMillis AS millis`,
-      );
-      expect(row).toEqual({ same: true, week: 41n, ordinal: 285n, millis: 466342274645n });
-      await expect(graph.query("UNWIND ['2015-13-01'] AS s RETURN date(s) AS d")).rejects.toThrow(
-        CypherArgumentError,
-      );
-      expect(await graph.query('UNWIND [null] AS s RETURN date(s) AS d')).toEqual([{ d: null }]);
-    });
-  });
+        );
+        expect(row).toEqual({ same: true, week: 41n, ordinal: 285n, millis: 466342274645n });
+        await expect(graph.query("UNWIND ['2015-13-01'] AS s RETURN date(s) AS d")).rejects.toThrow(
+          CypherArgumentError,
+        );
+        expect(await graph.query('UNWIND [null] AS s RETURN date(s) AS d')).toEqual([{ d: null }]);
+      });
+    },
+  );
 }

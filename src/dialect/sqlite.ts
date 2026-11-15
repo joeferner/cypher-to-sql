@@ -125,6 +125,13 @@ export function sqlite(options: SqliteOptions = {}): Dialect {
     quoteIdent: (name) => `"${name}"`,
     placeholder: () => '?',
     numberedPlaceholders: false,
+    returning: true,
+    nullsOrder: true,
+    limitExpressions: true,
+    integerText: (integer) => `CAST(${integer} AS TEXT)`,
+    integerDivide: (dividend, divisor) => `(${dividend} / ${divisor})`,
+    floatRemainder: (dividend, divisor) =>
+      `(${dividend} - trunc(${dividend} / ${divisor}) * ${divisor})`,
     jsonInput: (placeholder) => placeholder,
     jsonText: (expr) => expr,
     jsonMember: (objectExpr, keyPlaceholder, key): string => {

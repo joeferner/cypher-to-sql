@@ -123,6 +123,13 @@ export function postgres(): Dialect {
     quoteIdent: (name) => `"${name}"`,
     placeholder: (index) => `$${index}`,
     numberedPlaceholders: true,
+    returning: true,
+    nullsOrder: true,
+    limitExpressions: true,
+    integerText: (integer) => `CAST(${integer} AS TEXT)`,
+    integerDivide: (dividend, divisor) => `(${dividend} / ${divisor})`,
+    floatRemainder: (dividend, divisor) =>
+      `(${dividend} - trunc(${dividend} / ${divisor}) * ${divisor})`,
     jsonInput: (placeholder) => `(${placeholder}::jsonb)`,
     // jsonb keeps the scale of numbers, so `1.0` comes back as `1.0` and integers
     // and floats stay distinct.

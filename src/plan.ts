@@ -7,6 +7,7 @@ import {
   CypherConstraintError,
   CypherTypeError,
   EntityNotFoundError,
+  UnsupportedFeatureError,
   LimitExceededError,
   SemanticError,
   type CypherError,
@@ -94,6 +95,8 @@ export type BindValue =
     }
   /** The ids (a JSON array) of the nodes DELETE deleted, for the steps after the rows. */
   | { kind: 'deletedNodes' }
+  /** The ids the last `forgetsDeleted` step returned, as a JSON array (to delete them without RETURNING). */
+  | { kind: 'forgottenNodes' }
   /**
    * A temporal function call, or temporal arithmetic, whose arguments are known
    * before the query runs (see `isKnownBeforeRun`), evaluated when the step is
@@ -295,7 +298,8 @@ export interface PlanStep {
 /** A Cypher error that a step's SQL raises at run time, through `Dialect.raise`. */
 export interface RaisedError {
   /** `limit` raises a `LimitExceededError`, with `code` as its hint. */
-  kind: 'type' | 'argument' | 'limit' | 'constraint' | 'entityNotFound';
+  /** `unsupported` raises an `UnsupportedFeatureError` (a value the dialect cannot compute with). */
+  kind: 'type' | 'argument' | 'limit' | 'constraint' | 'entityNotFound' | 'unsupported';
   /** openCypher's detail code, for example `InvalidArgumentType`. */
   code: string;
   message: string;
@@ -486,6 +490,7 @@ async function runPlan(
     written: undefined,
     computed: new Map(),
     deletedNodes: new Map(),
+    forgotten: '[]',
   };
   const entityIds = state.entityIds;
   let stepsRun = 0;
@@ -517,7 +522,15 @@ async function runPlan(
       if (step.generatedId && options.idGenerator) {
         entityIds.set(step.generatedId.entity, options.idGenerator(step.generatedId.kind));
       }
-      const values = step.values.map((v) => resolveBind(v, options, state, row));
+      // Once per bind: with `?` placeholders a bind used twice is listed twice,
+      // and a procedure bind must call its procedure once.
+      const resolved = new Map<BindValue, unknown>();
+      const values = step.values.map((v) => {
+        if (!resolved.has(v)) {
+          resolved.set(v, resolveBind(v, options, state, row));
+        }
+        return resolved.get(v);
+      });
       let result: Row[];
       try {
         result = await tx.query(step.sql, values);
@@ -537,6 +550,7 @@ async function runPlan(
         for (const deleted of result) {
           state.deletedNodes.delete(String(deleted['id']));
         }
+        state.forgotten = idsJson(result.map((r) => r['id']));
       }
       if (step.computes !== undefined) {
         state.computed.set(step.computes, result[0] ?? {});
@@ -752,12 +766,16 @@ function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
     if (raised.kind === 'entityNotFound') {
       return new EntityNotFoundError(raised.message, options);
     }
+    if (raised.kind === 'unsupported') {
+      return new UnsupportedFeatureError(raised.message, { position: raised.position });
+    }
     return raised.kind === 'type'
       ? new CypherTypeError(raised.message, options)
       : new CypherArgumentError(raised.message, options);
   }
   // PostgreSQL: numeric_value_out_of_range, division_by_zero. SQLite: integer overflow.
-  if (code === '22003' || /integer overflow/.test(message)) {
+  // MySQL: BIGINT value is out of range.
+  if (code === '22003' || /integer overflow|BIGINT value is out of range/.test(message)) {
     return new CypherArgumentError('Integer overflow: the result does not fit in 64 bits', {
       code: 'NumberOutOfRange',
     });
@@ -779,7 +797,12 @@ function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
     });
   }
   // PostgreSQL: invalid_regular_expression. SQLite: the RegExp of cypher_regex().
-  if (code === '2201B' || /^invalid regular expression/i.test(message)) {
+  // MySQL: the ER_REGEXP_* errors of ICU.
+  if (
+    code === '2201B' ||
+    (typeof code === 'string' && code.startsWith('ER_REGEXP')) ||
+    /^invalid regular expression/i.test(message)
+  ) {
     return new CypherArgumentError(message, { code: 'InvalidRegex' });
   }
   return undefined;
@@ -799,6 +822,8 @@ interface RunState {
   computed: Map<number, Row>;
   /** The nodes DELETE deleted, by id text, deleted after the per-row steps. */
   deletedNodes: Map<string, unknown>;
+  /** JSON array of the ids the last `forgetsDeleted` step returned. */
+  forgotten: string;
 }
 
 /** One written row as a JSON object: ids of created and matched entities, and JSON values. */
@@ -985,6 +1010,8 @@ function resolveBind(
       return idsJson(deleteTargets(state, bind.index, bind.column, bind.position)[bind.part]);
     case 'deletedNodes':
       return idsJson([...state.deletedNodes.values()]);
+    case 'forgottenNodes':
+      return state.forgotten;
     case 'parameterAs':
     case 'parameterFits': {
       const value = resolveValue(
@@ -1408,6 +1435,8 @@ function describeBind(bind: BindValue): string {
       return `${bind.part}(computed ${bind.index + 1}.${bind.column.name})`;
     case 'deletedNodes':
       return 'deletedNodes';
+    case 'forgottenNodes':
+      return 'forgottenNodes';
     case 'propertyPatch':
       return `${bind.mode}${bind.key === undefined ? '' : ` ${bind.key}`}(computed ${bind.index + 1}.${bind.column.name})`;
     case 'parameterAs':

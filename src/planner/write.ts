@@ -421,7 +421,7 @@ export class WritePlanner {
           );
         }
         // After the clause ran for every row: its nodes without relationships go now.
-        steps.push(this.deleteFreeNodes());
+        steps.push(...this.deleteFreeNodes());
         deletesNodes = true;
         return;
       }
@@ -785,20 +785,41 @@ export class WritePlanner {
    * After a DELETE clause ran for every row: its nodes that no longer have
    * relationships are deleted, so that later clauses no longer see them.
    */
-  private deleteFreeNodes(): PlanStep {
+  private deleteFreeNodes(): PlanStep[] {
     const { nodes, edges } = this.mapping;
     const u = new SqlBuilder(this.dialect, this.mapping);
     const ids = this.dialect.jsonInput(u.bind({ kind: 'deletedNodes' }));
     const nodeTable = u.table('nodes');
     const id = `${nodeTable}.${u.ident(nodes.id)}`;
-    // RETURNING: the runner forgets the deleted ids, so that a new entity that
-    // gets one of them again (SQLite reuses the largest id) is not deleted later.
-    return u.finish(
-      `DELETE FROM ${nodeTable} WHERE ${this.dialect.boundIdIn(id, ids, nodeTable, nodes.id)} ` +
-        `AND NOT EXISTS (SELECT 1 FROM ${u.table('edges')} AS e WHERE e.${u.ident(edges.startId)} = ${id} ` +
-        `OR e.${u.ident(edges.endId)} = ${id}) RETURNING ${id} AS id`,
-      { updates: true, afterClause: true, forgetsDeleted: true },
-    );
+    const free =
+      `${this.dialect.boundIdIn(id, ids, nodeTable, nodes.id)} ` +
+      `AND NOT EXISTS (SELECT 1 FROM ${u.table('edges')} AS e WHERE e.${u.ident(edges.startId)} = ${id} ` +
+      `OR e.${u.ident(edges.endId)} = ${id})`;
+    // The runner forgets the deleted ids, so that a new entity that gets one of
+    // them again (SQLite reuses the largest id) is not deleted later.
+    if (this.dialect.returning) {
+      return [
+        u.finish(`DELETE FROM ${nodeTable} WHERE ${free} RETURNING ${id} AS id`, {
+          updates: true,
+          afterClause: true,
+          forgetsDeleted: true,
+        }),
+      ];
+    }
+    // Without RETURNING: select them (the runner forgets them), then delete those.
+    const d = new SqlBuilder(this.dialect, this.mapping);
+    const forgotten = this.dialect.jsonInput(d.bind({ kind: 'forgottenNodes' }));
+    const table = d.table('nodes');
+    return [
+      u.finish(`SELECT ${id} AS id FROM ${nodeTable} WHERE ${free}`, {
+        afterClause: true,
+        forgetsDeleted: true,
+      }),
+      d.finish(
+        `DELETE FROM ${table} WHERE ${this.dialect.boundIdIn(`${table}.${d.ident(nodes.id)}`, forgotten, table, nodes.id)}`,
+        { updates: true, afterClause: true },
+      ),
+    ];
   }
 
   /**
@@ -918,7 +939,8 @@ export class WritePlanner {
       values.push(json ? this.dialect.jsonInput(placeholder) : placeholder);
     }
     let sql = `INSERT INTO ${b.table(table)} (${names.join(', ')}) VALUES (${values.join(', ')})`;
-    if (!generated) {
+    // Without RETURNING (MySQL) the executor returns the new id as `id`.
+    if (!generated && this.dialect.returning) {
       sql += ` RETURNING ${b.ident(idColumn)} AS id`;
     }
     return b.finish(sql, {

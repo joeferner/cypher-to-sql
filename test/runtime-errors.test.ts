@@ -100,8 +100,8 @@ for (const backend of testBackends()) {
       }
       expect((await error('RETURN 1 / $y AS v', { y: 0n })).message).toMatch(/Division by zero/);
       expect(await v('$x + 1', { x: max - 1n })).toBe(max);
-      // Float division by zero is not an error.
-      expect(await v('1.0 / 0')).toBe(Infinity);
+      // Float division by zero is not an error (null on MySQL, which has no infinity).
+      expect(await v('1.0 / 0')).toBe(backend.name === 'mysql' ? null : Infinity);
     });
 
     it('raises InvalidArgumentType for range() arguments that are not integers, when it runs', async () => {

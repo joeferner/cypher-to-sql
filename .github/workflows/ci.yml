@@ -26,7 +26,7 @@ jobs:
       - run: npm run typecheck
 
   test:
-    name: Test (PostgreSQL ${{ matrix.postgres }})
+    name: Test (PostgreSQL ${{ matrix.postgres }}, MySQL 8.4)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -44,7 +44,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run db:up
-      # Unit tests and the allow-listed TCK scenarios on SQLite and PostgreSQL.
+      # Unit tests and the allow-listed TCK scenarios on SQLite, PostgreSQL, and MySQL.
       - run: npm test
       - if: always()
         run: npm run db:down

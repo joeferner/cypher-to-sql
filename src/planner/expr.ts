@@ -46,10 +46,24 @@ export interface SortKey {
   nulls: boolean;
 }
 
-/** An ORDER BY term as SQL. */
-export function orderTerm(sql: string, key: SortKey, descending: boolean): string {
-  const nulls = key.nulls ? (descending ? ' NULLS FIRST' : ' NULLS LAST') : '';
-  return `${sql} ${descending ? 'DESC' : 'ASC'}${nulls}`;
+/**
+ * An ORDER BY term as SQL: nulls last ascending and first descending, as in
+ * Cypher. Without `NULLS FIRST/LAST` (`nullsOrder` false, MySQL), a key
+ * `(x IS NULL)` before the value puts them there.
+ */
+export function orderTerm(
+  sql: string,
+  key: SortKey,
+  descending: boolean,
+  nullsOrder = true,
+): string {
+  const direction = descending ? 'DESC' : 'ASC';
+  if (!key.nulls) {
+    return `${sql} ${direction}`;
+  }
+  return nullsOrder
+    ? `${sql} ${direction} ${descending ? 'NULLS FIRST' : 'NULLS LAST'}`
+    : `(${sql} IS NULL) ${direction}, ${sql} ${direction}`;
 }
 
 /** An operand inside `share`: atomic, and for JSON with its run-time type as SQL. */
@@ -1496,10 +1510,21 @@ export class ExprCompiler {
     }
     // A temporal value or duration on either side: the dialect's temporal arithmetic.
     const temporal = d.temporalArithmetic;
-    if (temporal && temporalPossible && op !== '%' && op !== '^') {
+    if (temporalPossible && op !== '%' && op !== '^') {
+      // Without it (MySQL), such values are an UnsupportedFeatureError, not a type error.
+      const result = temporal
+        ? temporal(op, l.sql, r.sql)
+        : this.b.raise(
+            {
+              kind: 'unsupported',
+              code: 'TemporalArithmetic',
+              message: `Arithmetic on temporal values from the query is not supported on ${d.name} yet`,
+              position,
+            },
+            'json',
+          );
       arms.push(
-        `WHEN ${lt} IN ${TEMPORAL_OR_DURATION} OR ${rt} IN ${TEMPORAL_OR_DURATION} ` +
-          `THEN ${temporal(op, l.sql, r.sql)}`,
+        `WHEN ${lt} IN ${TEMPORAL_OR_DURATION} OR ${rt} IN ${TEMPORAL_OR_DURATION} THEN ${result}`,
       );
     }
     const mismatch = this.b.typeError(
@@ -1517,7 +1542,7 @@ export class ExprCompiler {
   private scalarText(sql: string, type: 'integer' | 'float' | 'boolean'): string {
     switch (type) {
       case 'integer':
-        return `CAST(${sql} AS TEXT)`;
+        return this.b.dialect.integerText(sql);
       case 'float':
         return this.b.dialect.floatToString(sql);
       case 'boolean':
@@ -1548,12 +1573,15 @@ export class ExprCompiler {
       return d.floatDivide(left, right);
     }
     if (type === 'float' && op === '%') {
-      return `(${left} - trunc(${left} / ${right}) * ${right})`;
+      return d.floatRemainder(left, right);
     }
     if (type === 'float') {
       return `(${left} ${op} ${right})`;
     }
-    const result = d.checkedInteger(`(${left} ${op} ${right})`, this.overflow(position));
+    const result = d.checkedInteger(
+      op === '/' ? d.integerDivide(left, right) : `(${left} ${op} ${right})`,
+      this.overflow(position),
+    );
     if (op === '/' || op === '%') {
       const zero = this.b.raise(
         { kind: 'argument', code: 'DivisionByZero', message: 'Division by zero', position },

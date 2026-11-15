@@ -4,7 +4,7 @@ How cypher-to-sql works and the rules it keeps. For the roadmap and progress, se
 
 ## Scope
 
-Version 1 runs read-only openCypher on PostgreSQL (including managed PostgreSQL such as RDS and Aurora, where graph extensions are not available) and SQLite. `CREATE`, `MERGE`, `SET`, `REMOVE`, and `DELETE` are available behind an explicit write mode, mainly so that the TCK can build its test graphs with the library itself. Coverage grows feature by feature, and every unsupported construct fails with a clear `UnsupportedFeatureError`.
+Version 1 runs read-only openCypher on PostgreSQL (including managed PostgreSQL such as RDS and Aurora, where graph extensions are not available), SQLite, and MySQL 8 (see [MySQL](#mysql)). `CREATE`, `MERGE`, `SET`, `REMOVE`, and `DELETE` are available behind an explicit write mode, mainly so that the TCK can build its test graphs with the library itself. Coverage grows feature by feature, and every unsupported construct fails with a clear `UnsupportedFeatureError`.
 
 **Non-goals:** built-in procedures (Neo4j's `db.*`, APOC, GDS), vendor-specific functions, and `LOAD CSV`. `CALL` works only with procedures the caller registers (see [Procedures](#procedures)). Managing application schemas: the library reads a mapping and never creates application tables. Database drivers, connections, and pooling: the caller runs the SQL with their own driver, and the library has no runtime dependency on any driver.
 
@@ -18,7 +18,7 @@ Cypher text
   → AST (typed, positions kept; unsupported constructs stay as explicit nodes)
   → Mode and feature gate (read mode rejects writes; unsupported constructs are rejected)
   → Planner (read planner; write planner only on write graphs)
-  → Dialect (PostgreSQL, SQLite)
+  → Dialect (PostgreSQL, SQLite, MySQL)
   → Executor (one transaction) → Result assembler → Cypher values
 ```
 
@@ -360,6 +360,21 @@ The defaults were checked against the reference graphs (#16, `npm run bench:limi
 | `LIKE`                | Case sensitive                                         | Case-insensitive for ASCII. Use `instr` / `substr` for `CONTAINS` and `STARTS WITH`.                                                                                        |
 | Read-only enforcement | `READ ONLY` transaction plus a role with only `SELECT` | Read-only connection or `PRAGMA query_only`                                                                                                                                 |
 | Integer size          | `bigint`, with overflow errors                         | 64-bit integers; overflow silently becomes a float                                                                                                                          |
+
+### MySQL
+
+`mysql()` (`src/dialect/mysql.ts`) targets MySQL 8.0.17 or newer, tested on 8.4. JSON values are MySQL's `JSON` type, lists are unwound with `JSON_TABLE ... FOR ORDINALITY`, variable-length patterns and `range()`/`split()` use recursive CTEs, and id lists are JSON arrays. What differs from the other dialects:
+
+- **Session settings.** The executor sets `PIPES_AS_CONCAT` (so the planner's `||` concatenates), removes `ONLY_FULL_GROUP_BY` (it does not see that a node's properties depend on its grouped id across a derived table), sets `utf8mb4_bin` as the connection collation, a large `group_concat_max_len`, and a large `cte_max_recursion_depth`. See [docs/executors.md](docs/executors.md).
+- **Strings.** `utf8mb4_bin` is PAD SPACE (`'a' = 'a '` is true), so comparisons, sort keys, and string predicates add `COLLATE utf8mb4_0900_bin`, which compares code points with NO PAD. The connection keeps `utf8mb4_bin` because `JSON_UNQUOTE` returns it, and mixing the two in one expression is an error.
+- **No `RETURNING`** (`Dialect.returning`): the executor returns the insert id of an `INSERT`, and the deletions that DELETE must remember are a `SELECT` of the ids and then a `DELETE` of those ids (`forgottenNodes`).
+- **No `NULLS FIRST/LAST`** (`Dialect.nullsOrder`): a sort key `(x IS NULL)` comes first. **`LIMIT`** takes only a literal or a parameter (`Dialect.limitExpressions`), so `SKIP`/`LIMIT` expressions are an `UnsupportedFeatureError`.
+- **Ordered JSON lists** come from `GROUP_CONCAT(... ORDER BY ...)` of the values' JSON text (`JSON_ARRAYAGG` has no `ORDER BY`).
+- **Run-time errors** are raised with `UUID_TO_BIN('<marker>')`, whose error message quotes its argument. The window function of the variable-length row cap is in its own derived table, because MySQL evaluates the other parts of an expression with a window function up front, the raise included.
+- **`JSON_TABLE`** fails on a subquery argument or on a column of a derived table merged into the query, so its input comes from a `LATERAL` derived table with a `LIMIT` (neither merged nor a subquery).
+- **No NaN or infinity**: a float division by zero is null (NaN is null on SQLite too). JSON numbers are compared as `DOUBLE`, so integers beyond 2^53 compared with a JSON value can be off.
+- **Temporal functions and arithmetic on values from the query** are an `UnsupportedFeatureError` (`temporalCall` and `temporalArithmetic` are undefined; there is no SQL port yet). Calls with literal or parameter arguments run in the library and work.
+- **Indexes.** A declared integer or float property is read with the same expression as a functional index on it (`CAST(JSON_EXTRACT(properties, '$."age"') AS SIGNED)`), which MySQL uses. MySQL does not use a functional index for the string form, so declared strings are scanned.
 
 ## Semantics that need care
 

@@ -25,6 +25,28 @@ export interface Dialect {
   /** Placeholders name their value (`$1`), so one value can be used several times. */
   readonly numberedPlaceholders: boolean;
 
+  /**
+   * INSERT and DELETE take `RETURNING`. Without it (MySQL), an INSERT's
+   * executor returns `[{ id }]` with the new id, and deletions whose ids the
+   * runner needs are a SELECT and a DELETE.
+   */
+  readonly returning: boolean;
+
+  /** ORDER BY takes `NULLS FIRST` and `NULLS LAST`; without them, a key sorts nulls first. */
+  readonly nullsOrder: boolean;
+
+  /** LIMIT and OFFSET take an expression (a scalar subquery), not only a value. */
+  readonly limitExpressions: boolean;
+
+  /** An integer as decimal text. */
+  integerText(integer: string): string;
+
+  /** Integer division, truncating toward zero. */
+  integerDivide(dividend: string, divisor: string): string;
+
+  /** The remainder of float division, with the sign of the dividend. */
+  floatRemainder(dividend: string, divisor: string): string;
+
   /** SQL for a bind value that holds JSON text and is written into a JSON column. */
   jsonInput(placeholder: string): string;
 

@@ -4,6 +4,7 @@ import {
   defaultMapping,
   LimitExceededError,
   SemanticError,
+  UnsupportedFeatureError,
   type CypherValue,
   type Graph,
   type GraphMapping,
@@ -104,51 +105,71 @@ for (const backend of testBackends()) {
       expect(() => graph.compile('RETURN 1 SKIP 1.5')).toThrow(SemanticError);
     });
 
-    it('applies SKIP and LIMIT expressions that use no variables, computed once', async () => {
-      const names = 'MATCH (n) RETURN n.name AS x ORDER BY x';
-      expect(await column(`${names} SKIP 1 + 1 LIMIT toInteger(ceil(0.5))`)).toEqual(['b']);
-      expect(await column(`${names} SKIP $s - 1 LIMIT size([1, 2])`, { s: 1n })).toEqual([
-        'B',
-        'a',
-      ]);
-      // In a WITH stage, and after aggregation.
-      expect(
-        await column('MATCH (n) WITH n ORDER BY n.name LIMIT 1 + 2 RETURN count(*) AS c'),
-      ).toEqual([3n]);
-      expect(
-        await column('MATCH (n) RETURN n.age AS a, count(*) AS c ORDER BY a SKIP 2 - 1 LIMIT 1'),
-      ).toEqual([30n]);
-      // rand() is drawn once: the count is one of 0..4, not a mix of rows.
-      const [count] = await column(
-        'MATCH (n) WITH n SKIP toInteger(rand() * 4) RETURN count(*) AS c',
-      );
-      expect(Number(count)).toBeGreaterThanOrEqual(1);
-      expect(Number(count)).toBeLessThanOrEqual(4);
-    });
+    it.runIf(backend.name === 'mysql')(
+      'accepts only literals and parameters in SKIP and LIMIT on MySQL',
+      () => {
+        // MySQL's LIMIT takes no expression.
+        expect(() => graph.compile('MATCH (n) RETURN n SKIP 1 + 1')).toThrow(
+          UnsupportedFeatureError,
+        );
+        // Variables are still a SemanticError.
+        expect(() => graph.compile('MATCH (n) RETURN n SKIP n.age')).toThrow(SemanticError);
+      },
+    );
 
-    it('rejects SKIP and LIMIT expressions with variables, or of the wrong value', async () => {
-      for (const query of [
-        'MATCH (n) RETURN n SKIP n.age',
-        'MATCH (n) RETURN n LIMIT size(n.name)',
-        'MATCH (n) RETURN n LIMIT count(*)',
-        'RETURN 1 LIMIT 0.5 * 2',
-        "RETURN 1 LIMIT 'a' + 'b'",
-      ]) {
-        expect(() => graph.compile(query), query).toThrow(SemanticError);
-      }
-      await expect(column('RETURN 1 AS x LIMIT 1 - 2')).rejects.toMatchObject({
-        code: 'NegativeIntegerArgument',
-      });
-      await expect(column('RETURN 1 AS x SKIP $l + 0', { l: 'a' })).rejects.toThrow();
-      await expect(column('RETURN 1 AS x LIMIT toInteger($l)', { l: 1.5 })).resolves.toEqual([1n]);
-      // The row cap still applies when the LIMIT is larger.
-      const limits = { limits: { maxRowsPerStep: 2 } };
-      const unwind = 'UNWIND range(1, 5) AS x RETURN x';
-      expect(await graph.query(`${unwind} LIMIT 1 + 1`, {}, limits)).toHaveLength(2);
-      await expect(graph.query(`${unwind} LIMIT 2 + 3`, {}, limits)).rejects.toThrow(
-        LimitExceededError,
-      );
-    });
+    it.skipIf(backend.name === 'mysql')(
+      'applies SKIP and LIMIT expressions that use no variables, computed once',
+      async () => {
+        const names = 'MATCH (n) RETURN n.name AS x ORDER BY x';
+        expect(await column(`${names} SKIP 1 + 1 LIMIT toInteger(ceil(0.5))`)).toEqual(['b']);
+        expect(await column(`${names} SKIP $s - 1 LIMIT size([1, 2])`, { s: 1n })).toEqual([
+          'B',
+          'a',
+        ]);
+        // In a WITH stage, and after aggregation.
+        expect(
+          await column('MATCH (n) WITH n ORDER BY n.name LIMIT 1 + 2 RETURN count(*) AS c'),
+        ).toEqual([3n]);
+        expect(
+          await column('MATCH (n) RETURN n.age AS a, count(*) AS c ORDER BY a SKIP 2 - 1 LIMIT 1'),
+        ).toEqual([30n]);
+        // rand() is drawn once: the count is one of 0..4, not a mix of rows.
+        const [count] = await column(
+          'MATCH (n) WITH n SKIP toInteger(rand() * 4) RETURN count(*) AS c',
+        );
+        expect(Number(count)).toBeGreaterThanOrEqual(1);
+        expect(Number(count)).toBeLessThanOrEqual(4);
+      },
+    );
+
+    it.skipIf(backend.name === 'mysql')(
+      'rejects SKIP and LIMIT expressions with variables, or of the wrong value',
+      async () => {
+        for (const query of [
+          'MATCH (n) RETURN n SKIP n.age',
+          'MATCH (n) RETURN n LIMIT size(n.name)',
+          'MATCH (n) RETURN n LIMIT count(*)',
+          'RETURN 1 LIMIT 0.5 * 2',
+          "RETURN 1 LIMIT 'a' + 'b'",
+        ]) {
+          expect(() => graph.compile(query), query).toThrow(SemanticError);
+        }
+        await expect(column('RETURN 1 AS x LIMIT 1 - 2')).rejects.toMatchObject({
+          code: 'NegativeIntegerArgument',
+        });
+        await expect(column('RETURN 1 AS x SKIP $l + 0', { l: 'a' })).rejects.toThrow();
+        await expect(column('RETURN 1 AS x LIMIT toInteger($l)', { l: 1.5 })).resolves.toEqual([
+          1n,
+        ]);
+        // The row cap still applies when the LIMIT is larger.
+        const limits = { limits: { maxRowsPerStep: 2 } };
+        const unwind = 'UNWIND range(1, 5) AS x RETURN x';
+        expect(await graph.query(`${unwind} LIMIT 1 + 1`, {}, limits)).toHaveLength(2);
+        await expect(graph.query(`${unwind} LIMIT 2 + 3`, {}, limits)).rejects.toThrow(
+          LimitExceededError,
+        );
+      },
+    );
 
     it('removes duplicate rows with DISTINCT, including nodes and lists', async () => {
       expect(await column('MATCH (n) RETURN DISTINCT n.age AS a ORDER BY a')).toEqual([

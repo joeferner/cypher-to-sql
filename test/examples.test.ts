@@ -4,12 +4,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import mysql2 from 'mysql2/promise';
 import pg from 'pg';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   createGraph,
   CypherArgumentError,
   CypherTypeError,
+  mysql,
   postgres,
   registerSqliteFunctions,
   sqlite,
@@ -19,6 +21,8 @@ import {
 import { betterSqliteExecutor } from '../examples/executors/better-sqlite3.js';
 import { nodeSqliteExecutor } from '../examples/executors/node-sqlite.js';
 import { pgExecutor } from '../examples/executors/pg.js';
+import { mysql2Executor } from '../examples/executors/mysql2.js';
+import { TEST_MYSQL_URL } from './support/mysql.js';
 import { TEST_POSTGRES_URL } from './support/postgres.js';
 
 const schema = (name: string): string =>
@@ -85,6 +89,36 @@ const examples: Example[] = [
         close: async (): Promise<void> => {
           await pool.end();
           await admin.query(`DROP SCHEMA ${name} CASCADE`);
+          await admin.end();
+        },
+      };
+    },
+  },
+  {
+    name: 'mysql2',
+    dialect: mysql(),
+    open: async (): Promise<Opened> => {
+      const name = `example_${process.pid}_${Math.random().toString(36).slice(2, 8)}`;
+      const { hostname, port } = new URL(TEST_MYSQL_URL);
+      const options = {
+        host: hostname,
+        port: Number(port || 3306),
+        user: 'root',
+        password: process.env['TEST_MYSQL_ROOT_PASSWORD'] ?? 'cypher',
+        supportBigNumbers: true,
+        bigNumberStrings: true,
+        maxPreparedStatements: 64,
+      };
+      const admin = await mysql2.createConnection({ ...options, multipleStatements: true });
+      await admin.query(`CREATE DATABASE ${name} CHARACTER SET utf8mb4 COLLATE utf8mb4_bin`);
+      await admin.query(`USE ${name}`);
+      await admin.query(schema('mysql.sql'));
+      const pool = mysql2.createPool({ ...options, database: name, connectionLimit: 3 });
+      return {
+        executor: mysql2Executor(pool, { statementTimeoutMs: 10_000 }),
+        close: async (): Promise<void> => {
+          await pool.end();
+          await admin.query(`DROP DATABASE ${name}`);
           await admin.end();
         },
       };

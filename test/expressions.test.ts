@@ -185,7 +185,8 @@ for (const backend of testBackends()) {
     });
 
     it('keeps number types in arithmetic', async () => {
-      expect(await v('1.0 / 0')).toBe(Infinity);
+      // MySQL has no infinity: dividing by zero is null.
+      expect(await v('1.0 / 0')).toBe(backend.name === 'mysql' ? null : Infinity);
       expect(await v('$x + 1', { x: 2n })).toBe(3n);
       expect(await v('$x + 1', { x: 2.5 })).toBe(3.5);
       expect(await v('$x * 2', { x: 2.0 })).toBe(4);
@@ -204,7 +205,13 @@ for (const backend of testBackends()) {
 
     it('reads declared properties as typed SQL values', () => {
       const sql = graph.compile('MATCH (n) WHERE n.age > 30 RETURN n.age').steps[0]!.sql;
-      expect(sql).toMatch(backend.name === 'postgres' ? /->> 'age'\)::bigint/ : /->> '\$\."age"'/);
+      expect(sql).toMatch(
+        backend.name === 'postgres'
+          ? /->> 'age'\)::bigint/
+          : backend.name === 'mysql'
+            ? /CAST\(JSON_EXTRACT\(n0\.`properties`, '\$\."age"'\) AS SIGNED\)/
+            : /->> '\$\."age"'/,
+      );
     });
 
     it('compares declared properties with parameters of any type, as Cypher does', async () => {
@@ -239,6 +246,35 @@ for (const backend of testBackends()) {
 
     it('lets an index serve a declared property compared with a parameter', async () => {
       const plan = graph.compile('MATCH (n:P {name: $x}) RETURN n.age').steps[0]!;
+      if (backend.name === 'mysql') {
+        // A functional index on the same expression serves a declared integer
+        // (MySQL does not use one for the string form; see the dialect).
+        const ages = graph.compile('MATCH (n:P {age: $x}) RETURN n.name').steps[0]!;
+        const values = ages.values.map((v) =>
+          v.kind === 'sql'
+            ? v.value
+            : v.kind === 'parameterAs'
+              ? 36
+              : v.kind === 'parameterFits'
+                ? 1
+                : 10,
+        );
+        const used = await executor.transaction('write', async (tx) => {
+          await tx.query(
+            `CREATE INDEX nodes_age ON nodes ((CAST(JSON_EXTRACT(properties, '$."age"') AS SIGNED)))`,
+            [],
+          );
+          const rows = await tx.query(`EXPLAIN ${ages.sql}`, values);
+          await tx.query('DROP INDEX nodes_age ON nodes', []);
+          // On three rows MySQL may still scan; possible_keys shows the index fits.
+          return rows.some(
+            (r) =>
+              typeof r['possible_keys'] === 'string' && r['possible_keys'].includes('nodes_age'),
+          );
+        });
+        expect(used).toBe(true);
+        return;
+      }
       if (backend.name !== 'sqlite') {
         // A plain comparison, the shape an expression index on `properties ->> 'name'` serves.
         expect(plan.sql).toMatch(/\(n0\."properties" ->> 'name'\) = \(\$\d+::text\)\) AND/);

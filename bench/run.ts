@@ -19,7 +19,7 @@ import { cpus, platform, release } from 'node:os';
 import { parseArgs } from 'node:util';
 import { createGraph, CypherError, type Graph as CypherGraph } from '../src/index.js';
 import { DEFAULT_GRAPHS, GRAPHS, generateGraph, type Graph } from './graphs.js';
-import { DECLARED, loadPostgres, loadSqlite, type LoadedGraph } from './load.js';
+import { DECLARED, loadMysql, loadPostgres, loadSqlite, type LoadedGraph } from './load.js';
 import { QUERIES } from './queries.js';
 import { arcadeBench, neo4jBench, type ReferenceEngine } from './engines.js';
 
@@ -58,6 +58,11 @@ const POSTGRES_URL =
   process.env['BENCH_POSTGRES_URL'] ??
   process.env['TEST_POSTGRES_URL'] ??
   'postgres://cypher:cypher@localhost:55432/cypher';
+const MYSQL_URL =
+  process.env['BENCH_MYSQL_URL'] ??
+  process.env['TEST_MYSQL_URL'] ??
+  'mysql://cypher:cypher@localhost:53306/cypher';
+const MYSQL_ROOT_PASSWORD = process.env['TEST_MYSQL_ROOT_PASSWORD'] ?? 'cypher';
 const NEO4J_URL = process.env['NEO4J_URL'] ?? 'bolt://localhost:57687';
 const ARCADEDB_URL = process.env['ARCADEDB_URL'] ?? 'http://localhost:52480';
 /** The reference engines, by the name `--dialects` takes (see engines.ts). */
@@ -159,11 +164,16 @@ async function main(): Promise<void> {
       let loaded: LoadedGraph | undefined;
       if (reference) {
         await reference.load(spec);
-      } else if (dialect === 'sqlite' || dialect === 'postgres') {
-        loaded =
-          dialect === 'sqlite' ? await loadSqlite(graph) : await loadPostgres(graph, POSTGRES_URL);
+      } else if (dialect === 'sqlite') {
+        loaded = await loadSqlite(graph);
+      } else if (dialect === 'postgres') {
+        loaded = await loadPostgres(graph, POSTGRES_URL);
+      } else if (dialect === 'mysql') {
+        loaded = await loadMysql(graph, MYSQL_URL, MYSQL_ROOT_PASSWORD);
       } else {
-        throw new Error(`Unknown dialect ${dialect}; known: sqlite, postgres, neo4j, arcadedb`);
+        throw new Error(
+          `Unknown dialect ${dialect}; known: sqlite, postgres, mysql, neo4j, arcadedb`,
+        );
       }
       const loadMs = performance.now() - start;
       report.load.push({

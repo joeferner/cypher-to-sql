@@ -647,7 +647,7 @@ function toStringFunction(call: Call): Expr {
   const d = call.c.b.dialect;
   return dispatch(call, 'string', {
     string: (s) => s,
-    integer: (i) => `CAST(${i} AS TEXT)`,
+    integer: (i) => d.integerText(i),
     float: (f) => d.floatToString(f),
     boolean: (b) => `(CASE WHEN ${b} THEN 'true' WHEN NOT ${b} THEN 'false' END)`,
     temporal: (j) => temporalText(call, j),

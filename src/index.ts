@@ -18,6 +18,7 @@ export {
   type SqliteFunctionHost,
 } from './dialect/sqlite.js';
 export { postgres } from './dialect/postgres.js';
+export { mysql } from './dialect/mysql.js';
 export {
   CypherNode,
   CypherRelationship,

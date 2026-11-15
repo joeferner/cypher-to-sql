@@ -210,7 +210,9 @@ function minMax({ c, node, arg }: Aggregate, fn: 'min' | 'max'): Expr {
     case 'boolean':
       return result(d.booleanAggregate(fn, arg.sql), 'boolean');
     case 'json': {
-      const orderBy = c.sortKeys(arg).map((key) => orderTerm(key.sql, key, fn === 'max'));
+      const orderBy = c
+        .sortKeys(arg)
+        .map((key) => orderTerm(key.sql, key, fn === 'max', d.nullsOrder));
       const list = d.jsonAggregate(arg.sql, {
         distinct: false,
         orderBy,

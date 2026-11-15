@@ -115,10 +115,14 @@ function toJsonable(value: CypherValue, tagged: boolean): unknown {
     if (!Number.isFinite(value)) {
       throw new TypeError(`Cannot store ${value} as a property value`);
     }
-    // An integral float keeps a fraction. toFixed() writes 1e21 and above in
-    // exponent form, which PostgreSQL's jsonb would store as an integer; the
-    // value is an exact integer, so write all its digits.
-    return Number.isInteger(value) ? JSON.rawJSON(`${BigInt(value)}.0`) : value;
+    // An integral float keeps a fraction (`2.0`), with all its digits below
+    // 1e21. From 1e21 (far beyond 64-bit integers, so no dialect reads it as an
+    // integer) it is written in exponent form: hundreds of digits would be
+    // parsed imprecisely by MySQL.
+    if (Number.isInteger(value)) {
+      return JSON.rawJSON(Math.abs(value) >= 1e21 ? String(value) : `${BigInt(value)}.0`);
+    }
+    return value;
   }
   if (Array.isArray(value)) {
     return value.map((v) => toJsonable(v, tagged));

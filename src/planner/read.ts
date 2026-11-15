@@ -771,11 +771,14 @@ export class ReadScope {
    * degree. Both databases stop computing a recursive CTE once a LIMIT on it
    * is reached.
    *
-   * The check is in the start node column `s`, which every plan reads, and in
-   * the same SELECT as the window function: neither database pushes a join
-   * condition into a SELECT with a window function, so every path is checked.
-   * (Otherwise SQLite pushes `t = <end node>` down, checks only the paths that
-   * match, and the LIMIT cuts the others silently.)
+   * The check is in the start node column `s`, which every plan reads. The row
+   * numbers come from a SELECT with a window function, into which no database
+   * pushes a join condition, and the check is in a SELECT over it that keeps
+   * `noFlatten`, so no condition is pushed there either: every path is
+   * checked. (Otherwise SQLite pushes `t = <end node>` down, checks only the
+   * paths that match, and the LIMIT cuts the others silently.) The check is
+   * not next to the window function, because MySQL evaluates the other parts
+   * of such an expression up front, the raise included.
    */
   private capPaths(
     paths: string,
@@ -797,8 +800,9 @@ export class ReadScope {
       'integer',
     );
     return (
-      ` SELECT (CASE WHEN row_number() OVER () > ${cap} THEN ${tooMany} ELSE ${v}l.s END) AS s, ${columns}` +
-      ` FROM (${paths} LIMIT ${limit}) AS ${v}l`
+      ` SELECT (CASE WHEN ${v}l.rn > ${cap} THEN ${tooMany} ELSE ${v}l.s END) AS s, ${columns}` +
+      ` FROM (SELECT ${v}c.*, row_number() OVER () AS rn FROM (${paths} LIMIT ${limit}) AS ${v}c) AS ${v}l` +
+      d.noFlatten
     );
   }
 
@@ -1660,9 +1664,9 @@ function orderTerms(
       if (ret.distinct) {
         const k = `k${orderBy.length}`;
         select.push(`${key.sql} AS ${k}`);
-        orderBy.push(orderTerm(`d.${k}`, key, sort.descending));
+        orderBy.push(orderTerm(`d.${k}`, key, sort.descending, compiler.b.dialect.nullsOrder));
       } else {
-        orderBy.push(orderTerm(key.sql, key, sort.descending));
+        orderBy.push(orderTerm(key.sql, key, sort.descending, compiler.b.dialect.nullsOrder));
       }
     }
   }
@@ -2018,6 +2022,12 @@ function rowCountExpression(
     throw new SemanticError(`${clause} must be a constant: it cannot use variables or aggregates`, {
       position: expr.position,
     });
+  }
+  if (!b.dialect.limitExpressions) {
+    throw new UnsupportedFeatureError(
+      `${clause} must be an integer literal or a parameter on ${b.dialect.name}`,
+      { position: expr.position, hint: `Compute the value first and pass it as a parameter.` },
+    );
   }
   const compiler = new ExprCompiler(b, (variable) => {
     throw new SemanticError(`${clause} cannot use variable \`${variable.name}\``, {

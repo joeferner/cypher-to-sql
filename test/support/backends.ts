@@ -1,4 +1,5 @@
-import { postgres, sqlite, type Dialect, type SqlExecutor } from '../../src/index.js';
+import { mysql, postgres, sqlite, type Dialect, type SqlExecutor } from '../../src/index.js';
+import { connectMysql, mysqlExecutor, type MysqlConnection } from './mysql.js';
 import { connectPostgres, postgresExecutor, type PostgresConnection } from './postgres.js';
 import { createSqliteDatabase, sqliteExecutor } from './sqlite.js';
 
@@ -59,7 +60,35 @@ export function postgresBackend(): TestBackend {
   };
 }
 
-/** Fresh backends for one test file: every test runs on each dialect. */
+/** Like postgresBackend: one connection and database for the whole test file. */
+export function mysqlBackend(): TestBackend {
+  let connection: Promise<MysqlConnection> | undefined;
+  return {
+    name: 'mysql',
+    async open(): Promise<TestDatabase> {
+      connection ??= connectMysql();
+      const { connection: conn, reset } = await connection;
+      await reset();
+      return {
+        dialect: mysql(),
+        executor: mysqlExecutor(conn),
+        close: () => Promise.resolve(),
+      };
+    },
+    async dispose(): Promise<void> {
+      if (connection) {
+        await (await connection).dispose();
+      }
+    },
+  };
+}
+
+/**
+ * Fresh backends for one test file: every test runs on each dialect, or on the
+ * ones named in TEST_BACKENDS (comma-separated: sqlite, postgres, mysql).
+ */
 export function testBackends(): TestBackend[] {
-  return [sqliteBackend, postgresBackend()];
+  const all = [sqliteBackend, postgresBackend(), mysqlBackend()];
+  const only = process.env['TEST_BACKENDS']?.split(',').map((s) => s.trim());
+  return only ? all.filter((b) => only.includes(b.name)) : all;
 }

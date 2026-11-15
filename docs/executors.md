@@ -20,6 +20,7 @@ Ready-to-use executors, tested against real databases in [test/examples.test.ts]
 | `pg`             | [examples/executors/pg.ts](../examples/executors/pg.ts)                         | `postgres()` |
 | `better-sqlite3` | [examples/executors/better-sqlite3.ts](../examples/executors/better-sqlite3.ts) | `sqlite()`   |
 | `node:sqlite`    | [examples/executors/node-sqlite.ts](../examples/executors/node-sqlite.ts)       | `sqlite()`   |
+| `mysql2`         | [examples/executors/mysql2.ts](../examples/executors/mysql2.ts)                 | `mysql()`    |
 
 ```ts
 import pg from 'pg';
@@ -68,5 +69,23 @@ The `pg` example also runs, after `BEGIN`:
   ```
 
   With the option and without the functions, queries that use them fail with SQLite's `no such function` error.
+
+## MySQL settings
+
+- Use MySQL 8.0.17 or later (`JSON_TABLE`, `LATERAL`, recursive CTEs, `JSON_OVERLAPS`), with the tables of [examples/schema/mysql.sql](../examples/schema/mysql.sql).
+- Create the `mysql2` pool with `supportBigNumbers: true, bigNumberStrings: true`, so that 64-bit integers come back exactly, and with a low `maxPreparedStatements` (such as 64). The executor runs each step as a prepared statement, and every distinct query is a different SQL text. mysql2's default cache keeps up to 16,000 of them per connection on the server, which costs gigabytes of server memory, and MySQL allows only 16,382 prepared statements in all (`max_prepared_stmt_count`).
+- Run the session settings that the dialect needs on each connection. The example executor runs them (`MYSQL_SESSION`) at the start of every transaction:
+
+  ```sql
+  SET SESSION sql_mode = CONCAT(REPLACE(@@sql_mode, 'ONLY_FULL_GROUP_BY', ''), ',PIPES_AS_CONCAT'),
+      NAMES utf8mb4 COLLATE utf8mb4_bin,
+      SESSION group_concat_max_len = 1073741824,
+      SESSION cte_max_recursion_depth = 4294967295
+  ```
+
+  `||` then concatenates strings, the grouped queries the planner writes are accepted, strings are case-sensitive, lists built with `GROUP_CONCAT` aren't cut short, and `range()` and `split()` can go past 1,000 elements.
+
+- MySQL has no `RETURNING`: for an `INSERT`, return one row `{ id: insertId }` (the example's `runMysqlStep` does), and `[]` for other statements that return no rows.
+- Read transactions use `START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY`, so every step sees the same data and MySQL refuses writes. `max_execution_time` limits each step.
 
 See [Safe execution](safe-execution.md) for database roles and limits, and [Schema](schema.md) for the tables.
