@@ -90,6 +90,26 @@ Conformance is measured with the official [openCypher TCK](https://github.com/op
 
 3,886 scenarios pass on both dialects. They are all in the allow-list, so `npm test` keeps them passing. The 10 that pass only on PostgreSQL use NaN: SQLite has no NaN (`0.0 / 0.0` is null there). The one that fails on both, Match4 [4], needs a 21-hop variable-length match, past the default `maxPathDepth` of 10. Counts are from `npm run test:tck:all` (2026-11-15), and each expanded scenario outline counts once.
 
+## Performance
+
+The [benchmarks](bench/README.md) run one query corpus on SQLite and PostgreSQL through this library, and on Neo4j and ArcadeDB. On the large reference graph (100,000 nodes, 450,000 relationships), median milliseconds:
+
+| Query                              | SQLite | PostgreSQL | Neo4j | ArcadeDB |
+| ---------------------------------- | -----: | ---------: | ----: | -------: |
+| lookup by name (declared, indexed) |    0.3 |        1.2 |   2.6 |      1.3 |
+| lookup by name (undeclared)        |    102 |        115 |   2.3 |      1.3 |
+| one hop from a named node          |    0.4 |        2.0 |   2.3 |      1.7 |
+| `ORDER BY ... LIMIT` over all      |    504 |        739 |    54 |      196 |
+| `*1..3` from a named node          |     72 |        2.3 |   2.2 |      3.1 |
+| `shortestPath` to a far node       |  limit |      limit |   3.2 |      3.2 |
+
+- **Lookups and short patterns from a known node** are as fast as the native engines, or faster, when the filtered properties are [declared](docs/schema.md#properties) and indexed.
+- **Filters on undeclared properties** scan every node's JSON: about 50 times slower. Declare the keys that queries filter on.
+- **Scans and aggregates over the whole graph** are 2–9 times slower than Neo4j, and often close to ArcadeDB.
+- **Deep path searches on large or dense graphs** are the biggest gap. On the large graph, the far shortest path above hits the `maxRowsPerStep` safety limit, while the native engines follow adjacency in 3 ms.
+
+These numbers come from one laptop (Intel i7-10510U), with the servers in Docker at the [compose](compose.yaml) settings. SQLite runs in-process, while the other engines pay a network round trip of about 2 ms. The full tables, the setup, and what the results imply are in [bench/README.md](bench/README.md#compared-with-neo4j-and-arcadedb-47).
+
 ## License
 
 [MIT](LICENSE)
