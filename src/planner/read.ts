@@ -720,18 +720,26 @@ export class ReadScope {
     const edges = b.columns('edges');
     const start = `${e}.${edges.startId}`;
     const end = `${e}.${edges.endId}`;
-    let adjacent: string;
-    let next: string;
+    // One recursive SELECT per branch: the edge it joins on, the node it goes
+    // to, and any condition of its own.
+    let branches: { adjacent: string; next: string; only?: string }[];
     if (rel.direction === 'right') {
-      adjacent = `${start} = ${p}.t`;
-      next = end;
+      branches = [{ adjacent: `${start} = ${p}.t`, next: end }];
     } else if (rel.direction === 'left') {
-      adjacent = `${end} = ${p}.t`;
-      next = start;
+      branches = [{ adjacent: `${end} = ${p}.t`, next: start }];
+    } else if (d.recursiveBranches) {
+      // Either direction; a self-loop is followed once, by the first branch.
+      branches = [
+        { adjacent: `${start} = ${p}.t`, next: end },
+        { adjacent: `${end} = ${p}.t`, next: start, only: `${start} <> ${p}.t` },
+      ];
     } else {
-      // Either direction; a self-loop is followed once.
-      adjacent = `(${start} = ${p}.t OR ${end} = ${p}.t)`;
-      next = `CASE WHEN ${start} = ${p}.t THEN ${end} ELSE ${start} END`;
+      branches = [
+        {
+          adjacent: `(${start} = ${p}.t OR ${end} = ${p}.t)`,
+          next: `CASE WHEN ${start} = ${p}.t THEN ${end} ELSE ${start} END`,
+        },
+      ];
     }
     const step = [
       `${p}.d < ${depth}`,
@@ -740,19 +748,20 @@ export class ReadScope {
     ];
     // A named path also needs the nodes along the way.
     const nodes = withNodes
-      ? {
-          column: ', nodes',
-          empty: `, ${d.idListEmpty(b.table('nodes'), nodeId)}`,
-          append: `, ${d.idListAppend(`${p}.nodes`, next)}`,
-        }
-      : { column: '', empty: '', append: '' };
+      ? { column: ', nodes', empty: `, ${d.idListEmpty(b.table('nodes'), nodeId)}` }
+      : { column: '', empty: '' };
+    const recursive = branches.map(
+      ({ adjacent, next, only }) =>
+        ` UNION ALL SELECT ${p}.s, ${next}, ${p}.d + 1, ${d.idListAppend(`${p}.path`, `${e}.${edges.id}`)}` +
+        (withNodes ? `, ${d.idListAppend(`${p}.nodes`, next)}` : '') +
+        ` FROM ${p} JOIN ${edges.table} AS ${e} ON ${adjacent} WHERE ${[...step, ...(only ? [only] : [])].join(' AND ')}`,
+    );
     const cte =
       `WITH RECURSIVE ${p}(s, t, d, path${nodes.column}) AS (` +
       `SELECT ${n}.${nodeId}, ${n}.${nodeId}, 0, ${d.idListEmpty(edges.table, edges.id)}${nodes.empty} ` +
       `FROM ${b.table('nodes')} AS ${n}` +
       (startNodes ? ` WHERE ${n}.${nodeId} IN (${startNodes})` : '') +
-      ` UNION ALL SELECT ${p}.s, ${next}, ${p}.d + 1, ${d.idListAppend(`${p}.path`, `${e}.${edges.id}`)}` +
-      `${nodes.append} FROM ${p} JOIN ${edges.table} AS ${e} ON ${adjacent} WHERE ${step.join(' AND ')})` +
+      `${recursive.join('')})` +
       this.capPaths(
         `SELECT s, t, path${nodes.column} FROM ${p} WHERE d >= ${min}`,
         `${v}l.t AS t, ${v}l.path AS path${withNodes ? `, ${v}l.nodes AS nodes` : ''}`,

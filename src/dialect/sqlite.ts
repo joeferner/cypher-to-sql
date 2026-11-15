@@ -128,6 +128,8 @@ export function sqlite(options: SqliteOptions = {}): Dialect {
     returning: true,
     nullsOrder: true,
     limitExpressions: true,
+    // SQLite allows several recursive SELECTs, but its OR join uses both indexes.
+    recursiveBranches: false,
     integerText: (integer) => `CAST(${integer} AS TEXT)`,
     integerDivide: (dividend, divisor) => `(${dividend} / ${divisor})`,
     floatRemainder: (dividend, divisor) =>

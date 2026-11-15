@@ -5,12 +5,14 @@ import { testBackends } from './support/backends.js';
 for (const backend of testBackends()) {
   describe(`variable-length patterns on ${backend.name}`, () => {
     let graph: Graph;
+    let writer: Graph;
 
     // a -R-> b -R-> c -R-> d, and c -S-> a closes a cycle.
     beforeAll(async () => {
       const { dialect, executor } = await backend.open();
       graph = createGraph({ dialect, executor });
-      await createGraph({ dialect, executor, readOnly: false }).query(
+      writer = createGraph({ dialect, executor, readOnly: false });
+      await writer.query(
         `CREATE (a:N {n: 'a'})-[:R {w: 1}]->(b:N {n: 'b'})-[:R {w: 2}]->(c:N {n: 'c'})
                 -[:R {w: 1}]->(:N {n: 'd'}), (c)-[:S]->(a)`,
       );
@@ -192,6 +194,15 @@ for (const backend of testBackends()) {
       await expect(graph.query(`MATCH ()-[r*]->()-[r*]->() RETURN r`)).rejects.toThrow(
         /more than one relationship/,
       );
+    });
+
+    // Last: it adds p -T-> q and a self-loop q -T-> q, apart from the rest.
+    it('follows a self-loop once in an undirected pattern', async () => {
+      await writer.query(`CREATE (:L {n: 'p'})-[:T]->(q:L {n: 'q'}), (q)-[:T]->(q)`);
+      // p-q, and p-q-q over the loop once (MySQL: one recursive step per direction).
+      expect(await reached('-[:T*]-', 'p')).toEqual(['q', 'q']);
+      expect(await reached('-[:T*1]-', 'q')).toEqual(['p', 'q']);
+      expect(await reached('-[:T*2]-', 'q')).toEqual(['p']);
     });
   });
 }

@@ -113,7 +113,7 @@ The [benchmarks](bench/README.md) run one query corpus on SQLite, PostgreSQL, an
 - **Lookups and short patterns from a known node** are as fast as the native engines, or faster, when the filtered properties are [declared](docs/schema.md#properties) and indexed. On MySQL that works for declared numbers, not strings.
 - **Filters on undeclared properties** scan every node's JSON: about 50 times slower. Declare the keys that queries filter on.
 - **Scans and aggregates over the whole graph** are 2–9 times slower than Neo4j, and often close to ArcadeDB. MySQL is slower than SQLite and PostgreSQL at them.
-- **Deep path searches on large or dense graphs** are the biggest gap. On the large graph, the far shortest path above hits the `maxRowsPerStep` safety limit, while the native engines follow adjacency in 3 ms. On MySQL, a variable-length match between two given nodes is far slower still (22 s on the large graph).
+- **Deep path searches on large or dense graphs** are the biggest gap. On the large graph, the far shortest path above hits the `maxRowsPerStep` safety limit, while the native engines follow adjacency in 3 ms.
 
 These numbers come from one laptop (Intel i7-10510U), with the servers in Docker at the [compose](compose.yaml) settings. SQLite runs in-process, while the other engines pay a network round trip of about 2 ms. The full tables, the setup, and what the results imply are in [bench/README.md](bench/README.md#compared-with-neo4j-and-arcadedb-47).
 

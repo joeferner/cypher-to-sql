@@ -38,6 +38,15 @@ export interface Dialect {
   /** LIMIT and OFFSET take an expression (a scalar subquery), not only a value. */
   readonly limitExpressions: boolean;
 
+  /**
+   * A recursive CTE's step for an undirected relationship is one SELECT per
+   * direction (`... UNION ALL <outgoing> UNION ALL <incoming>`), not one
+   * SELECT that joins the edges `ON start_id = t OR end_id = t`. MySQL cannot
+   * use an index for that OR join and scans every edge per path; PostgreSQL
+   * allows only one recursive SELECT.
+   */
+  readonly recursiveBranches: boolean;
+
   /** An integer as decimal text. */
   integerText(integer: string): string;
 

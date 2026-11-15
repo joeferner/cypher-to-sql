@@ -375,6 +375,7 @@ The defaults were checked against the reference graphs (#16, `npm run bench:limi
 - **No NaN or infinity**: a float division by zero is null (NaN is null on SQLite too). JSON numbers are compared as `DOUBLE`, so integers beyond 2^53 compared with a JSON value can be off.
 - **Temporal functions and arithmetic on values from the query** are an `UnsupportedFeatureError` (`temporalCall` and `temporalArithmetic` are undefined; there is no SQL port yet). Calls with literal or parameter arguments run in the library and work.
 - **Indexes.** A declared integer or float property is read with the same expression as a functional index on it (`CAST(JSON_EXTRACT(properties, '$."age"') AS SIGNED)`), which MySQL uses. MySQL does not use a functional index for the string form, so declared strings are scanned.
+- **Undirected variable-length patterns** (`Dialect.recursiveBranches`). MySQL uses no index for the join `ON start_id = t OR end_id = t` and scans every edge for each path. So the recursive CTE has one recursive `SELECT` per direction, and the incoming one skips self-loops (`start_id <> t`), which the outgoing one already followed. PostgreSQL allows only one recursive `SELECT`, and SQLite uses both indexes for the `OR`.
 
 ## Semantics that need care
 

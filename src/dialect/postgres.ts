@@ -126,6 +126,7 @@ export function postgres(): Dialect {
     returning: true,
     nullsOrder: true,
     limitExpressions: true,
+    recursiveBranches: false,
     integerText: (integer) => `CAST(${integer} AS TEXT)`,
     integerDivide: (dividend, divisor) => `(${dividend} / ${divisor})`,
     floatRemainder: (dividend, divisor) =>

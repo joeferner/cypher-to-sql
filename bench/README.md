@@ -50,11 +50,11 @@ The whole corpus, unchanged, on all four engines. Median milliseconds of 5 runs 
 | aggregate by company                    |    147 |        115 |    699 |    42 |       81 |
 | var-length `*1..2` from one node        |     54 |        2.1 |  280\* |   2.4 |      2.8 |
 | var-length `*1..3` from one node        |     72 |        2.3 |  240\* |   2.2 |      3.1 |
-| var-length `*1..3` between two nodes    |    4.5 |        5.7 | 21,773 |   3.8 |      5.1 |
+| var-length `*1..3` between two nodes    |    4.5 |        5.7 | 238\*† |   3.8 |      5.1 |
 | `shortestPath` near (multi-step)        |    8.8 |         16 |    259 |   2.7 |      2.3 |
 | `shortestPath` far (multi-step)         |  limit |      limit |  limit |   3.2 |      3.2 |
 | `allShortestPaths` near (multi-step)    |     12 |         17 |    260 |   3.0 |      8.8 |
-| shortest path as one statement (`*..3`) |    5.1 |         10 | wrong† |   2.5 |      4.4 |
+| shortest path as one statement (`*..3`) |    5.1 |         10 | 321\*† |   2.5 |      4.4 |
 | optional match count                    |    282 |        481 |    787 |    58 |      160 |
 | pattern predicate (no incoming)         |    127 |         78 |  1,130 |    36 |      199 |
 | pattern comprehension degree            |     20 |         43 |     95 |   4.4 |       19 |
@@ -62,7 +62,7 @@ The whole corpus, unchanged, on all four engines. Median milliseconds of 5 runs 
 | `WITH` stages                           |    237 |        141 |    633 |   166 |      256 |
 
 \* These start at a node by its declared `name`, which MySQL scans: it does not use a functional index for a declared string (see [DESIGN.md](../DESIGN.md#mysql)).
-† MySQL returned no row after 22.6 s where every other engine found the path. The medium and dense graphs give the right answer. This is a bug to investigate.
+† After #62, which made undirected variable-length patterns on MySQL one recursive step per direction (before: 21,773 ms and 22.6 s). On the large graph, `p40` is 4 hops from `p1`, so `*..3` finds no path on any engine.
 
 Setup: Intel i7-10510U laptop, commit `70eb8fa` (MySQL: the commit that added it, 3 runs per query). PostgreSQL 18, MySQL 8.4, Neo4j 2026.10 Community, and ArcadeDB 26.11 run in Docker with the compose settings: PostgreSQL's defaults, MySQL with a 256 MB buffer pool, Neo4j with a 1 GB heap and a 256 MB page cache, ArcadeDB with a 1 GB heap. SQLite runs in memory in the same process, so it pays no network round trip. Neo4j and ArcadeDB pay one over Bolt or HTTP, about 2 ms here, which is the floor of their numbers. Load times aren't compared: SQL is bulk-inserted, while the reference engines load through batched Cypher, not their bulk importers.
 
@@ -73,7 +73,7 @@ What it shows:
 3. **Scans and aggregates over the whole graph are 2–9 times slower than Neo4j,** and often close to ArcadeDB: ORDER BY with LIMIT, OPTIONAL MATCH counts, aggregates, and pattern predicates. Each reads properties from JSON and filters labels in a JSON array.
 4. **Path search is the other big gap.** From one node, PostgreSQL's recursive CTE is on par (about 2 ms), but SQLite's is 25–30 times slower on the large graph. On the dense graph, `*1..3` between two nodes takes 120–170 ms against 32–36 ms, and a shortest path to a far node takes 60–73 ms against 2–3 ms. On the large graph, the far shortest path's breadth-first steps exceed `maxRowsPerStep` (100,000 rows), while the native engines follow adjacency in 3 ms.
 5. **Typed storage (#26) would help 2 and 3, but not 4.** Properties in real columns and a table per label would serve undeclared filters and whole-graph scans. Path search is bound by the SQL search itself (a recursive CTE or one breadth-first step per depth), which typed tables don't change.
-6. **MySQL is the slowest of the SQL engines here.** Point 1 doesn't hold on MySQL, which scans for a declared string (`name`), so everything that starts at a named node takes 0.1–1 s on the large graph. Its JSON functions are slower on scans and aggregates (2–5 times PostgreSQL), and a variable-length match between two given nodes takes 22 s (on medium, 2.2 s), so its start-node pruning isn't working there. Declared integers are indexed (31 ms for the range count).
+6. **MySQL is the slowest of the SQL engines here.** Point 1 doesn't hold on MySQL, which scans for a declared string (`name`), so everything that starts at a named node takes 0.1–1 s on the large graph. Its JSON functions are slower on scans and aggregates (2–5 times PostgreSQL). Declared integers are indexed (31 ms for the range count). MySQL can't use an index for an `OR` join, so an undirected variable-length pattern follows each direction in its own recursive step (#62); with one `OR` step it scanned every edge per path, and `*1..3` between two nodes took 22 s.
 
 ## Findings (baseline, medium graph)
 

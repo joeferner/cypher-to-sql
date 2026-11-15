@@ -138,6 +138,7 @@ export function mysql(): Dialect {
     returning: false,
     nullsOrder: false,
     limitExpressions: false,
+    recursiveBranches: true,
     jsonInput: (placeholder) => asJson(placeholder),
     jsonText: (expr) => `CAST(${expr} AS CHAR)`,
     // The key is a bind value, quoted into the path at run time as data.
