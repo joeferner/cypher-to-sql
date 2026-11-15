@@ -85,10 +85,10 @@ Conformance is measured with the official [openCypher TCK](https://github.com/op
 
 | Dialect    | Passing scenarios | Share |
 | ---------- | ----------------: | ----: |
-| SQLite     |     3,877 / 3,897 | 99.5% |
-| PostgreSQL |     3,887 / 3,897 | 99.7% |
+| SQLite     |     3,881 / 3,897 | 99.6% |
+| PostgreSQL |     3,891 / 3,897 | 99.8% |
 
-3,877 scenarios pass on both dialects. They are all in the allow-list, so `npm test` keeps them passing. The 10 that pass only on PostgreSQL use NaN: SQLite has no NaN (`0.0 / 0.0` is null there). The rest use features this library does not support yet (named paths in `MERGE`, `startNode()`, ...), and each of those has an open issue. One more, Match4 [4], needs a 21-hop variable-length match, past the default `maxPathDepth` of 10. Counts are from `npm run test:tck:all` (2026-11-14), and each expanded scenario outline counts once.
+3,881 scenarios pass on both dialects. They are all in the allow-list, so `npm test` keeps them passing. The 10 that pass only on PostgreSQL use NaN: SQLite has no NaN (`0.0 / 0.0` is null there). The rest use features this library does not support yet (named paths in `MERGE`, variable-length patterns over a bound list), and each of those has an open issue. One more, Match4 [4], needs a 21-hop variable-length match, past the default `maxPathDepth` of 10. Counts are from `npm run test:tck:all` (2026-11-14), and each expanded scenario outline counts once.
 
 ## License
 

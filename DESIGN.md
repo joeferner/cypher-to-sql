@@ -110,7 +110,7 @@ A plain SELECT cannot raise a custom error, and the library cannot register func
 
 - `Dialect.raise` mixes in `random()`, so that neither database evaluates it early: PostgreSQL folds constant expressions even in CASE branches that never run.
 - Each check sits in a CASE after the null arm, so null stays null: `WHERE n.name` raises for a string and gives null for a missing property.
-- `CypherTypeError`: a boolean condition that is not a boolean, arithmetic or negation on values that do not support it, label predicates on non-nodes, indexing and slicing with wrong types (`MapElementAccessByNonString` for a map indexed by a non-string), comprehensions, quantifiers, and `IN` over a non-list, and function arguments of the wrong type (the `...OrNull` conversions give null instead).
+- `CypherTypeError`: a boolean condition that is not a boolean, arithmetic or negation on values that do not support it, label predicates on values that are not nodes or relationships, indexing and slicing with wrong types (`MapElementAccessByNonString` for a map indexed by a non-string), comprehensions, quantifiers, and `IN` over a non-list, and function arguments of the wrong type (the `...OrNull` conversions give null instead).
 - `CypherArgumentError`: integer overflow (`NumberOutOfRange`; checked with `Dialect.checkedInteger` on SQLite, where it becomes a float, and mapped from PostgreSQL's own error), integer division or modulo by zero (`DivisionByZero`), and `range()` with step 0.
 - Comparisons of values of different types are not errors (they are false or null, as in Cypher). Property access on a value that is not a map, node, or relationship gives null, not an error.
 - **PostgreSQL constant folding:** PostgreSQL may evaluate a CASE branch early when its input is a constant (a bound parameter), even if the branch is not taken. Casts out of JSON are therefore guarded so that they never fail.
@@ -228,7 +228,7 @@ joined with `v.s = a.id AND v.t = b.id`.
 
 | Group      | Functions                                                                                                                                       |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Entities   | `id`, `labels`, `type`, `keys`, `properties`                                                                                                    |
+| Entities   | `id`, `labels`, `type`, `keys`, `properties`, `startNode`, `endNode`                                                                            |
 | Conversion | `coalesce`, `toString`, `toInteger`, `toFloat`, `toBoolean`, and their `...OrNull` forms                                                        |
 | Lists      | `size`, `head`, `last`, `tail`, `reverse`, `range`                                                                                              |
 | Strings    | `size`, `substring`, `left`, `right`, `toUpper`/`upper`, `toLower`/`lower`, `trim`, `ltrim`, `rtrim`, `replace`, `split`, `reverse`             |
@@ -236,7 +236,7 @@ joined with `v.s = a.id AND v.t = b.id`.
 
 `toString` of a float writes it as Neo4j does (Java's `Double.toString`): the shortest digits that read back as the same double, as a decimal from 10^-3 up to 10^7 and in scientific notation otherwise (`0.001`, `1.0E7`, `1.5E-10`), with `Dialect.floatToString`. `+` with a string and a number or boolean concatenates them, written as `toString` would (`'a' + 1.5` is `'a1.5'`).
 
-Any other function is an `UnsupportedFeatureError` whose hint lists the supported ones. Path functions (`nodes`, `relationships`, `length`) are described in "Named paths". Temporal functions, `startNode`/`endNode`, and `round` with a precision are not supported yet. Known differences: string parsing in `toInteger`/`toFloat` accepts JSON number syntax on SQLite (so not `+1` or `.5`) and a slightly wider syntax on PostgreSQL; `toUpper`/`toLower` follow the database (see "SQLite functions"); `trim` removes spaces only.
+A function of openCypher or Neo4j that isn't implemented (`degrees`, `point`, ...), or a namespaced one (`apoc.coll.sum`), is an `UnsupportedFeatureError`. A name that isn't a Cypher function at all is a `SemanticError` (Cypher's UnknownFunction). Both hints list the supported functions. Path functions (`nodes`, `relationships`, `length`) are described in "Named paths". `startNode(r)` and `endNode(r)` read the node from the node table by the relationship's end id (or its tagged `~start`/`~end`) as a tagged node. `coalesce()` of nodes or relationships compares them as their tagged objects, so `WITH coalesce(b, c) AS x MATCH (x)-->()` works. A label predicate on a relationship (`r:T`) is true when `T` is its type, case-sensitively; a relationship has one type, so `r:A:B` needs both to be it. `round` with a precision is not supported yet. Known differences: string parsing in `toInteger`/`toFloat` accepts JSON number syntax on SQLite (so not `+1` or `.5`) and a slightly wider syntax on PostgreSQL; `toUpper`/`toLower` follow the database (see "SQLite functions"); `trim` removes spaces only.
 
 ### SQLite functions
 

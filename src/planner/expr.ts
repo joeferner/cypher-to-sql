@@ -125,7 +125,8 @@ export class ExprCompiler {
     private readonly prefix = '',
   ) {}
 
-  private nextAlias(): string {
+  /** A suffix for a table alias that is unique in this compiler's statement. */
+  public nextAlias(): string {
     return `${this.prefix}${this.aliases++}`;
   }
 
@@ -609,18 +610,29 @@ export class ExprCompiler {
           const checks = expr.labels
             .map((l) => b.dialect.hasLabel(labels, b.bind({ kind: 'sql', value: l })))
             .join(' AND ');
+          const type = b.dialect.fromJson(
+            b.dialect.jsonMember(s!.sql, b.bind({ kind: 'sql', value: '~type' }), '~type'),
+            'string',
+          );
           return (
             `(CASE WHEN ${s!.jsonType} = 'node' THEN (${checks}) ` +
+            `WHEN ${s!.jsonType} = 'relationship' THEN (${this.typeIs(type, expr.labels)}) ` +
             `WHEN ${isNullType(s!.jsonType)} THEN NULL ` +
-            `ELSE ${b.typeError('Type mismatch: a label predicate needs a node', expr.position, 'boolean')} END)`
+            `ELSE ${b.typeError('Type mismatch: a label predicate needs a node or relationship', expr.position, 'boolean')} END)`
           );
         }),
       );
     }
+    if (subject.type === 'relationship') {
+      // `r:T` is true when T is the relationship's type (one type, so `r:A:B` needs A = B).
+      const type = b.entityColumn(subject.sql, 'relationship', 'type');
+      const id = b.entityColumn(subject.sql, 'relationship', 'id');
+      return boolean(
+        `(CASE WHEN ${id} IS NULL THEN NULL ELSE (${this.typeIs(type, expr.labels)}) END)`,
+      );
+    }
     if (subject.type !== 'node') {
-      throw new UnsupportedFeatureError('Label predicates are supported on nodes only', {
-        position: expr.position,
-      });
+      throw typeError('a node or relationship', subject.shape ?? subject.type, expr.position);
     }
     const labels = b.entityColumn(subject.sql, 'node', 'labels');
     const checks = expr.labels
@@ -629,6 +641,14 @@ export class ExprCompiler {
     // A null node (from OPTIONAL MATCH) has no labels column: the answer is null.
     const id = b.entityColumn(subject.sql, 'node', 'id');
     return boolean(`(CASE WHEN ${id} IS NULL THEN NULL ELSE (${checks}) END)`);
+  }
+
+  /** Condition: the relationship type `type` (SQL text) is each of `labels`, case-sensitively. */
+  private typeIs(type: string, labels: string[]): string {
+    const d = this.b.dialect;
+    return labels
+      .map((l) => d.compareStrings(type, '=', this.b.bind({ kind: 'sql', value: l })))
+      .join(' AND ');
   }
 
   private isNull(expr: ast.IsNullExpression): Expr {

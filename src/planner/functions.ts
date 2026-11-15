@@ -65,14 +65,59 @@ function fn(min: number, max: number, impl: FunctionImpl): FunctionDef {
   return { min, max, impl };
 }
 
+/**
+ * Functions of openCypher and Neo4j that this library does not implement
+ * (yet): calling one is an `UnsupportedFeatureError`. Any other unknown name
+ * is a `SemanticError`, as Cypher's UnknownFunction.
+ */
+const NOT_IMPLEMENTED = new Set(
+  [
+    'cot',
+    'coth',
+    'cosh',
+    'sinh',
+    'tanh',
+    'degrees',
+    'radians',
+    'haversin',
+    'timestamp',
+    'isEmpty',
+    'isNaN',
+    'elementId',
+    'toBooleanList',
+    'toFloatList',
+    'toIntegerList',
+    'toStringList',
+    'randomUUID',
+    'char_length',
+    'character_length',
+    'btrim',
+    'normalize',
+    'valueType',
+    'nullIf',
+    'point',
+    'point.distance',
+    'distance',
+  ].map((n) => n.toLowerCase()),
+);
+
 /** Compiles a call of a function that is not an aggregate (see aggregates.ts). */
 export function compileFunction(c: ExprCompiler, node: ast.FunctionCall): Expr {
   const name = node.name.toLowerCase();
   const def = FUNCTIONS[name];
   if (!def) {
-    throw new UnsupportedFeatureError(`Function ${node.name}() is not supported`, {
+    const hint = `Supported functions: ${Object.keys(FUNCTIONS).sort().join(', ')}.`;
+    // A namespaced name (`apoc.coll.sum`) may be a vendor or user function.
+    if (NOT_IMPLEMENTED.has(name) || name.includes('.')) {
+      throw new UnsupportedFeatureError(`Function ${node.name}() is not supported`, {
+        position: node.position,
+        hint,
+      });
+    }
+    // Not a Cypher function at all (Cypher's UnknownFunction).
+    throw new SemanticError(`Unknown function ${node.name}()`, {
       position: node.position,
-      hint: `Supported functions: ${Object.keys(FUNCTIONS).sort().join(', ')}.`,
+      hint,
     });
   }
   if (node.args.length < def.min || node.args.length > def.max) {
@@ -295,6 +340,33 @@ function member(call: Call, json: string, key: string): string {
   return b.dialect.jsonMember(json, b.bind({ kind: 'sql', value: key }), key);
 }
 
+/**
+ * `startNode(r)` or `endNode(r)`: the node at that end of a relationship (or
+ * of a tagged one in JSON), read from the node table by id as a tagged node.
+ */
+function endpoint(call: Call, end: 'start' | 'end'): Expr {
+  const b = call.c.b;
+  const nodes = b.columns('nodes');
+  const node = (id: string): string => {
+    const alias = `sn${call.c.nextAlias()}`;
+    return (
+      `(SELECT ${b.entityJson('node', alias)} FROM ${nodes.table} AS ${alias} ` +
+      `WHERE ${alias}.${nodes.id} = ${id})`
+    );
+  };
+  if (isJson(call)) {
+    return tagged(call, ['relationship'], 'json', (j) =>
+      node(b.dialect.jsonId(member(call, j, `~${end}`), nodes.table, b.mapping.nodes.id)),
+    );
+  }
+  const e = entity(call, ['relationship']);
+  if (!e) {
+    return NULL;
+  }
+  const edges = b.columns('edges');
+  return result(node(`${e.sql}.${end === 'start' ? edges.startId : edges.endId}`), 'json');
+}
+
 /** The properties of a tagged node or relationship: the object without its reserved keys. */
 function taggedProperties(call: Call, json: string): string {
   return call.c.b.dialect.jsonRemoveKeys(json, [...RESERVED_KEYS]);
@@ -364,6 +436,8 @@ const FUNCTIONS: Record<string, FunctionDef> = {
     const e = entity(call, ['node']);
     return e ? result(column(call, e, 'labels'), 'json', 'list') : NULL;
   }),
+  startnode: fn(1, 1, (call) => endpoint(call, 'start')),
+  endnode: fn(1, 1, (call) => endpoint(call, 'end')),
   type: fn(1, 1, (call) => {
     if (isJson(call)) {
       const d = call.c.b.dialect;
@@ -546,26 +620,20 @@ for (const [name, { min, max }] of Object.entries(TEMPORAL_FUNCTIONS)) {
 
 /** The first argument that is not null. */
 function coalesce(call: Call): Expr {
-  const { c, node } = call;
+  const { c } = call;
   const args = call.args.filter((a) => a.type !== 'null');
   if (args.length === 0) {
     return NULL;
   }
   const first = args[0]!;
-  if (first.type !== 'json' && args.every((a) => a.type === first.type)) {
-    if (first.type === 'node' || first.type === 'relationship') {
-      throw new UnsupportedFeatureError(
-        'coalesce() of nodes or relationships is not supported yet',
-        {
-          position: node.position,
-        },
-      );
-    }
+  const entity = first.type === 'node' || first.type === 'relationship';
+  if (first.type !== 'json' && !entity && args.every((a) => a.type === first.type)) {
     // SQLite's COALESCE needs at least two arguments.
     return args.length === 1
       ? first
       : result(`COALESCE(${args.map((a) => a.sql).join(', ')})`, first.type);
   }
+  // Nodes and relationships as their tagged objects (null when they are null).
   const jsons = args.map((a) => c.asJson(a));
   // JSON null counts as null.
   const sql = c.share(jsons, (refs: Shared[]) => {

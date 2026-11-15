@@ -147,13 +147,44 @@ for (const backend of testBackends()) {
       expect(() => compile('toUpper(1)')).toThrow(SemanticError);
       expect(() => compile("substring('a', 'b')")).toThrow(SemanticError);
       expect(() => compile('toUpper(DISTINCT "a")')).toThrow(SemanticError);
-      expect(() => compile('nosuch(1)')).toThrow(UnsupportedFeatureError);
+      // Not a Cypher function: UnknownFunction. A Cypher function not implemented
+      // here, or a namespaced (vendor) one: unsupported.
+      expect(() => compile('nosuch(1)')).toThrow(/Unknown function nosuch\(\)/);
+      expect(() => compile('nosuch(1)')).toThrow(SemanticError);
+      expect(() => compile('degrees(1)')).toThrow(UnsupportedFeatureError);
+      expect(() => compile('apoc.coll.sum([1])')).toThrow(UnsupportedFeatureError);
       expect(() => compile('stDev(1)')).toThrow(/stDev\(\) is not supported/);
       try {
         compile('nosuch(1)');
       } catch (error) {
-        expect((error as UnsupportedFeatureError).hint).toMatch(/Supported functions: .*toupper/);
+        expect((error as SemanticError).hint).toMatch(/Supported functions: .*toupper/);
       }
+    });
+
+    it('takes the first non-null node or relationship with coalesce()', async () => {
+      expect(await v('coalesce(null, a) = a')).toBe(true);
+      expect(await v('coalesce(r, null).since')).toBe(1n);
+      const rows = await graph.query(
+        'MATCH (a:A) OPTIONAL MATCH (a)-->(x:Nope) WITH coalesce(x, a) AS n MATCH (n)-->(m) RETURN labels(m) AS l',
+      );
+      expect(rows).toEqual([{ l: ['C'] }]);
+    });
+
+    it('tests relationship types with label predicates', async () => {
+      expect(await v('r:KNOWS')).toBe(true);
+      expect(await v('r:knows')).toBe(false);
+      expect(await v('r:KNOWS:KNOWS')).toBe(true);
+      expect(await v('r:KNOWS:OTHER')).toBe(false);
+      expect(await v('[r][0]:KNOWS')).toBe(true);
+    });
+
+    it('gives the start and end nodes of relationships, also in lists', async () => {
+      const rows = await graph.query(
+        'MATCH (x)-[r]->(y) RETURN startNode(r) = x AS s, endNode(r) = y AS e, ' +
+          'startNode([r][0]) = x AS sj, endNode(null) AS n LIMIT 1',
+      );
+      expect(rows).toEqual([{ s: true, e: true, sj: true, n: null }]);
+      expect(() => graph.compile('MATCH (n) RETURN startNode(n)')).toThrow(SemanticError);
     });
   });
 }
