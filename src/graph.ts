@@ -20,7 +20,13 @@ import {
   type PlanStep,
 } from './plan.js';
 import { assertQueryReadOnly, assertSupported, hasWriteClause } from './planner/gate.js';
-import { planRead, planWrittenReturn, ReadScope, RowSource } from './planner/read.js';
+import {
+  hiddenVariable,
+  planRead,
+  planWrittenReturn,
+  ReadScope,
+  RowSource,
+} from './planner/read.js';
 import { SqlBuilder } from './planner/sql-builder.js';
 import {
   rowVariables,
@@ -78,7 +84,7 @@ export function createGraph(options: GraphOptions): Graph {
       assertQueryReadOnly(parsed);
     }
     const compileOne = (single: ast.Query): CompiledPlan => {
-      const query = resolveCalls(single, procedures);
+      const query = expandMergePaths(resolveCalls(single, procedures));
       assertSupported(query);
       const plan = planQuery(query, options.dialect, mapping, writer, effective);
       const first = query.clauses[0];
@@ -318,6 +324,56 @@ function isRowClause(clause: ast.Clause): clause is ast.RowClause {
     clause.type === 'Call' ||
     clause.type === 'With'
   );
+}
+
+/**
+ * `MERGE p = pattern` becomes `MERGE pattern WITH * MATCH p = <its elements>`:
+ * after the MERGE every element is bound (matched or created), so the MATCH
+ * finds exactly that path. Elements without a variable get a hidden one.
+ */
+function expandMergePaths(query: ast.Query): ast.Query {
+  let hidden = 0;
+  const clauses = query.clauses.flatMap((clause): ast.Clause[] => {
+    if (clause.type !== 'Merge' || clause.pattern.variable === undefined) {
+      return [clause];
+    }
+    const part = clause.pattern;
+    const position = clause.position;
+    if (part.shortest !== undefined) {
+      throw new UnsupportedFeatureError('shortestPath() in MERGE is not supported', {
+        position: part.position,
+      });
+    }
+    const elements = part.elements.map((e) => ({
+      ...e,
+      variable: e.variable ?? hiddenVariable(`merge path ${hidden++}`),
+    }));
+    const bare = elements.map((e): ast.PatternElement =>
+      e.type === 'NodePattern'
+        ? { ...e, labels: [], properties: undefined }
+        : { ...e, types: [], properties: undefined },
+    );
+    const withAll: ast.WithClause = {
+      type: 'With',
+      position,
+      distinct: false,
+      star: true,
+      items: [],
+      orderBy: [],
+      skip: undefined,
+      limit: undefined,
+      where: undefined,
+    };
+    const match: ast.MatchClause = {
+      type: 'Match',
+      position,
+      optional: false,
+      pattern: [{ ...part, elements: bare }],
+      where: undefined,
+    };
+    return [{ ...clause, pattern: { ...part, variable: undefined, elements } }, withAll, match];
+  });
+  return { ...query, clauses };
 }
 
 /**

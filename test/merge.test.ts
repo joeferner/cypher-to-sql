@@ -66,6 +66,37 @@ for (const backend of testBackends()) {
       expect(await count('(a:A)')).toBe(1n);
     });
 
+    it('binds a named path to what it matched or created', async () => {
+      const merge =
+        'MERGE (a:A {k: 1}) MERGE (b:B {k: 2}) MERGE p = (a)-[:R]->(b) RETURN length(p) AS n, ' +
+        '[x IN nodes(p) | x.k] AS ks, type(relationships(p)[0]) AS t';
+      const created = await write.query(merge);
+      expect(created).toEqual([{ n: 1n, ks: [1n, 2n], t: 'R' }]);
+      // Again: it matches the same path, and creates nothing.
+      expect(await write.query(merge)).toEqual(created);
+      expect(await count('()-[:R]->()')).toBe(1n);
+      // A single node, an unnamed element, and an undirected pattern (created left to right).
+      expect(await write.query('MERGE p = (:C {k: 3}) RETURN length(p) AS n')).toEqual([{ n: 0n }]);
+      expect(
+        await write.query(
+          'MATCH (a:A), (b:B) MERGE p = (b)-[:S]-(a) RETURN [x IN nodes(p) | x.k] AS ks',
+        ),
+      ).toEqual([{ ks: [2n, 1n] }]);
+      expect(await count('(:B)-[:S]->(:A)')).toBe(1n);
+    });
+
+    it('leaves the planner variables of a merged path out of RETURN *', async () => {
+      const rows = await write.query('MERGE p = (:A)-[:R]->(b:B) RETURN *');
+      expect(Object.keys(rows[0]!).sort()).toEqual(['b', 'p']);
+    });
+
+    it('binds one path per match', async () => {
+      await write.query('CREATE (:N {k: 1}), (:N {k: 1})');
+      expect(
+        (await write.query('MERGE p = (n:N {k: 1}) RETURN length(p) AS n')).map((r) => r['n']),
+      ).toEqual([0n, 0n]);
+    });
+
     it('rejects what Cypher rejects', async () => {
       expect(() => write.compile('MATCH (a) MERGE (a)')).toThrow(SemanticError);
       expect(() => write.compile('MERGE (a)-->(b)')).toThrow(/exactly one type/);

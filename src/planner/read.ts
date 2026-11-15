@@ -1346,6 +1346,18 @@ export interface WrittenVariable {
   kind: 'node' | 'relationship' | 'value';
 }
 
+/**
+ * Variables the planner adds to a query (they start with a space, which a
+ * Cypher name can only have in backticks). `RETURN *` leaves them out.
+ */
+export function hiddenVariable(name: string): string {
+  return ` ${name}`;
+}
+
+export function isHiddenVariable(name: string): boolean {
+  return name.startsWith(' ');
+}
+
 /** The member of a written row that keeps the type of relationship variable `name`. */
 export function typeKey(name: string): string {
   return `~type:${name}`;
@@ -1401,13 +1413,15 @@ function planProjection(
   const clause = mode === 'return' ? 'RETURN' : 'WITH';
   const items: ast.ProjectionItem[] = [...proj.items];
   if (proj.star) {
+    // RETURN * leaves out the planner's hidden variables; WITH * carries them.
+    const names = scope.variables.filter((name) => mode === 'with' || !isHiddenVariable(name));
     // `WITH *` with nothing in scope keeps the rows (`MATCH () CREATE () WITH * ...`).
-    if (scope.variables.length === 0 && mode === 'return') {
+    if (names.length === 0 && mode === 'return') {
       throw new SemanticError(`${clause} * is not allowed when there are no variables in scope`, {
         position: proj.position,
       });
     }
-    const starItems = scope.variables.sort().map((name): ast.ProjectionItem => ({
+    const starItems = names.sort().map((name): ast.ProjectionItem => ({
       position: proj.position,
       expression: { type: 'Variable', position: proj.position, name },
       alias: undefined,

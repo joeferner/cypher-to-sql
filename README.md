@@ -83,12 +83,12 @@ The tests need PostgreSQL running. They connect to `TEST_POSTGRES_URL`, which de
 
 Conformance is measured with the official [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck). [test/tck/allow-list.json](test/tck/allow-list.json) lists the scenarios that must pass on each dialect.
 
-| Dialect    | Passing scenarios | Share |
-| ---------- | ----------------: | ----: |
-| SQLite     |     3,884 / 3,897 | 99.7% |
-| PostgreSQL |     3,894 / 3,897 | 99.9% |
+| Dialect    | Passing scenarios |  Share |
+| ---------- | ----------------: | -----: |
+| SQLite     |     3,886 / 3,897 | 99.72% |
+| PostgreSQL |     3,896 / 3,897 | 99.97% |
 
-3,884 scenarios pass on both dialects. They are all in the allow-list, so `npm test` keeps them passing. The 10 that pass only on PostgreSQL use NaN: SQLite has no NaN (`0.0 / 0.0` is null there). Two more use named paths in `MERGE`, which isn't supported yet (it has an open issue). One more, Match4 [4], needs a 21-hop variable-length match, past the default `maxPathDepth` of 10. Counts are from `npm run test:tck:all` (2026-11-14), and each expanded scenario outline counts once.
+3,886 scenarios pass on both dialects. They are all in the allow-list, so `npm test` keeps them passing. The 10 that pass only on PostgreSQL use NaN: SQLite has no NaN (`0.0 / 0.0` is null there). The one that fails on both, Match4 [4], needs a 21-hop variable-length match, past the default `maxPathDepth` of 10. Counts are from `npm run test:tck:all` (2026-11-15), and each expanded scenario outline counts once.
 
 ## License
 
