@@ -140,20 +140,20 @@ The [benchmarks](bench/README.md) run one query corpus on SQLite, PostgreSQL, an
 
 ### Writes
 
-`npm run bench:writes` ingests batches of 1,000 rows with one `UNWIND $rows AS row ...` query each, into a graph whose `key` is declared and indexed. Rows per second:
+`npm run bench:writes` ingests batches of 1,000 rows with one `UNWIND $rows AS row ...` query each, into a graph whose `key` is indexed (declared, for this library), after an untimed warm-up round. The same Cypher runs on Neo4j and ArcadeDB. Rows per second:
 
-| Batch of 1,000                                                              | SQLite | PostgreSQL | MySQL |
-| --------------------------------------------------------------------------- | -----: | ---------: | ----: |
-| `CREATE (:Item {key: row.key, name: row.name, ...})`                        |  5,809 |      1,588 | 1,989 |
-| same, with `idStrategy` generator                                           | 23,830 |      4,863 | 3,746 |
-| `CREATE (n:Item {key: row.key}) SET n += row.props`                         |    779 |        417 | 1,265 |
-| `MERGE (n:Item {key: row.key}) SET n += row.props`, new                     |    357 |        162 |   267 |
-| `MERGE` again, nodes exist                                                  |    257 |        136 |   206 |
-| `MATCH (a {key: row.from}) MATCH (b {key: row.to}) CREATE (a)-[:LINK]->(b)` |    415 |        135 |   191 |
+| Batch of 1,000                                                              | SQLite | PostgreSQL | MySQL |  Neo4j | ArcadeDB |
+| --------------------------------------------------------------------------- | -----: | ---------: | ----: | -----: | -------: |
+| `CREATE (:Item {key: row.key, name: row.name, ...})`                        | 10,453 |      3,447 | 3,780 | 10,820 |   35,567 |
+| same, with `idStrategy` generator                                           | 12,976 |      5,729 | 7,619 |        |          |
+| `CREATE (n:Item {key: row.key}) SET n += row.props`                         |    718 |        390 | 1,014 |  9,566 |   17,360 |
+| `MERGE (n:Item {key: row.key}) SET n += row.props`, new                     |    317 |        173 |   292 | 23,282 |   13,144 |
+| `MERGE` again, nodes exist                                                  |    261 |        139 |   207 |  7,719 |   22,769 |
+| `MATCH (a {key: row.from}) MATCH (b {key: row.to}) CREATE (a)-[:LINK]->(b)` |    505 |        142 |   189 | 10,652 |   18,292 |
 
-- **Write properties inline in `CREATE`.** It is one statement per row; `SET n += row.props` adds two more and is up to 24 times slower.
-- **Use `idStrategy: { kind: 'generator', ... }` for bulk loads:** plain `CREATE` gets 2–4 times faster.
-- **`MERGE` and `MATCH` by a value from the row don't use the property index yet ([#77](https://github.com/joeferner/cypher-to-sql/issues/77)),** so they slow down as the graph grows (doubling a batch roughly triples its time). Until then, load nodes that are known to be new with `CREATE`, and run `MERGE` or relationship matches as one query per row with parameters (`MERGE (n:Item {key: $key})`), which stays linear: about 1,000 rows per second on SQLite.
+- **Write properties inline in `CREATE`.** It is one statement per row and as fast as Neo4j on SQLite; `SET n += row.props` adds two more statements and is 4–15 times slower.
+- **Use `idStrategy: { kind: 'generator', ... }` for bulk loads:** plain `CREATE` gets up to 2 times faster.
+- **`MERGE` and `MATCH` by a value from the row don't use the property index yet ([#77](https://github.com/joeferner/cypher-to-sql/issues/77)),** so they are 20–160 times slower than in Neo4j and ArcadeDB, and slow down as the graph grows (doubling a batch roughly triples its time; Neo4j and ArcadeDB stay flat). Until then, load nodes that are known to be new with `CREATE`, and run `MERGE` or relationship matches as one query per row with parameters (`MERGE (n:Item {key: $key})`), which stays linear: about 1,000 rows per second on SQLite.
 - A single query is limited to 30 seconds (`timeoutMs`) and 100,000 created entities (`maxCreatedEntities`); raise them on the writing graph for larger batches.
 
 These numbers come from one laptop (Intel i7-10510U), with the servers in Docker at the [compose](compose.yaml) settings. SQLite runs in-process, while the other engines pay a network round trip of about 2 ms. The full tables, the setup, and what the results imply are in [bench/README.md](bench/README.md#compared-with-neo4j-and-arcadedb-47) (writes: [bench/README.md](bench/README.md#writes-69)).

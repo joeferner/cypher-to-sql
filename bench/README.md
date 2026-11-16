@@ -79,7 +79,7 @@ What it shows:
 
 ## Writes (#69)
 
-`npm run bench:writes` loads batches the way an application ingests files: one `UNWIND $rows AS row ...` query per batch, on a fresh graph whose node `key` is declared as an integer and indexed (`migrate`). It counts the SQL statements each batch becomes. Options: `--dialects`, `--sizes` (rows per batch, default `1000,2000`), `--ids` (`database,generator`), and `--save`.
+`npm run bench:writes` loads batches the way an application ingests files: one `UNWIND $rows AS row ...` query per batch, on a fresh graph whose node `key` is indexed: for this library declared as an integer (`migrate`), on Neo4j and ArcadeDB an index on `Item(key)` (`--dialects neo4j,arcadedb`, after `npm run db:up:reference`; it empties Neo4j's database, which `npm run bench` loads again). It counts the SQL statements each batch becomes, runs an untimed round of 100 rows first so that every engine is timed warm, and checks afterwards that the nodes, properties, and relationships are all there exactly once. Options: `--dialects`, `--sizes` (rows per batch, default `1000,2000`), `--ids` (`database,generator`), and `--save`.
 
 | Workload                   | Query                                                                                 |
 | -------------------------- | ------------------------------------------------------------------------------------- |
@@ -89,22 +89,33 @@ What it shows:
 | CREATE relationships       | `MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) CREATE (a)-[:LINK]->(b)` |
 | MERGE, relationships exist | the same with `MERGE (a)-[:LINK]->(b)`, after the CREATE                              |
 
-Rows per second, batches of 1,000 (in brackets: 2,000), on the laptop of the comparison above:
+Rows per second, batches of 1,000, on the laptop of the comparison above (this library with ids from the database; the statements per row are the same with generated ids):
 
-| Workload                   | Statements per row | SQLite, database ids | SQLite, generator | PostgreSQL, database | PostgreSQL, generator | MySQL, database | MySQL, generator |
-| -------------------------- | -----------------: | -------------------: | ----------------: | -------------------: | --------------------: | --------------: | ---------------: |
-| CREATE, properties inline  |                  1 |        5,809 (9,901) |   23,830 (21,332) |        1,588 (3,010) |                 4,863 |           1,989 |            3,746 |
-| CREATE, then SET +=        |                  3 |            779 (815) |       1,003 (844) |            417 (400) |                   557 |           1,265 |            1,579 |
-| MERGE, nodes new           |                  4 |            357 (262) |         327 (269) |            162 (127) |                   173 |             267 |              310 |
-| MERGE, nodes exist         |                  3 |            257 (194) |         260 (192) |             136 (85) |                   134 |             206 |              198 |
-| CREATE relationships       |                  1 |            415 (225) |         438 (235) |             135 (71) |                   139 |             191 |              197 |
-| MERGE, relationships exist |                  1 |            329 (199) |         366 (195) |              92 (56) |                    93 |             165 |              162 |
+| Workload                   | Statements per row | SQLite | PostgreSQL | MySQL |  Neo4j | ArcadeDB |
+| -------------------------- | -----------------: | -----: | ---------: | ----: | -----: | -------: |
+| CREATE, properties inline  |                  1 | 10,453 |      3,447 | 3,780 | 10,820 |   35,567 |
+| CREATE, then SET +=        |                  3 |    718 |        390 | 1,014 |  9,566 |   17,360 |
+| MERGE, nodes new           |                  4 |    317 |        173 |   292 | 23,282 |   13,144 |
+| MERGE, nodes exist         |                  3 |    261 |        139 |   207 |  7,719 |   22,769 |
+| CREATE relationships       |                  1 |    505 |        142 |   189 | 10,652 |   18,292 |
+| MERGE, relationships exist |                  1 |    336 |         87 |   158 |  8,948 |   22,182 |
+
+With the generator id strategy, CREATE with inline properties runs at 12,976 (SQLite), 5,729 (PostgreSQL), and 7,619 (MySQL) rows per second; the other workloads cost the same.
+
+Batches of 1,000 against 2,000 (each on a graph of that size), rows per second:
+
+| Workload                   | SQLite 1,000 | SQLite 2,000 | Neo4j 1,000 | Neo4j 2,000 | ArcadeDB 1,000 | ArcadeDB 2,000 |
+| -------------------------- | -----------: | -----------: | ----------: | ----------: | -------------: | -------------: |
+| CREATE, properties inline  |       10,453 |       12,638 |      10,820 |      36,817 |         35,567 |         41,802 |
+| MERGE, nodes exist         |          261 |          188 |       7,719 |      18,145 |         22,769 |         22,938 |
+| CREATE relationships       |          505 |          230 |      10,652 |      11,380 |         18,292 |         16,521 |
+| MERGE, relationships exist |          336 |          199 |       8,948 |      13,286 |         22,182 |         28,039 |
 
 What it shows:
 
-1. **CREATE with the properties inline is the fast path:** one INSERT per row, linear in the batch, 1,600–24,000 rows per second. `SET n += row.props` adds a SELECT and an UPDATE per row and is 1.6 (MySQL) to 24 (SQLite) times slower.
-2. **The generator id strategy speeds up plain CREATE** 2–4 times (no `RETURNING` and no id to read back per row); everything else costs the same. The statement count does not depend on it.
-3. **Finding nodes by a value from the row does not use the index (#77),** so MERGE and MATCH by `row.key` get slower per row as the graph grows: doubling the batch (and the graph) roughly triples the time. The declared index serves a comparison with a parameter, but not with a row value, which scans the index once per row. Until #77, a batch costs about batch size × graph size, so smaller batches do not help.
+1. **CREATE with the properties inline is the fast path:** one INSERT per row, linear in the batch, 3,400–13,000 rows per second; on SQLite as fast as Neo4j. `SET n += row.props` adds a SELECT and an UPDATE per row and is 4–15 times slower; Neo4j and ArcadeDB pay little for it.
+2. **The generator id strategy speeds up plain CREATE** up to 2 times (no `RETURNING` and no id to read back per row); everything else costs the same. The statement count does not depend on it.
+3. **Finding nodes by a value from the row does not use the index (#77),** so MERGE and MATCH by `row.key` are 20–160 times slower than in Neo4j and ArcadeDB, and get slower per row as the graph grows: doubling the batch (and the graph) roughly triples the time, where the native engines stay flat. The declared index serves a comparison with a parameter, but not with a row value, which scans the index once per row. Until #77, a batch costs about batch size × graph size, so smaller batches do not help.
 4. **One query per row with parameters stays linear** (`MERGE (n:Item {key: $key}) SET n.name = $name`, one `graph.query` each): on SQLite, 830–1,150 MERGEs and 1,000–2,000 relationships per second at 1,000, 2,000, and 4,000 nodes, where the batched MERGE drops to 190 rows per second at 2,000.
 
 ## Findings (baseline, medium graph)
