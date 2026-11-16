@@ -1,8 +1,10 @@
 name: Publish
 
 # Publishes to npm when a GitHub release is published. The release tag must be
-# v<version> of package.json. Needs the NPM_TOKEN secret; --provenance needs a
-# public repository.
+# v<version> of package.json. npm trusts this workflow (trusted publishing,
+# configured in the package's settings on npmjs.com for publish.yml), so no
+# token is needed; id-token: write lets npm verify the run. npm adds
+# provenance by itself when the repository is public.
 
 on:
   release:
@@ -35,9 +37,9 @@ jobs:
       - run: npm run db:up
       - run: npm test
 
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
+      - run: npm publish --access public
 
       - if: always()
         run: npm run db:down
