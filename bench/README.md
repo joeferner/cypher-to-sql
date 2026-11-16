@@ -81,13 +81,14 @@ What it shows:
 
 `npm run bench:writes` loads batches the way an application ingests files: one `UNWIND $rows AS row ...` query per batch, on a fresh graph whose node `key` is indexed: for this library declared as an integer (`migrate`), on Neo4j and ArcadeDB an index on `Item(key)` (`--dialects neo4j,arcadedb`, after `npm run db:up:reference`; it empties Neo4j's database, which `npm run bench` loads again). It counts the SQL statements each batch becomes, runs an untimed round of 100 rows first so that every engine is timed warm, and checks afterwards that the nodes, properties, and relationships are all there exactly once. Options: `--dialects`, `--sizes` (rows per batch, default `1000,2000`), `--ids` (`database,generator`), and `--save`.
 
-| Workload                   | Query                                                                                 |
-| -------------------------- | ------------------------------------------------------------------------------------- |
-| CREATE, properties inline  | `CREATE (:Item {key: row.key, name: row.props.name, ...})`                            |
-| CREATE, then SET +=        | `CREATE (n:Item {key: row.key}) SET n += row.props`                                   |
-| MERGE, nodes new / exist   | `MERGE (n:Item {key: row.key}) SET n += row.props`, on an empty graph / the same rows |
-| CREATE relationships       | `MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) CREATE (a)-[:LINK]->(b)` |
-| MERGE, relationships exist | the same with `MERGE (a)-[:LINK]->(b)`, after the CREATE                              |
+| Workload                       | Query                                                                                                                                                              |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CREATE, properties inline      | `CREATE (:Item {key: row.key, name: row.props.name, ...})`                                                                                                         |
+| CREATE, then SET +=            | `CREATE (n:Item {key: row.key}) SET n += row.props`                                                                                                                |
+| MERGE, nodes new / exist       | `MERGE (n:Item {key: row.key}) SET n += row.props`, on an empty graph / the same rows                                                                              |
+| CREATE relationships           | `MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) CREATE (a)-[:LINK]->(b)`                                                                              |
+| MERGE, relationships exist     | the same with `MERGE (a)-[:LINK]->(b)`, after the CREATE                                                                                                           |
+| CREATE relationships, two keys | `MATCH (a:Item {doc: row.doc, key: row.from}) MATCH (b:Item {doc: row.doc, key: row.to}) CREATE (a)-[:LINK2]->(b)`, with a composite index on (`doc`, `key`) (#84) |
 
 Rows per second, batches of 1,000, on the laptop of the comparison above (this library with ids from the database; the statements per row are the same with generated ids):
 
@@ -101,6 +102,8 @@ Rows per second, batches of 1,000, on the laptop of the comparison above (this l
 | MERGE, relationships exist |                  1 |  2,968 |        793 | 1,484 |  8,948 |   22,182 |
 
 With the generator id strategy, CREATE with inline properties runs at 38,697 (SQLite), 6,568 (PostgreSQL), and 5,438 (MySQL) rows per second; the other workloads cost the same.
+
+CREATE relationships by two keys, with the composite index (#84), runs at 41,000 (SQLite), 4,713 (PostgreSQL), and 10,195 (MySQL) rows per second, against 53,205, 5,121, and 10,170 by one key in the same runs: the composite index finds each end in one lookup, and the rest is the second comparison. On a graph of 100,000 nodes in 50 documents, where each document's 2,000 nodes share `doc`, PostgreSQL without the composite index combined both single-key indexes (`BitmapAnd`) and took 173 ms for the batch's lookups, against 24 ms with it.
 
 Before #77 (the same benchmark, 1,000 rows): MERGE of existing nodes ran at 261 / 139 / 207 rows per second (SQLite / PostgreSQL / MySQL), CREATE relationships at 505 / 142 / 189, and MERGE of existing relationships at 336 / 87 / 158, each getting slower per row as the graph grew.
 

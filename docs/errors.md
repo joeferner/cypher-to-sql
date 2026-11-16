@@ -23,24 +23,25 @@ Errors from the database driver that the library does not recognize (a lost conn
 | `LimitExceededError`      | `compile`, `query` | A [limit](safe-execution.md#limits) was exceeded.                                                                                                                                                                                                      |
 | `CypherTypeError`         | `query`            | A value had the wrong type while the query ran, for example `WHERE n.name` when `name` is a string, or a parameter that is not a Cypher value (a `Date`).                                                                                              |
 | `CypherArgumentError`     | `query`            | A value an operation cannot take, found while the query ran: integer overflow, integer division by zero, `range()` with step 0, an invalid regular expression or date, a NaN parameter.                                                                |
-| `CypherConstraintError`   | `query`            | A write that would leave the graph inconsistent: `DELETE` of a node that still has relationships.                                                                                                                                                      |
+| `CypherConstraintError`   | `query`            | A write that would leave the graph inconsistent: `DELETE` of a node that still has relationships, or a key that a unique index already has.                                                                                                            |
 | `EntityNotFoundError`     | `query`            | A read of a node or relationship that an earlier `DELETE` in the same query deleted.                                                                                                                                                                   |
-| `SchemaError`             | `migrate`          | The database's schema version is newer than the library's, or a property index was asked for a key the mapping does not declare.                                                                                                                       |
+| `SchemaError`             | `migrate`          | The database's schema version is newer than the library's, existing rows share a key that a declared unique index needs to be unique (the message lists them), or an index was asked for that the mapping does not declare.                            |
 | `MappingError`            | `createGraph`      | The mapping has an invalid name or property type.                                                                                                                                                                                                      |
 
 The run-time errors (`CypherTypeError`, `CypherArgumentError`, `CypherConstraintError`, `EntityNotFoundError`) come from the data, so the same query can succeed on other data. Their `position` points at the expression that failed, where the database's error allows it. Codes:
 
-| Code                          | Class                   | Example                                                        |
-| ----------------------------- | ----------------------- | -------------------------------------------------------------- |
-| `InvalidArgumentType`         | `CypherTypeError`       | `n.name * 2` with a string `name`; a `Date` as a parameter     |
-| `InvalidArgumentValue`        | `CypherTypeError`       | `toInteger(n.tags)` with a list `tags`                         |
-| `MapElementAccessByNonString` | `CypherTypeError`       | `$map[0]`                                                      |
-| `NumberOutOfRange`            | `CypherArgumentError`   | `9223372036854775807 + 1`, `range(1, 5, 0)`                    |
-| `DivisionByZero`              | `CypherArgumentError`   | `n.count / 0` with an integer `count`                          |
-| `InvalidRegex`                | `CypherArgumentError`   | `n.name =~ '('`                                                |
-| `InvalidArgumentValue`        | `CypherArgumentError`   | `date('2020-13-01')`; NaN or infinity as a parameter           |
-| `DeleteConnectedNode`         | `CypherConstraintError` | `MATCH (n) DELETE n` when `n` has relationships (use `DETACH`) |
-| `DeletedEntityAccess`         | `EntityNotFoundError`   | `MATCH (n) DETACH DELETE n RETURN n.name`                      |
+| Code                          | Class                   | Example                                                                                     |
+| ----------------------------- | ----------------------- | ------------------------------------------------------------------------------------------- |
+| `InvalidArgumentType`         | `CypherTypeError`       | `n.name * 2` with a string `name`; a `Date` as a parameter                                  |
+| `InvalidArgumentValue`        | `CypherTypeError`       | `toInteger(n.tags)` with a list `tags`                                                      |
+| `MapElementAccessByNonString` | `CypherTypeError`       | `$map[0]`                                                                                   |
+| `NumberOutOfRange`            | `CypherArgumentError`   | `9223372036854775807 + 1`, `range(1, 5, 0)`                                                 |
+| `DivisionByZero`              | `CypherArgumentError`   | `n.count / 0` with an integer `count`                                                       |
+| `InvalidRegex`                | `CypherArgumentError`   | `n.name =~ '('`                                                                             |
+| `InvalidArgumentValue`        | `CypherArgumentError`   | `date('2020-13-01')`; NaN or infinity as a parameter                                        |
+| `DeleteConnectedNode`         | `CypherConstraintError` | `MATCH (n) DELETE n` when `n` has relationships (use `DETACH`)                              |
+| `ConstraintValidationFailed`  | `CypherConstraintError` | `CREATE` of a key that a [unique index](schema.md#composite-and-unique-indexes) already has |
+| `DeletedEntityAccess`         | `EntityNotFoundError`   | `MATCH (n) DETACH DELETE n RETURN n.name`                                                   |
 
 Parameters, and the rows that [procedures](../README.md#usage) return, must be Cypher values: `null`, booleans, `bigint` integers, finite numbers (floats), strings, arrays, plain objects, `CypherTemporal`, and `CypherDuration`. `undefined` is null. Anything else is an error that names the parameter or output, such as `Parameter $p.a[0] is NaN, which cannot be passed`.
 

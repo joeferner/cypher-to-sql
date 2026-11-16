@@ -127,6 +127,27 @@ CREATE INDEX nodes_properties_age ON nodes ((CAST(JSON_EXTRACT(properties, '$."a
 - Reads trust the declaration: a stored value of another type makes the PostgreSQL cast fail. Add `CHECK` constraints when other tools write to the tables.
 - Supported types: `string`, `integer`, `float`, `boolean`, `date`, and `datetime`.
 
+#### Composite and unique indexes
+
+A node that is identified by more than one property, such as its document and its id within it, needs one index over both. With an index on each alone, a lookup by both can use the less selective one (every node of the document), which PostgreSQL then filters node by node. Declare the index in the mapping; every key must be a declared property:
+
+```ts
+const mapping = {
+  ...defaultMapping,
+  nodes: {
+    ...defaultMapping.nodes,
+    propertyTypes: { doc: 'string', id: 'string' },
+    indexes: [{ keys: ['doc', 'id'], unique: true }],
+  },
+};
+```
+
+- `migrate` and `schemaSql` create it over the same expressions as the properties' own indexes, named `<table>_<column>_<keys>` (`nodes_properties_doc_id_unique`); `indexSql(dialect, mapping, 'nodes', ['doc', 'id'], { unique: true })` returns its DDL.
+- **`unique: true`** makes the database enforce the key, across every label (or relationship type) of the table: a write that would store a key twice fails with a `CypherConstraintError` (`ConstraintValidationFailed`), and writes nothing. Nodes without the key (or with only part of it) are not constrained. `migrate` checks the existing rows first, and when some share a key, raises a `SchemaError` that lists them instead of creating the index.
+- On MySQL, as for single properties, there is no index (unique or not) when a key is a string, date, or datetime, which MySQL would not use; declare integer keys to get one there.
+
+On PostgreSQL, a lookup by `{doc, id}` among 100,000 nodes in 50 documents went from a `BitmapAnd` of both single-key indexes (173 ms for 2,000 rows) to one scan of the composite index (24 ms), as fast as a lookup by one unique key.
+
 #### Dates and date-times
 
 A property declared as `date` or `datetime` holds a temporal value, as `date(...)` and `datetime(...)` give: `n.since` is a `date`, `n.since.year` works, and `n.since > date('2024-01-01')` compares dates. Writes take a temporal value of that kind or its ISO 8601 text (`'2024-03-01'`, or `'2024-02-29T13:45:00Z'` with a time zone), which they convert. In the table it is a JSON object with the value's text (`~s`), a sort key by instant (`~k`), and its components:

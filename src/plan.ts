@@ -803,6 +803,22 @@ function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
   if (code === '22012') {
     return new CypherArgumentError('Division by zero', { code: 'DivisionByZero' });
   }
+  // A unique index of the mapping (`indexes`): PostgreSQL unique_violation,
+  // SQLite's UNIQUE constraint, MySQL's duplicate entry.
+  if (
+    code === '23505' ||
+    code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+    code === 'ER_DUP_ENTRY' ||
+    /^UNIQUE constraint failed/.test(message)
+  ) {
+    return new CypherConstraintError(
+      `The write would store a key that a unique index already has: ${message.split('\n')[0]!}`,
+      {
+        code: 'ConstraintValidationFailed',
+        hint: 'MERGE on the key instead of CREATE, or give the new entity a different key.',
+      },
+    );
+  }
   const temporalType = /cypher temporal type error: ([^"]*)/.exec(message);
   if (temporalType) {
     return new CypherTypeError(temporalType[1]!, { code: 'InvalidArgumentType' });

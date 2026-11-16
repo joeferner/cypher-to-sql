@@ -1,8 +1,11 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   createGraph,
+  CypherConstraintError,
   CypherTemporal,
   defaultMapping,
+  indexSql,
+  MappingError,
   migrate,
   mysql,
   postgres,
@@ -32,6 +35,83 @@ const graphMapping = (prefix: string): GraphMapping => ({
     },
   },
   edges: { ...defaultMapping.edges, propertyTypes: { weight: 'float', type: 'string' } },
+});
+
+/** Nodes keyed by (doc, id), unique, and by (doc, n), not unique; edges by a declared integer. */
+const keyedMapping = (prefix: string): GraphMapping => ({
+  ...defaultMapping,
+  prefix,
+  nodes: {
+    ...defaultMapping.nodes,
+    propertyTypes: { doc: 'string', id: 'string', n: 'integer', d: 'integer' },
+    indexes: [{ keys: ['doc', 'id'], unique: true }, { keys: ['d', 'n'] }],
+  },
+  edges: {
+    ...defaultMapping.edges,
+    propertyTypes: { seq: 'integer' },
+    indexes: [{ keys: ['seq'], unique: true }],
+  },
+});
+
+describe('declared indexes (#84)', () => {
+  it('requires declared, distinct keys', () => {
+    const withIndexes = (indexes: unknown): GraphMapping => ({
+      ...defaultMapping,
+      nodes: {
+        ...defaultMapping.nodes,
+        propertyTypes: { a: 'string', b: 'integer' },
+        indexes: indexes as never,
+      },
+    });
+    for (const indexes of [
+      [{ keys: ['a', 'missing'] }],
+      [{ keys: [] }],
+      [{ keys: ['a', 'a'] }],
+      [{ keys: ['a'], unique: 'yes' }],
+      [{ keys: ['a', 'b'] }, { keys: ['a', 'b'] }],
+      'a',
+    ]) {
+      expect(() => schemaSql(sqlite(), withIndexes(indexes)), JSON.stringify(indexes)).toThrow(
+        MappingError,
+      );
+    }
+    expect(() =>
+      schemaSql(sqlite(), withIndexes([{ keys: ['a', 'b'] }, { keys: ['a', 'b'], unique: true }])),
+    ).not.toThrow();
+  });
+
+  it('creates composite and unique indexes over the properties’ own expressions', () => {
+    const m = keyedMapping('');
+    expect(indexSql(postgres(), m, 'nodes', ['doc', 'id'], { unique: true })).toBe(
+      `CREATE UNIQUE INDEX "nodes_properties_doc_id_unique" ON "nodes" ((("properties" ->> 'doc')), (("properties" ->> 'id')))`,
+    );
+    expect(indexSql(sqlite(), m, 'nodes', ['d', 'n'])).toBe(
+      `CREATE INDEX "nodes_properties_d_n" ON "nodes" ((("properties" ->> '$."d"')), (("properties" ->> '$."n"')))`,
+    );
+    // MySQL does not use an index on a string, so a key with one has none.
+    expect(indexSql(mysql(), m, 'nodes', ['doc', 'id'], { unique: true })).toBeUndefined();
+    expect(indexSql(mysql(), m, 'nodes', ['d', 'n'])).toMatch(
+      /^CREATE INDEX `nodes_properties_d_n`/,
+    );
+    expect(() => indexSql(sqlite(), m, 'nodes', ['doc', 'id'])).toThrow(SchemaError);
+    expect(schemaSql(postgres(), m, { ifNotExists: true })).toContain(
+      `CREATE UNIQUE INDEX IF NOT EXISTS "edges_properties_seq_unique" ON "edges" (((("properties" ->> 'seq')::bigint)))`,
+    );
+  });
+
+  it('indexes the expressions the planner reads the keys with', () => {
+    const m = keyedMapping('');
+    for (const dialect of [sqlite(), postgres(), mysql()]) {
+      const index = indexSql(dialect, m, 'nodes', ['d', 'n'])!;
+      const sql = createGraph({ dialect, mapping: m, executor: undefined as never })
+        .compile('MATCH (a {d: $d, n: $n}) RETURN a')
+        .explain();
+      const quoted = dialect.quoteIdent('properties');
+      for (const part of index.slice(index.indexOf(' ((') + 3, -2).split('), (')) {
+        expect(sql, `${dialect.name} ${part}`).toContain(part.replaceAll(quoted, `n0.${quoted}`));
+      }
+    }
+  });
 });
 
 describe('schemaSql', () => {
@@ -152,6 +232,55 @@ for (const backend of testBackends()) {
       expect(result.created).toEqual([
         propertyIndexSql(dialect, after, 'nodes', 'age', { ifNotExists: true }),
       ]);
+    });
+
+    it('creates declared composite and unique indexes, which writes then respect (#84)', async () => {
+      const { dialect, executor } = await backend.open();
+      const mapping = keyedMapping('k1_');
+      const { created } = await migrate({ dialect, executor, mapping });
+      const names = created.map((sql) => /INDEX (?:IF NOT EXISTS )?[`"]([^`"]+)/.exec(sql)?.[1]);
+      expect(names).toContain('k1_nodes_properties_d_n');
+      expect(names).toContain('k1_edges_properties_seq_unique');
+      // MySQL gets no index (unique or not) on a string key.
+      expect(names.includes('k1_nodes_properties_doc_id_unique')).toBe(backend.name !== 'mysql');
+
+      const graph = createGraph({ dialect, executor, mapping, readOnly: false });
+      await graph.query("CREATE (:N {doc: 'd1', id: 'a'}), (:N {doc: 'd2', id: 'a'})");
+      await graph.query('CREATE ()-[:R {seq: 1}]->(), ()-[:R {seq: 2}]->()');
+      // A duplicate key is a CypherConstraintError, and the query writes nothing.
+      await expect(graph.query('CREATE ()-[:R {seq: 1}]->()')).rejects.toMatchObject({
+        constructor: CypherConstraintError,
+        code: 'ConstraintValidationFailed',
+      });
+      if (backend.name !== 'mysql') {
+        await expect(graph.query("CREATE (:N {doc: 'd1', id: 'a'})")).rejects.toThrow(
+          CypherConstraintError,
+        );
+      }
+      // MERGE on the key finds the node instead of creating another.
+      await graph.query('UNWIND $rows AS row MERGE (:N {doc: row.doc, id: row.id})', {
+        rows: [
+          { doc: 'd1', id: 'a' },
+          { doc: 'd1', id: 'b' },
+        ],
+      });
+      const count = async (cypher: string): Promise<unknown> =>
+        (await graph.query(cypher))[0]!['c'];
+      expect(await count('MATCH (n:N) RETURN count(n) AS c')).toBe(3n);
+      expect(await count('MATCH ()-[r:R]->() RETURN count(r) AS c')).toBe(2n);
+    });
+
+    it('reports the duplicates that keep it from creating a unique index (#84)', async () => {
+      const { dialect, executor } = await backend.open();
+      const plain = { ...defaultMapping, prefix: 'k2_' };
+      await migrate({ dialect, executor, mapping: plain });
+      await createGraph({ dialect, executor, mapping: plain, readOnly: false }).query(
+        'CREATE ()-[:R {seq: 7}]->(), ()-[:R {seq: 7}]->(), ()-[:R {seq: 8}]->(), ()-[:R]->(), ()-[:R]->()',
+      );
+      const mapping = keyedMapping('k2_');
+      await expect(migrate({ dialect, executor, mapping })).rejects.toThrow(
+        /unique index k2_edges_properties_seq_unique cannot be created: k2_edges has rows with the same key, for example \[7\]$/,
+      );
     });
 
     it('refuses a schema newer than the library', async () => {

@@ -5,7 +5,7 @@ export type * as ast from './ast.js';
 export * from './errors.js';
 export type { SqlExecutor, SqlTx, Row } from './executor.js';
 export { defaultLimits, type Limits } from './limits.js';
-export { defaultMapping, type GraphMapping } from './mapping.js';
+export { defaultMapping, type DeclaredIndex, type GraphMapping } from './mapping.js';
 export { PROPERTY_TYPES, type PropertyType, type PropertyTypes } from './property-types.js';
 export type { CompiledPlan, PlanStep, BindValue } from './plan.js';
 export type { IdStrategy } from './planner/write.js';
@@ -31,6 +31,7 @@ export {
 } from './values.js';
 export { toJson, type JsonValue, type ToJsonOptions } from './to-json.js';
 export {
+  indexSql,
   migrate,
   propertyIndexSql,
   schemaSql,
