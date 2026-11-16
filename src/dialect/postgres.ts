@@ -378,15 +378,17 @@ export function postgres(): Dialect {
     },
     noFlatten: ' OFFSET 0',
     limitAll: 'ALL',
-    unwind: (listExpr, alias) => ({
+    unwind: (listExpr, alias, atMostOne) => ({
       // jsonb_array_elements raises an error for a non-array, so a scalar is a
-      // separate branch. SQL NULL and JSON null give no rows.
+      // separate branch. SQL NULL and JSON null give no rows. PostgreSQL
+      // estimates 100 rows for it; with at most one, LIMIT 1 says so, and the
+      // planner looks up the rows that match it by index.
       from:
         `LATERAL (SELECT e.value, e.ord FROM jsonb_array_elements(` +
         `CASE WHEN jsonb_typeof(${listExpr}) = 'array' THEN ${listExpr} END) ` +
         `WITH ORDINALITY AS e(value, ord) ` +
-        `UNION ALL SELECT ${listExpr}, 1 WHERE jsonb_typeof(${listExpr}) NOT IN ('array', 'null')) ` +
-        `AS ${alias}`,
+        `UNION ALL SELECT ${listExpr}, 1 WHERE jsonb_typeof(${listExpr}) NOT IN ('array', 'null')` +
+        `${atMostOne ? ' LIMIT 1' : ''}) AS ${alias}`,
       where: undefined,
       value: `${alias}.value`,
       order: `${alias}.ord`,

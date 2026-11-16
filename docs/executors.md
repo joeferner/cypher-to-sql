@@ -40,6 +40,7 @@ const rows = await graph.query('MATCH (p:Person) RETURN p.name AS name LIMIT 10'
 - **One transaction at a time per connection.** `graph.query()` is async, and two queries can be in flight at once. With a pool (`pg`), take one client per transaction. With a single SQLite connection, queue the transactions, as the SQLite examples do.
 - **64-bit integers.** Values the library binds can be `bigint`. The `pg` example binds them as text, which PostgreSQL casts exactly. Read integers back as `bigint` on SQLite (`safeIntegers` in `better-sqlite3`, `setReadBigInts` in `node:sqlite`); otherwise values above 2^53 lose precision. `pg` returns `bigint` columns as strings, which the library reads exactly.
 - **Rows as objects keyed by column name.** The library reads the columns it selected by name.
+- **Reuse prepared statements, if the driver allows it cheaply.** A write runs the same SQL for every row of a batch. The SQLite examples keep their last 100 prepared statements, which halves the cost of a batched `MERGE`. The `mysql2` example has the driver's own cache (`maxPreparedStatements`). The `pg` example does not: named statements stay on the server, one per distinct SQL text.
 - **Errors unchanged.** Rethrow the driver's error. The library recognizes the errors that its SQL raises on purpose (run-time type errors, integer overflow) and turns them into `CypherTypeError` and `CypherArgumentError`; see [Errors](errors.md).
 
 ## PostgreSQL settings

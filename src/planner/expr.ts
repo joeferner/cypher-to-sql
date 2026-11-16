@@ -43,6 +43,8 @@ export interface Expr {
   temporalKey?: { kind: 'date' | 'datetime'; sql: string } | undefined;
   /** For a temporal function whose arguments are known before the query runs: the call. */
   knownTemporal?: ast.Expression | undefined;
+  /** A declared property read as its native type (`Dialect.typedMember`), which an index can serve. */
+  declared?: boolean | undefined;
 }
 
 /**
@@ -386,7 +388,12 @@ export class ExprCompiler {
       };
     }
     if (declared) {
-      return { sql: b.dialect.typedMember(column, key, declared), type: declared, atomic: true };
+      return {
+        sql: b.dialect.typedMember(column, key, declared),
+        type: declared,
+        atomic: true,
+        declared: true,
+      };
     }
     return json(b.dialect.jsonMember(column, b.bind({ kind: 'sql', value: key }), key), true);
   }
@@ -827,7 +834,7 @@ export class ExprCompiler {
       const scalarSide = left.type === 'json' ? right : left;
       const cls = typeClass(scalarSide.type);
       const types = cls === 'number' ? NUMBER_TYPES : `('${cls}')`;
-      return boolean(
+      const exact = boolean(
         this.share([left, right], ([l, r]) => {
           const [j, s] = left.type === 'json' ? [l!, r!] : [r!, l!];
           const value = d.fromJson(j.sql, cls);
@@ -843,6 +850,18 @@ export class ExprCompiler {
           );
         }),
       );
+      // A declared property against a JSON value (from the row, say), with
+      // `=`: also a plain comparison that the property's index serves (#77).
+      if (
+        op === '=' &&
+        scalarSide.declared &&
+        (scalarSide.type === 'integer' ||
+          scalarSide.type === 'string' ||
+          scalarSide.type === 'boolean')
+      ) {
+        return this.compareDeclared(scalarSide, scalarSide === left ? right : left, exact);
+      }
+      return exact;
     }
 
     return boolean(
@@ -915,6 +934,43 @@ export class ExprCompiler {
       return `(${comparison} AND (${fits} = 1 OR (${k!.sql} IS NULL AND ${unknown})))`;
     });
     return { ...boolean(sql), indexable: known.atomic };
+  }
+
+  /**
+   * `column = json` for a declared integer, string, or boolean property and a
+   * JSON value that may vary by row (`row.key` of UNWIND or MERGE), as
+   *
+   *     column = v AND exact
+   *
+   * `exact` is Cypher's comparison (true, false, or null), which computes the
+   * JSON value once in a subquery; `column = v` adds a plain comparison with
+   * the value converted to the column's type in SQL, which the index on the
+   * property serves (#77). When `exact` is true, `v` equals the column; when
+   * it is false, so is the whole; when it is null, `v` or the column is null.
+   * So `v` only has to be right when they are equal: it does not check a
+   * fraction (an integer column is never equal to 30.5), only what keeps the
+   * conversion from failing. The JSON expression is repeated in `v` rather
+   * than shared: a shared value is a subquery, which no index can serve; few
+   * copies keep the SQL short (it is compiled for every row of a per-row step).
+   */
+  private compareDeclared(column: Expr, value: Expr, exact: Expr): Expr {
+    const d = this.b.dialect;
+    const j = value.sql;
+    const t = d.jsonType(j);
+    let v: string;
+    if (column.type === 'integer') {
+      const n = d.fromJson(j, 'number');
+      // In range first (it also excludes NaN), so that the cast cannot fail.
+      v =
+        `(CASE ${t} WHEN 'integer' THEN ${d.fromJson(j, 'integer')} ` +
+        `WHEN 'float' THEN (CASE WHEN ${n} > -9.2e18 AND ${n} < 9.2e18 THEN ${d.truncate(n)} END) END)`;
+    } else if (column.type === 'string') {
+      v = d.fromJson(j, 'string');
+    } else {
+      v = `(CASE WHEN ${t} = 'boolean' THEN ${d.fromJson(j, 'boolean')} END)`;
+    }
+    const comparison = this.compareSame('=', column.sql, v, typeClass(column.type));
+    return { ...boolean(`(${comparison} AND ${exact.sql})`), indexable: column.atomic };
   }
 
   /**
