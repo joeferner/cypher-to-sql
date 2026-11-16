@@ -53,6 +53,86 @@ const keyedMapping = (prefix: string): GraphMapping => ({
   },
 });
 
+/** Nodes with `doc`, `n`, and `w` declared `indexed: false` (or not), and a composite index on (n, w). */
+const unindexedMapping = (prefix: string, indexed: boolean): GraphMapping => ({
+  ...defaultMapping,
+  prefix,
+  nodes: {
+    ...defaultMapping.nodes,
+    propertyTypes: indexed
+      ? { doc: 'string', n: 'integer', w: 'float' }
+      : {
+          doc: { type: 'string', indexed: false },
+          n: { type: 'integer', indexed: false },
+          w: { type: 'float', indexed: false },
+        },
+    indexes: [{ keys: ['n', 'w'] }],
+  },
+});
+
+describe('indexed: false (#91)', () => {
+  it('leaves out the single-key index, but not composite indexes or the type', () => {
+    for (const dialect of [sqlite(), postgres(), mysql()]) {
+      const sql = schemaSql(dialect, unindexedMapping('', false)).join('\n');
+      expect(sql, dialect.name).not.toMatch(/properties_(doc|n|w)\b/);
+      expect(sql, dialect.name).toContain('properties_n_w');
+      expect(propertyIndexSql(dialect, unindexedMapping('', false), 'nodes', 'n')).toBeUndefined();
+      // The type still reads the property as an integer, as when it is indexed.
+      const read = (mapping: GraphMapping): string =>
+        createGraph({ dialect, mapping, executor: undefined as never })
+          .compile('MATCH (a) WHERE a.n = $n RETURN a')
+          .explain();
+      expect(read(unindexedMapping('', false))).toBe(read(unindexedMapping('', true)));
+    }
+  });
+
+  it('gives the same DDL for a type and for { type } or { type, indexed: true }', () => {
+    const forms = (wrap: (t: 'integer' | 'string') => unknown): GraphMapping => ({
+      ...defaultMapping,
+      nodes: {
+        ...defaultMapping.nodes,
+        propertyTypes: { a: wrap('integer'), b: wrap('string') } as never,
+        indexes: [{ keys: ['a', 'b'], unique: true }],
+      },
+    });
+    for (const dialect of [sqlite(), postgres(), mysql()]) {
+      const plain = schemaSql(
+        dialect,
+        forms((t) => t),
+      );
+      expect(
+        schemaSql(
+          dialect,
+          forms((type) => ({ type })),
+        ),
+      ).toEqual(plain);
+      expect(
+        schemaSql(
+          dialect,
+          forms((type) => ({ type, indexed: true })),
+        ),
+      ).toEqual(plain);
+    }
+  });
+
+  it('rejects an invalid declaration', () => {
+    for (const declaration of [
+      { type: 'text' },
+      { type: 'string', indexed: 'no' },
+      { type: 'string', unique: true },
+      {},
+      ['string'],
+      null,
+    ]) {
+      const mapping = {
+        ...defaultMapping,
+        nodes: { ...defaultMapping.nodes, propertyTypes: { a: declaration as never } },
+      };
+      expect(() => schemaSql(sqlite(), mapping), JSON.stringify(declaration)).toThrow(MappingError);
+    }
+  });
+});
+
 describe('declared indexes (#84)', () => {
   it('requires declared, distinct keys', () => {
     const withIndexes = (indexes: unknown): GraphMapping => ({
@@ -191,6 +271,7 @@ for (const backend of testBackends()) {
         created: [],
         converted: 0,
         skipped: [],
+        unused: [],
       });
       const graph = createGraph({ dialect, executor, mapping, readOnly: false });
       await graph.query(
@@ -232,6 +313,41 @@ for (const backend of testBackends()) {
       expect(result.created).toEqual([
         propertyIndexSql(dialect, after, 'nodes', 'age', { ifNotExists: true }),
       ]);
+    });
+
+    it('creates no index for indexed: false, and lists one made earlier as unused (#91)', async () => {
+      const { dialect, executor } = await backend.open();
+      const indexed = unindexedMapping('u1_', true);
+      const unindexed = unindexedMapping('u1_', false);
+      const first = await migrate({ dialect, executor, mapping: unindexed });
+      const names = first.created.join('\n');
+      expect(names).not.toMatch(/properties_(doc|n|w)\b/);
+      // The composite index on (n, w) is there (integer and float: MySQL too).
+      expect(names).toContain('properties_n_w');
+      expect(first.unused).toEqual([]);
+
+      // Indexed, then not: migrate stops creating the indexes, drops none, and lists them.
+      await migrate({ dialect, executor, mapping: indexed });
+      const again = await migrate({ dialect, executor, mapping: unindexed });
+      expect(again.created).toEqual([]);
+      const unused = [
+        ...(dialect.name === 'mysql' ? [] : ['u1_nodes_properties_doc']),
+        'u1_nodes_properties_n',
+        'u1_nodes_properties_w',
+      ];
+      expect(again.unused.map((u) => u.name).sort()).toEqual(unused);
+
+      // The declared types still apply: an integer, compared as one, and a float stored as a float.
+      const graph = createGraph({ dialect, executor, mapping: unindexed, readOnly: false });
+      await graph.query("CREATE ({doc: 'd', n: 9, w: 2.0}), ({doc: 'd', n: 10, w: 2.5})");
+      expect(
+        await graph.query('MATCH (a) WHERE a.n > 9 AND a.n = 10.0 RETURN a.n AS n, a.w AS w'),
+      ).toEqual([{ n: 10n, w: 2.5 }]);
+      expect(await graph.query('MATCH (a {n: 9}) RETURN a.n AS n, a.w AS w')).toEqual([
+        { n: 9n, w: 2 },
+      ]);
+      await expect(graph.query("CREATE ({n: 'x'})")).rejects.toThrow(/declared as integer/);
+      await expect(graph.query('CREATE ({w: 2})')).rejects.toThrow(/declared as float/);
     });
 
     it('creates declared composite and unique indexes, which writes then respect (#84)', async () => {

@@ -2,7 +2,7 @@ import type { Dialect, EntityColumns, ScalarType } from '../dialect/dialect.js';
 import type * as ast from '../ast.js';
 import type { SourcePosition } from '../errors.js';
 import type { BindValue, PlanStep, RaisedError, ValueSource } from '../plan.js';
-import type { GraphMapping } from '../mapping.js';
+import type { ResolvedMapping } from '../mapping.js';
 import type { CypherMap, CypherValue } from '../values.js';
 
 // Bind markers. SQL is assembled from fragments in any order; `finish` replaces
@@ -49,7 +49,7 @@ export class SqlBuilder {
 
   public constructor(
     public readonly dialect: Dialect,
-    public readonly mapping: GraphMapping,
+    public readonly mapping: ResolvedMapping,
   ) {}
 
   /** Returns a marker for a bind value. Use the returned text in the SQL. */

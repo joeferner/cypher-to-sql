@@ -19,7 +19,7 @@ import type { ResolvedMapping } from './mapping.js';
 import { checkValue } from './parameters.js';
 import { checkPropertyValue, patchEntries, uniqueViolation } from './plan.js';
 import type { IdStrategy } from './planner/write.js';
-import type { PropertyType, PropertyTypes } from './property-types.js';
+import type { DeclaredTypes as PropertyTypes, PropertyType } from './property-types.js';
 import { idJson, idsJson } from './search.js';
 import type { CypherMap, CypherValue } from './values.js';
 

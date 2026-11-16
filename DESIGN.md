@@ -89,7 +89,7 @@ Rules:
   CREATE INDEX nodes_age ON nodes (properties ->> '$."age"');
   ```
 
-  Undeclared properties are JSON values whose type is checked at run time (see "Expressions"); they cannot use these indexes.
+  Undeclared properties are JSON values whose type is checked at run time (see "Expressions"); they cannot use these indexes. A declaration `{ type, indexed: false }` (#91) is read exactly like its plain type; `validateMapping` reduces it to the type (the planner only ever sees plain types) and keeps the key in `unindexed`, which only `migrate`, `schemaSql`, and `propertyIndexSql` read, to leave out its single-key index.
 
   Compared with `=` to a JSON value that varies by row (`row.key` of `UNWIND` or `MERGE`), a declared integer, string, or boolean property is `property = v AND <Cypher's comparison>` (`compareDeclared`): `v` is the JSON value converted to the property's type in SQL, repeated inline rather than shared (a shared value is a subquery, which no index serves), so the index serves the first term, and the second keeps Cypher's true, false, or null. Per-row write steps read their one current row with `unwind(..., atMostOne)` (a `LIMIT 1` on PostgreSQL, whose planner otherwise assumes 100 rows and hashes the table), and find the entities it holds again by `Dialect.jsonId`, in the id column's own type, so the primary key serves that join (#77).
 

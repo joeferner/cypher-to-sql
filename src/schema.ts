@@ -60,11 +60,14 @@ export function schemaSql(
 }
 
 /**
- * The index of each declared property, then each composite or unique index the
- * mapping declares (`indexes`), leaving out those the database would not use.
+ * The index of each declared property (but those with `indexed: false`), then
+ * each composite or unique index the mapping declares (`indexes`), leaving out
+ * those the database would not use.
  */
 function propertyIndexes(ddl: Ddl, m: ResolvedMapping): IndexDdl[] {
-  const single = declaredKeys(m).map(({ kind, key }) => ddl.propertyIndex(kind, key));
+  const single = declaredKeys(m)
+    .filter(({ kind, key }) => !m[kind].unindexed.has(key))
+    .map(({ kind, key }) => ddl.propertyIndex(kind, key));
   const declared = (['nodes', 'edges'] as const).flatMap((kind) =>
     (m[kind].indexes ?? []).map((index) => ddl.declaredIndex(kind, index)),
   );
@@ -117,7 +120,8 @@ const DUPLICATES_SHOWN = 10;
  * table: `CREATE INDEX <table>_<column>_<key> ON <table> ((<expression>))`,
  * with exactly the expression the planner reads the property with, so that
  * filters on it can use the index. Undefined where the database would not use
- * one: on MySQL for `string`, `date`, and `datetime` properties.
+ * one (on MySQL for `string`, `date`, and `datetime` properties), and for a
+ * property declared with `indexed: false`.
  */
 export function propertyIndexSql(
   dialect: Dialect,
@@ -131,6 +135,9 @@ export function propertyIndexSql(
     throw new SchemaError(
       `The mapping declares no type for the ${kind} property ${JSON.stringify(key)}`,
     );
+  }
+  if (m[kind].unindexed.has(key)) {
+    return undefined;
   }
   return new Ddl(dialect, m, options.ifNotExists ?? false).propertyIndex(kind, key)?.sql;
 }
@@ -155,6 +162,12 @@ export interface MigrateResult {
    * an ISO date): left as they were.
    */
   skipped: { table: string; id: unknown; key: string; value: unknown }[];
+  /**
+   * Existing single-key indexes of properties now declared with `indexed:
+   * false`, by name: `migrate` no longer creates them, and never drops them.
+   * Drop them yourself if no query needs them.
+   */
+  unused: { table: string; name: string }[];
 }
 
 /** Rows per batch of a data migration. */
@@ -170,10 +183,12 @@ const BATCH = 500;
  * - An older version: runs the data migrations from it, then records the new
  *   version. From 1: rewrites declared `date` and `datetime` strings as
  *   temporal values.
- * - Every run: creates the expression index of each declared property, and
- *   each composite or unique index the mapping declares, that has none (by
- *   name), so declaring one and migrating adds it. A unique index that the
- *   existing rows violate is a `SchemaError` that lists duplicated keys.
+ * - Every run: creates the expression index of each declared property (but
+ *   those with `indexed: false`), and each composite or unique index the
+ *   mapping declares, that has none (by name), so declaring one and migrating
+ *   adds it. A unique index that the existing rows violate is a `SchemaError`
+ *   that lists duplicated keys. It drops no index: the single-key indexes of
+ *   properties now declared `indexed: false` are listed in `unused`.
  *
  * A version newer than the library's is a `SchemaError`. Run it from one
  * process (at deploy); it is safe to run again.
@@ -253,7 +268,14 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
       }
       await run(index.sql);
     }
-    return { from, to: SCHEMA_VERSION, created, converted, skipped };
+    const unused: MigrateResult['unused'] = [];
+    for (const { kind, key } of declaredKeys(m)) {
+      const index = m[kind].unindexed.has(key) ? ddl.propertyIndex(kind, key) : undefined;
+      if (index && (await catalog.indexExistsByName(index.table, index.name))) {
+        unused.push({ table: index.table, name: index.name });
+      }
+    }
+    return { from, to: SCHEMA_VERSION, created, converted, skipped, unused };
   });
 }
 
