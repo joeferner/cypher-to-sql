@@ -105,7 +105,15 @@ function javaRegex(pattern: string): RegExp {
   try {
     regex = new RegExp(source, `${flags}u`);
   } catch {
-    regex = new RegExp(source, flags);
+    try {
+      regex = new RegExp(source, flags);
+    } catch (error) {
+      // The message names the rewritten source; name the pattern as written.
+      const reason = (error as Error).message.replace(/^.*\/: /, '');
+      throw new SyntaxError(`Invalid regular expression ${JSON.stringify(pattern)}: ${reason}`, {
+        cause: error,
+      });
+    }
   }
   if (regexCache.size >= 256) {
     regexCache.clear();

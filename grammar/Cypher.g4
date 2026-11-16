@@ -25,6 +25,10 @@
  * described as "implementation extensions to Cypher" or as "proposed changes to
  * Cypher that are not yet approved by the openCypher community".
  */
+
+// Modified for cypher-to-sql: each rule it adds is marked "Implementation
+// extension to Cypher" below, and the alternatives of existing rules that refer
+// to those rules (and the `=~` and FOREACH tokens) are part of the same changes.
 grammar Cypher;
 
 oC_Cypher

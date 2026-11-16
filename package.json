@@ -1,10 +1,20 @@
 {
   "name": "cypher-to-sql",
-  "version": "0.1.0",
-  "description": "Executes Cypher on a SQL database",
+  "version": "1.0.0",
+  "description": "Runs openCypher queries on a property graph stored in PostgreSQL, SQLite, or MySQL tables",
+  "keywords": [
+    "cypher",
+    "opencypher",
+    "graph",
+    "sql",
+    "postgresql",
+    "sqlite",
+    "mysql",
+    "query"
+  ],
   "license": "MIT",
   "author": "Joe Ferner <joe@fernsroth.com>",
-  "homepage": "https://joeferner.github.io/cypher-to-sql/",
+  "homepage": "https://github.com/joeferner/cypher-to-sql#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/joeferner/cypher-to-sql.git"
@@ -22,8 +32,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "NOTICE",
+    "LICENSE-APACHE-2.0"
   ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "generate:parser": "antlr-ng -Dlanguage=TypeScript --generate-listener false --generate-visitor true -o src/parser/generated grammar/Cypher.g4 && rm -f src/parser/generated/*.interp src/parser/generated/*.tokens",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",

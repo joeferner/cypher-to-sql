@@ -6,7 +6,7 @@ Run [openCypher](https://opencypher.org/) queries against a property graph store
 - **Read-only by default.** A read-only graph can only emit `SELECT`, and every literal becomes a bind parameter.
 - **Bring your own driver.** The library has no runtime dependency on a database driver.
 
-> **Status:** early development. Only a small subset of Cypher works today, on PostgreSQL, SQLite, and MySQL 8. Any unsupported construct fails with an `UnsupportedFeatureError`. See [DESIGN.md](DESIGN.md) for how it works and [GitHub issues](https://github.com/joeferner/cypher-to-sql/issues) for the roadmap and progress.
+Reads and writes openCypher 9 on PostgreSQL, SQLite, and MySQL 8, and passes 93–99.97% of the [openCypher TCK](#conformance) depending on the database. What it does not support fails with an error that says so, usually with a hint for a rewrite; see [Limitations](#limitations). [DESIGN.md](DESIGN.md) explains how it works.
 
 ## Usage
 
@@ -58,11 +58,26 @@ await writer.query("CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Al
 
 ## Documentation
 
-- [Executors](docs/executors.md): what an executor does, and tested ones for `pg`, `better-sqlite3`, and `node:sqlite`.
+- [Executors](docs/executors.md): what an executor does, and tested ones for `pg`, `better-sqlite3`, `node:sqlite`, and `mysql2`.
 - [Schema](docs/schema.md): the tables, the mapping, indexes, and declared property types.
 - [Safe execution](docs/safe-execution.md): running untrusted or generated queries, database roles, timeouts, and limits.
 - [Errors](docs/errors.md): the error classes, their hints, and a retry loop for generated queries.
 - [Design](DESIGN.md): how queries become SQL.
+
+## Limitations
+
+The language is openCypher 9, plus `=~`, `shortestPath()`, `allShortestPaths()`, map projections, and `EXISTS { }` as in Neo4j. Not supported:
+
+- **Constructs of later Cypher versions:** `CALL { }` subqueries, `COUNT { }` and `COLLECT { }`, `reduce()`, `LOAD CSV`, `USE`, dynamic labels, and schema commands (indexes and constraints are created in SQL). Their syntax errors carry a hint with a rewrite.
+- **Some functions:** `stDev()`, `stDevP()`, `cot()`, the hyperbolic functions, `degrees()`, `radians()`, `haversin()`, `timestamp()`, `elementId()`, `randomUUID()`, `toIntegerList()` and the other list conversions, spatial `point()`, and a few others. The error lists the supported ones.
+- **Built-in procedures:** `CALL` runs only the [procedures you register](#usage), with literal or parameter arguments.
+- **A few combinations,** each with its own `UnsupportedFeatureError`, such as a named path in `CREATE` or `shortestPath()` inside `EXISTS`.
+
+Each database has its own limits:
+
+- **SQLite** has no NaN (`0.0 / 0.0` is null). Unicode `toUpper()` and `toLower()`, `=~`, and temporal functions of values from the query need [the library's functions registered](docs/executors.md#sqlite-settings).
+- **MySQL** runs temporal functions and arithmetic only on literals and parameters, not on values from the query (`date(n.since)` is an `UnsupportedFeatureError`). It has no NaN, compares JSON integers beyond 2^53 imprecisely, takes only a literal or a parameter in `SKIP` and `LIMIT`, and doesn't use an index for a declared string property, so a lookup by one scans (see [Performance](#performance)). It also needs [session settings](docs/executors.md#mysql-settings).
+- **Deep path searches** on large graphs can hit the `maxRowsPerStep` [limit](docs/safe-execution.md#limits) on every database; see [Performance](#performance).
 
 ## Development
 
@@ -80,6 +95,8 @@ npm run db:down               # remove the containers
 ```
 
 The tests need PostgreSQL running. They connect to `TEST_POSTGRES_URL`, which defaults to `postgres://cypher:cypher@localhost:55432/cypher`; the dev container points it at the host. Set `POSTGRES_VERSION` to change the version that `db:up` starts (default 18). They also need MySQL, at `TEST_MYSQL_URL` (default `mysql://cypher:cypher@localhost:53306/cypher`; `MYSQL_VERSION` picks the version, default 8.4). Each test file creates its own database there as root (password `TEST_MYSQL_ROOT_PASSWORD`, default `cypher`). `TEST_BACKENDS=mysql` (or any comma-separated list of `sqlite`, `postgres`, `mysql`) runs the unit tests on some dialects only. The differential tests also connect to `NEO4J_URL` (default `bolt://localhost:57687`) and `ARCADEDB_URL` (default `http://localhost:52480`).
+
+## Conformance
 
 Conformance is measured with the official [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck). [test/tck/allow-list.json](test/tck/allow-list.json) lists the scenarios that must pass on each dialect.
 

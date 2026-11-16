@@ -101,12 +101,43 @@ const NOT_IMPLEMENTED = new Set(
   ].map((n) => n.toLowerCase()),
 );
 
+/** Function names as Cypher spells them, where that is not all lowercase. */
+const SPELLED = new Map(
+  [
+    'duration.inDays',
+    'duration.inMonths',
+    'duration.inSeconds',
+    'datetime.fromEpoch',
+    'datetime.fromEpochMillis',
+    'endNode',
+    'startNode',
+    'toBoolean',
+    'toBooleanOrNull',
+    'toFloat',
+    'toFloatOrNull',
+    'toInteger',
+    'toIntegerOrNull',
+    'toLower',
+    'toString',
+    'toStringOrNull',
+    'toUpper',
+  ].map((name) => [name.toLowerCase(), name]),
+);
+
+/** A key of FUNCTIONS as Cypher spells it (`tointeger` is `toInteger`). */
+function spelled(key: string): string {
+  const dot = key.indexOf('.');
+  const head = dot < 0 ? key : key.slice(0, dot);
+  const spelledHead = SPELLED.get(head) ?? head;
+  return SPELLED.get(key) ?? (dot < 0 ? spelledHead : `${spelledHead}${key.slice(dot)}`);
+}
+
 /** Compiles a call of a function that is not an aggregate (see aggregates.ts). */
 export function compileFunction(c: ExprCompiler, node: ast.FunctionCall): Expr {
   const name = node.name.toLowerCase();
   const def = FUNCTIONS[name];
   if (!def) {
-    const hint = `Supported functions: ${Object.keys(FUNCTIONS).sort().join(', ')}.`;
+    const hint = `Supported functions: ${Object.keys(FUNCTIONS).sort().map(spelled).join(', ')}; aggregates: avg, collect, count, max, min, percentileCont, percentileDisc, sum.`;
     // A namespaced name (`apoc.coll.sum`) may be a vendor or user function.
     if (NOT_IMPLEMENTED.has(name) || name.includes('.')) {
       throw new UnsupportedFeatureError(`Function ${node.name}() is not supported`, {

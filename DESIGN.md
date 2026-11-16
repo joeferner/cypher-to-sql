@@ -4,7 +4,7 @@ How cypher-to-sql works and the rules it keeps. For the roadmap and progress, se
 
 ## Scope
 
-Version 1 runs read-only openCypher on PostgreSQL (including managed PostgreSQL such as RDS and Aurora, where graph extensions are not available), SQLite, and MySQL 8 (see [MySQL](#mysql)). `CREATE`, `MERGE`, `SET`, `REMOVE`, and `DELETE` are available behind an explicit write mode, mainly so that the TCK can build its test graphs with the library itself. Coverage grows feature by feature, and every unsupported construct fails with a clear `UnsupportedFeatureError`.
+Version 1 runs openCypher 9 on PostgreSQL (including managed PostgreSQL such as RDS and Aurora, where graph extensions are not available), SQLite, and MySQL 8 (see [MySQL](#mysql)). Graphs are read-only by default; `CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, and `FOREACH` are available behind an explicit write mode. Every unsupported construct fails with a clear error; the [README](README.md#limitations) lists them.
 
 **Non-goals:** built-in procedures (Neo4j's `db.*`, APOC, GDS), vendor-specific functions, and `LOAD CSV`. `CALL` works only with procedures the caller registers (see [Procedures](#procedures)). Managing application schemas: the library reads a mapping and never creates application tables. Database drivers, connections, and pooling: the caller runs the SQL with their own driver, and the library has no runtime dependency on any driver.
 
@@ -22,7 +22,7 @@ Cypher text
   → Executor (one transaction) → Result assembler → Cypher values
 ```
 
-- Never parse Cypher with regular expressions. The grammar is pinned in `grammar/Cypher.g4` and regenerated on purpose. It has one implementation extension, marked in the file: `shortestPath(...)` and `allShortestPaths(...)` around a pattern part. Their names are symbolic names checked by the parser, so neither word becomes reserved.
+- Never parse Cypher with regular expressions. The grammar is pinned in `grammar/Cypher.g4` and regenerated on purpose. It has five implementation extensions from Neo4j, each marked in the file: `shortestPath(...)` and `allShortestPaths(...)` around a pattern part (their names are symbolic names checked by the parser, so neither word becomes reserved), `=~`, map projections, `EXISTS { }` without `RETURN`, and `FOREACH`. The grammar is Apache 2.0; [NOTICE](NOTICE) carries its notice into the package, with the generated parser.
 - The planner never writes database-specific SQL. All dialect-specific syntax goes through the `Dialect` interface. Supporting two dialects from the start keeps that boundary honest.
 - One package. The TCK harness and the test executors live under `test/` and are not published.
 

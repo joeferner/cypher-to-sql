@@ -19,6 +19,7 @@ import type { Expression } from './ast.js';
 import { TemporalError } from './temporal.js';
 import { evaluateKnown, TypeMismatch } from './temporal-functions.js';
 import { runProcedure, type Procedure } from './procedures.js';
+import { parameterValue } from './parameters.js';
 import { ENTITY_TAG, RESERVED_KEYS } from './dialect/dialect.js';
 import {
   CypherNode,
@@ -1113,7 +1114,7 @@ function resolveValue(
   if (!Object.hasOwn(params, source.name)) {
     throw new SemanticError(`Missing parameter $${source.name}`, { position: source.position });
   }
-  return params[source.name] ?? null;
+  return parameterValue(params, source.name, source.position);
 }
 
 function requireRow(row: Row | undefined): Row {
@@ -1268,7 +1269,9 @@ function checkPropertyValue(
     ) {
       throw new SemanticError(
         `Property ${JSON.stringify(key)} cannot be set to a ${Array.isArray(item) ? 'nested list' : 'map, node, or relationship'}`,
-        { hint: 'Property values must be strings, numbers, booleans, or lists of those.' },
+        {
+          hint: 'Property values must be strings, numbers, booleans, temporal values, durations, or lists of those.',
+        },
       );
     }
   }

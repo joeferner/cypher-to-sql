@@ -211,6 +211,33 @@ describe('parse: clauses', () => {
       expect((error as CypherSyntaxError).position).toMatchObject({ line: 2 });
     }
   });
+
+  it('words syntax errors for people and LLMs, with a hint for common mistakes', () => {
+    const failure = (cypher: string): CypherSyntaxError => {
+      try {
+        parse(cypher);
+      } catch (error) {
+        return error as CypherSyntaxError;
+      }
+      throw new Error(`Expected ${cypher} to fail`);
+    };
+    // The end of the query in words, grammar token names as words, a short list.
+    const end = failure('MATCH (n) RETURN n,');
+    expect(end.message).toMatch(/^Invalid Cypher: the query ended too early, expecting one of /);
+    expect(end.message).not.toMatch(/<EOF>|SP\b|DecimalInteger/);
+    expect(end.message).toMatch(/, \.\.\. \(line 1, column 19\)$/);
+    expect(failure('MATCH (n)').hint).toBe('A query that does not write ends with RETURN.');
+    expect(failure('MATCH (n) RETRUN n').hint).toBe('Did you mean RETURN?');
+    expect(failure('MACTH (n) RETURN n').hint).toBe('Did you mean MATCH?');
+    expect(failure("RETURN 'abc").hint).toMatch(/is not closed/);
+    expect(failure("RETURN 1 AS 'a'").hint).toMatch(/backticks/);
+    // Constructs of other Cypher versions, with what to do instead.
+    expect(failure('RETURN reduce(s = 0, x IN [1] | s + x)').hint).toMatch(/^reduce\(\) is not/);
+    expect(failure('CALL { RETURN 1 AS x } RETURN x').hint).toMatch(/^CALL \{ \.\.\. \}/);
+    expect(failure('MATCH (n) RETURN COUNT { (n)-->() }').hint).toMatch(/size\(\[/);
+    expect(failure("LOAD CSV FROM 'f' AS r RETURN r").hint).toMatch(/UNWIND \$rows/);
+    expect(failure('MATCH (n) WHERE RETURN n').hint).toBeUndefined();
+  });
 });
 
 describe('parse: patterns', () => {

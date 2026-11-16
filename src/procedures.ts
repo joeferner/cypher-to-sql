@@ -2,6 +2,7 @@
 // with `CALL name(args) YIELD ...`. The library has no built-in procedures.
 
 import { CypherTypeError, SemanticError, type SourcePosition } from './errors.js';
+import { checkValue } from './parameters.js';
 import { isCypherMap, type CypherValue } from './values.js';
 
 /** The type of a procedure input or output. Every type also accepts null. */
@@ -93,7 +94,19 @@ export function runProcedure(
     }
     args[input.name] = input.type === 'FLOAT' && typeof value === 'bigint' ? Number(value) : value;
   });
-  return procedure
-    .call(args)
-    .map((row) => procedure.outputs.map((output) => row[output.name] ?? null));
+  return procedure.call(args).map((row) =>
+    procedure.outputs.map((output) => {
+      const subject = (path: string): string =>
+        `Output \`${output.name}\`${path ? ` (at ${path})` : ''} of ${name}()`;
+      const value = checkValue(row[output.name], subject, position);
+      if (!acceptsValue(output.type, value)) {
+        throw new CypherTypeError(`${subject('')} must be ${output.type}`, {
+          code: 'InvalidArgumentType',
+          position,
+          hint: `The procedure ${name} returned a value that does not match its declared output type.`,
+        });
+      }
+      return output.type === 'FLOAT' && typeof value === 'bigint' ? Number(value) : value;
+    }),
+  );
 }

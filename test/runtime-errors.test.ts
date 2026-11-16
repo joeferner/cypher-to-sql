@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   createGraph,
   CypherArgumentError,
+  CypherNode,
+  CypherTemporal,
   CypherTypeError,
   type CypherError,
   type CypherValue,
@@ -40,6 +42,29 @@ for (const backend of testBackends()) {
       expr: string,
       params: Record<string, CypherValue> = {},
     ): Promise<CypherValue> => (await graph.query(`RETURN ${expr} AS v`, params))[0]!['v']!;
+
+    it('checks parameter values: no NaN, no JavaScript-only types, undefined is null', async () => {
+      const bad = async (p: unknown): Promise<CypherError> =>
+        error('RETURN $p AS v', { p: p as CypherValue });
+      for (const [p, constructor, message] of [
+        [Number.NaN, CypherArgumentError, /^Parameter \$p is NaN, which cannot be passed/],
+        [{ a: [Infinity] }, CypherArgumentError, /^Parameter \$p\.a\[0\] is Infinity/],
+        [new Date(0), CypherTypeError, /^Parameter \$p has a type Cypher does not have \(Date\)/],
+        [(): number => 1, CypherTypeError, /\(function\)/],
+        [new Map(), CypherTypeError, /\(Map\)/],
+        [new CypherNode('1', [], {}), CypherTypeError, /is a CypherNode/],
+        [new CypherTemporal('date', 'nope'), CypherArgumentError, /^Parameter \$p: Invalid date/],
+      ] as const) {
+        const e = await bad(p);
+        expect(e, message.source).toBeInstanceOf(constructor);
+        expect(e.message).toMatch(message);
+      }
+      expect((await bad(new Date(0))).hint).toMatch(/new CypherTemporal\('datetime'/);
+      expect(await v('$p', { p: { a: undefined, b: [undefined] } as never })).toEqual({
+        a: null,
+        b: [null],
+      });
+    });
 
     it('raises a type error for values of the wrong type, with its position', async () => {
       const e = await error('MATCH (n:N) WHERE n.name RETURN n');

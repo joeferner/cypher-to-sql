@@ -12,6 +12,7 @@ import {
 import type * as ast from '../ast.js';
 import { CypherSyntaxError, UnsupportedFeatureError, type SourcePosition } from '../errors.js';
 import { CypherLexer } from './generated/CypherLexer.js';
+import { describeSyntaxError } from './syntax-errors.js';
 import {
   CypherParser,
   OC_ExpressionContext,
@@ -68,7 +69,7 @@ const MAX_INT64 = 2n ** 63n - 1n;
 export function parse(cypher: string): ast.Query {
   const lexer = new CypherLexer(CharStream.fromString(cypher));
   const parser = new CypherParser(new CommonTokenStream(lexer));
-  const errors = new ThrowingErrorListener();
+  const errors = new ThrowingErrorListener(cypher);
   lexer.removeErrorListeners();
   lexer.addErrorListener(errors);
   parser.removeErrorListeners();
@@ -93,6 +94,10 @@ export function parse(cypher: string): ast.Query {
 }
 
 class ThrowingErrorListener extends BaseErrorListener {
+  public constructor(private readonly source: string) {
+    super();
+  }
+
   public override syntaxError<S extends Token, T extends ATNSimulator>(
     _recognizer: Recognizer<T>,
     offendingSymbol: S | null,
@@ -101,8 +106,14 @@ class ThrowingErrorListener extends BaseErrorListener {
     msg: string,
     _e: RecognitionException | null,
   ): void {
-    throw new CypherSyntaxError(`Invalid Cypher: ${msg}`, {
+    const { message, hint } = describeSyntaxError(
+      this.source,
+      msg,
+      offendingSymbol?.text ?? undefined,
+    );
+    throw new CypherSyntaxError(message, {
       position: { line, column, offset: offendingSymbol?.start ?? -1 },
+      hint,
     });
   }
 }

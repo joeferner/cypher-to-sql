@@ -30,6 +30,23 @@ const procedures: Procedures = {
     },
   },
   'util.nothing': { inputs: [], outputs: [], call: () => [] },
+  // Returns its input as `v`, whatever it is; `f` is declared FLOAT.
+  'util.echo': {
+    inputs: [{ name: 'kind', type: 'STRING' }],
+    outputs: [
+      { name: 'v', type: 'ANY' },
+      { name: 'f', type: 'FLOAT' },
+    ],
+    call: ({ kind }) => {
+      const values: Record<string, unknown> = {
+        nan: { v: Number.NaN },
+        date: { v: new Date(0) },
+        string: { f: 'x' },
+        integer: { f: 2n },
+      };
+      return [values[kind as string] as Record<string, never>];
+    },
+  },
 };
 
 for (const backend of testBackends()) {
@@ -106,6 +123,19 @@ for (const backend of testBackends()) {
     it('checks parameter arguments when the query runs', async () => {
       await expect(read.query('CALL geo.city($n, 1)', { n: 5n })).rejects.toThrow(CypherTypeError);
       await expect(read.query('CALL geo.city', { name: 'X' })).rejects.toThrow(SemanticError);
+    });
+
+    it('checks the values a procedure returns against Cypher and the declared types', async () => {
+      const echo = (kind: string): Promise<unknown> =>
+        read.query('CALL util.echo($kind) YIELD v, f RETURN v, f', { kind });
+      await expect(echo('nan')).rejects.toThrow(
+        /^Output `v` of util\.echo\(\) is NaN, which cannot be passed/,
+      );
+      await expect(echo('date')).rejects.toThrow(/has a type Cypher does not have \(Date\)/);
+      await expect(echo('string')).rejects.toThrow(CypherTypeError);
+      await expect(echo('string')).rejects.toThrow(/^Output `f` of util\.echo\(\) must be FLOAT/);
+      // An integer for a FLOAT output is converted, as for inputs.
+      expect(await echo('integer')).toEqual([{ v: null, f: 2 }]);
     });
 
     it('does not support arguments from the rows yet', () => {

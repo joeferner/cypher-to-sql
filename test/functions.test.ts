@@ -157,7 +157,9 @@ for (const backend of testBackends()) {
       try {
         compile('nosuch(1)');
       } catch (error) {
-        expect((error as SemanticError).hint).toMatch(/Supported functions: .*toupper/);
+        expect((error as SemanticError).hint).toMatch(
+          /Supported functions: .*toUpper,.*; aggregates: avg, collect/,
+        );
       }
     });
 
