@@ -152,7 +152,7 @@ The [benchmarks](bench/README.md) run one query corpus on SQLite, PostgreSQL, an
 | `MATCH (a {key: row.from}) MATCH (b {key: row.to}) CREATE (a)-[:LINK]->(b)` | 41,656 |      3,903 | 8,564 | 10,652 |   18,292 |
 
 - **Write properties inline in `CREATE`.** It is one statement per row, faster than Neo4j on SQLite; `SET n += row.props` adds two more statements and is 4–15 times slower.
-- **Relationships between existing nodes** (`MATCH` both ends by a key from the row, then `CREATE` or `MERGE`) use the key's index: as fast as the native engines on SQLite, and linear in the batch on every database.
+- **Relationships between existing nodes** (`MATCH` both ends by a key from the row, then `CREATE` or `MERGE`) use the key's index: as fast as the native engines on SQLite, and linear in the batch on every database. For a key of several properties (`{doc: row.doc, id: row.id}`), declare a [composite index](docs/schema.md#composite-and-unique-indexes).
 - **`MERGE` of nodes** is linear in the batch too, but runs 3–4 statements per row: 12–140 times slower than Neo4j and ArcadeDB. Load nodes that are known to be new with `CREATE`.
 - **`idStrategy: { kind: 'generator', ... }`** makes plain `CREATE` about 1.6 times faster on SQLite and PostgreSQL.
 - A single query is limited to 30 seconds (`timeoutMs`) and 100,000 created entities (`maxCreatedEntities`); raise them on the writing graph for larger batches.

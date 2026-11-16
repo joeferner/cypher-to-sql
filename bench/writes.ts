@@ -136,16 +136,20 @@ async function open(name: string): Promise<Target> {
   throw new Error(`Unknown dialect ${name}; known: sqlite, postgres, mysql`);
 }
 
-/** Node rows as a file would give them: integer keys and a few properties. */
+/**
+ * Node rows as a file would give them: integer keys and a few properties,
+ * among them `doc`, the document the node comes from (one per batch, as when
+ * each file is loaded on its own).
+ */
 const nodeRows = (n: number): CypherValue[] =>
   Array.from({ length: n }, (_, i) => ({
     key: BigInt(i),
-    props: { name: `item ${i}`, v: BigInt(i % 100), score: i / 7 },
+    props: { name: `item ${i}`, v: BigInt(i % 100), score: i / 7, doc: 1n },
   }));
 
-/** Relationship rows: each node to the next, by key. */
+/** Relationship rows: each node to the next, by key (and by document and key). */
 const linkRows = (n: number): CypherValue[] =>
-  Array.from({ length: n }, (_, i) => ({ from: BigInt(i), to: BigInt((i + 1) % n) }));
+  Array.from({ length: n }, (_, i) => ({ doc: 1n, from: BigInt(i), to: BigInt((i + 1) % n) }));
 
 const QUERIES = {
   createInline:
@@ -156,6 +160,9 @@ const QUERIES = {
     'UNWIND $rows AS row MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) CREATE (a)-[:LINK]->(b)',
   mergeLinks:
     'UNWIND $rows AS row MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) MERGE (a)-[:LINK]->(b)',
+  // A node identified by its document and its key within it (#84).
+  createLinksTwoKeys:
+    'UNWIND $rows AS row MATCH (a:Item {doc: row.doc, key: row.from}) MATCH (b:Item {doc: row.doc, key: row.to}) CREATE (a)-[:LINK2]->(b)',
 };
 
 interface Result {
@@ -208,7 +215,11 @@ async function engine(name: string): Promise<Engine> {
       const mapping: GraphMapping = {
         ...defaultMapping,
         prefix: `w${graphs++}_`,
-        nodes: { ...defaultMapping.nodes, propertyTypes: { key: 'integer' } },
+        nodes: {
+          ...defaultMapping.nodes,
+          propertyTypes: { key: 'integer', doc: 'integer' },
+          indexes: [{ keys: ['doc', 'key'] }],
+        },
       };
       await migrate({ dialect: target.dialect, executor: target.executor, mapping });
       let next = 1;
@@ -247,6 +258,9 @@ function neo4jEngine(url: string): Engine {
       }
       await driver.executeQuery(
         'CREATE INDEX bench_item_key IF NOT EXISTS FOR (n:Item) ON (n.key)',
+      );
+      await driver.executeQuery(
+        'CREATE INDEX bench_item_doc_key IF NOT EXISTS FOR (n:Item) ON (n.doc, n.key)',
       );
       await driver.executeQuery('CALL db.awaitIndexes()');
       return async (cypher, params) => {
@@ -287,7 +301,10 @@ function arcadeEngine(url: string): Engine {
       await sql('CREATE VERTEX TYPE Item');
       await sql('CREATE PROPERTY Item.key LONG');
       await sql('CREATE INDEX ON Item (key) NOTUNIQUE');
+      await sql('CREATE PROPERTY Item.doc LONG');
+      await sql('CREATE INDEX ON Item (doc, key) NOTUNIQUE');
       await sql('CREATE EDGE TYPE LINK');
+      await sql('CREATE EDGE TYPE LINK2');
       return async (cypher, params) => {
         const json = await post(
           `command/${DATABASE}`,
@@ -369,11 +386,18 @@ async function main(): Promise<void> {
           await run(graph, 'MERGE, nodes exist', QUERIES.merge, nodeRows(size));
           await run(graph, 'CREATE relationships', QUERIES.createLinks, linkRows(size));
           await run(graph, 'MERGE, relationships exist', QUERIES.mergeLinks, linkRows(size));
+          await run(
+            graph,
+            'CREATE relationships, two keys',
+            QUERIES.createLinksTwoKeys,
+            linkRows(size),
+          );
           // The writes did what they say: MERGE matched instead of creating, and SET wrote.
           for (const check of [
             'MATCH (n:Item) RETURN count(n) AS c',
             'MATCH (n:Item) WHERE n.name IS NOT NULL RETURN count(n) AS c',
             'MATCH (:Item)-[r:LINK]->(:Item) RETURN count(r) AS c',
+            'MATCH (:Item)-[r:LINK2]->(:Item) RETURN count(r) AS c',
           ]) {
             const count = await graph(check, {});
             if (count !== size) {

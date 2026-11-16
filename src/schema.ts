@@ -5,11 +5,12 @@
 
 import type { Dialect } from './dialect/dialect.js';
 import { SchemaError } from './errors.js';
-import type { SqlExecutor, SqlTx } from './executor.js';
+import type { Row, SqlExecutor, SqlTx } from './executor.js';
 import { stringifyCypherJson } from './json.js';
 import {
   defaultMapping,
   validateMapping,
+  type DeclaredIndex,
   type GraphMapping,
   type ResolvedMapping,
 } from './mapping.js';
@@ -53,13 +54,63 @@ export function schemaSql(
   return [
     ...ddl.tables(),
     ...ddl.standardIndexes(),
-    ...declaredKeys(m).flatMap(({ kind, key }) => {
-      const sql = ddl.propertyIndex(kind, key);
-      return sql ? [sql.sql] : [];
-    }),
+    ...propertyIndexes(ddl, m).map((index) => index.sql),
     ...ddl.versionTable(SCHEMA_VERSION),
   ];
 }
+
+/**
+ * The index of each declared property, then each composite or unique index the
+ * mapping declares (`indexes`), leaving out those the database would not use.
+ */
+function propertyIndexes(ddl: Ddl, m: ResolvedMapping): IndexDdl[] {
+  const single = declaredKeys(m).map(({ kind, key }) => ddl.propertyIndex(kind, key));
+  const declared = (['nodes', 'edges'] as const).flatMap((kind) =>
+    (m[kind].indexes ?? []).map((index) => ddl.declaredIndex(kind, index)),
+  );
+  return [...single, ...declared].filter((index): index is IndexDdl => index !== undefined);
+}
+
+/**
+ * The composite or unique index the mapping declares over `keys` of the node
+ * or edge table (in `indexes`): `CREATE [UNIQUE] INDEX
+ * <table>_<column>_<keys>[_unique] ON <table> ((<expression>), ...)`, over the
+ * expressions the planner reads the properties with. Undefined where the
+ * database would not use it (MySQL, when a key is a string, date, or datetime).
+ */
+export function indexSql(
+  dialect: Dialect,
+  mapping: GraphMapping,
+  kind: 'nodes' | 'edges',
+  keys: readonly string[],
+  options: SchemaSqlOptions & { unique?: boolean } = {},
+): string | undefined {
+  const m = validateMapping(mapping);
+  const unique = options.unique === true;
+  const index = (m[kind].indexes ?? []).find(
+    (i) => i.keys.join('\u0000') === keys.join('\u0000') && (i.unique === true) === unique,
+  );
+  if (!index) {
+    throw new SchemaError(
+      `The mapping declares no ${unique ? 'unique ' : ''}index on the ${kind} properties ${JSON.stringify(keys)}`,
+    );
+  }
+  return new Ddl(dialect, m, options.ifNotExists ?? false).declaredIndex(kind, index)?.sql;
+}
+
+/** An index's DDL, name, table, and the expressions it is on. */
+interface IndexDdl {
+  sql: string;
+  name: string;
+  table: string;
+  expressions: string[];
+  /** The declared types of its keys, in order (for showing duplicated keys). */
+  types: PropertyType[];
+  unique?: boolean;
+}
+
+/** Duplicate keys listed in the error of a unique index that existing data violates. */
+const DUPLICATES_SHOWN = 10;
 
 /**
  * The expression index for the declared property `key` of the node or edge
@@ -119,8 +170,10 @@ const BATCH = 500;
  * - An older version: runs the data migrations from it, then records the new
  *   version. From 1: rewrites declared `date` and `datetime` strings as
  *   temporal values.
- * - Every run: creates the expression index of each declared property that
- *   has none (by name), so declaring a property and migrating adds its index.
+ * - Every run: creates the expression index of each declared property, and
+ *   each composite or unique index the mapping declares, that has none (by
+ *   name), so declaring one and migrating adds it. A unique index that the
+ *   existing rows violate is a `SchemaError` that lists duplicated keys.
  *
  * A version newer than the library's is a `SchemaError`. Run it from one
  * process (at deploy); it is safe to run again.
@@ -173,11 +226,32 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
       await tx.query(ddl.setVersion(SCHEMA_VERSION), []);
     }
 
-    for (const { kind, key } of declaredKeys(m)) {
-      const index = ddl.propertyIndex(kind, key);
-      if (index && !(await catalog.indexExistsByName(index.table, index.name))) {
-        await run(index.sql);
+    for (const index of propertyIndexes(ddl, m)) {
+      if (await catalog.indexExistsByName(index.table, index.name)) {
+        continue;
       }
+      if (index.unique) {
+        // Say which keys are duplicated, rather than the database's error.
+        const duplicates = await ddl.duplicates(tx, index, DUPLICATES_SHOWN);
+        if (duplicates.length > 0) {
+          const keys = duplicates.map((row) =>
+            JSON.stringify(
+              // Drivers return integers as bigint or text: show them as numbers.
+              index.expressions.map((_, i) => {
+                const value = row[`k${i}`];
+                const numeric = index.types[i] === 'integer' || index.types[i] === 'float';
+                return numeric && value !== null ? Number(value) : value;
+              }),
+            ),
+          );
+          throw new SchemaError(
+            `The unique index ${index.name} cannot be created: ${index.table} has rows with the same key, ` +
+              `for example ${keys.join(', ')}${duplicates.length === DUPLICATES_SHOWN ? ', ...' : ''}`,
+            { hint: 'Remove or change the duplicates, or declare the index without unique.' },
+          );
+        }
+      }
+      await run(index.sql);
     }
     return { from, to: SCHEMA_VERSION, created, converted, skipped };
   });
@@ -285,14 +359,30 @@ class Ddl {
   }
 
   /** `CREATE INDEX` with the index name, qualified on SQLite (attached databases). */
-  private index(name: string, table: string, parts: string): string {
+  private index(name: string, table: string, parts: string, unique = false): string {
     const ifNotExists = this.ifNotExists && this.d.name !== 'mysql' ? ' IF NOT EXISTS' : '';
     const indexName =
       this.d.name === 'sqlite' && this.m.schema
         ? `${this.q(this.m.schema)}.${this.q(name)}`
         : this.q(name);
     const target = this.d.name === 'sqlite' ? this.q(table) : this.table(table);
-    return `CREATE INDEX${ifNotExists} ${indexName} ON ${target} ${parts}`;
+    return `CREATE ${unique ? 'UNIQUE ' : ''}INDEX${ifNotExists} ${indexName} ON ${target} ${parts}`;
+  }
+
+  /**
+   * At most `limit` keys that more than one row of the table has, for a unique
+   * index that would fail on them (rows with a null key part do not count, as
+   * the databases allow those twice).
+   */
+  public async duplicates(tx: SqlTx, index: IndexDdl, limit: number): Promise<Row[]> {
+    const keys = index.expressions.map((e, i) => `${e} AS k${i}`).join(', ');
+    const groups = index.expressions.map((_, i) => `k${i}`).join(', ');
+    const notNull = index.expressions.map((e) => `${e} IS NOT NULL`).join(' AND ');
+    return tx.query(
+      `SELECT ${groups}, count(*) AS n FROM (SELECT ${keys} FROM ${this.table(index.table)} ` +
+        `WHERE ${notNull}) AS d GROUP BY ${groups} HAVING count(*) > 1 LIMIT ${limit}`,
+      [],
+    );
   }
 
   public tables(): string[] {
@@ -376,10 +466,59 @@ class Ddl {
   }
 
   /** The expression index of a declared property, or undefined where it would go unused. */
-  public propertyIndex(
-    kind: 'nodes' | 'edges',
-    key: string,
-  ): { sql: string; name: string; table: string } | undefined {
+  public propertyIndex(kind: 'nodes' | 'edges', key: string): IndexDdl | undefined {
+    const t = this.m[kind];
+    const expression = this.keyExpression(kind, key);
+    if (expression === undefined) {
+      return undefined;
+    }
+    const name = indexName(t.table, `${t.properties}_${key}`);
+    return {
+      sql: this.index(name, t.table, `((${expression}))`),
+      name,
+      table: t.table,
+      expressions: [expression],
+      types: [t.propertyTypes![key]!],
+    };
+  }
+
+  /**
+   * A composite or unique index of the mapping (`DeclaredIndex`), named
+   * `<table>_<column>_<keys>` (`_unique` after a unique one), over the same
+   * expressions as the properties' own indexes; undefined where a key's would
+   * go unused (MySQL), so the whole index would too.
+   */
+  public declaredIndex(kind: 'nodes' | 'edges', index: DeclaredIndex): IndexDdl | undefined {
+    const t = this.m[kind];
+    const expressions: string[] = [];
+    for (const key of index.keys) {
+      const expression = this.keyExpression(kind, key);
+      if (expression === undefined) {
+        return undefined;
+      }
+      expressions.push(expression);
+    }
+    const unique = index.unique === true;
+    const name = indexName(
+      t.table,
+      `${t.properties}_${index.keys.join('_')}${unique ? '_unique' : ''}`,
+    );
+    return {
+      sql: this.index(name, t.table, `(${expressions.map((e) => `(${e})`).join(', ')})`, unique),
+      name,
+      table: t.table,
+      expressions,
+      types: index.keys.map((key) => t.propertyTypes![key]!),
+      unique,
+    };
+  }
+
+  /**
+   * The expression a declared property `key` is read with, which its indexes
+   * are on, or undefined where an index on it would go unused: on MySQL for a
+   * string, date, or datetime.
+   */
+  private keyExpression(kind: 'nodes' | 'edges', key: string): string | undefined {
     const t = this.m[kind];
     const type = t.propertyTypes?.[key];
     if (!type) {
@@ -387,23 +526,15 @@ class Ddl {
     }
     const d = this.d;
     const properties = this.q(t.properties);
-    let expression: string;
     if (type === 'date' || type === 'datetime') {
-      if (d.name === 'mysql') {
-        return undefined;
-      }
       // The sort key, as compareKnownTemporal compares it (src/planner/expr.ts).
-      expression = d.orderString(
-        d.typedMember(d.jsonLiteralMember(properties, key), '~k', 'string'),
-      );
-    } else {
-      if (d.name === 'mysql' && type === 'string') {
-        return undefined;
-      }
-      expression = d.typedMember(properties, key, type);
+      return d.name === 'mysql'
+        ? undefined
+        : d.orderString(d.typedMember(d.jsonLiteralMember(properties, key), '~k', 'string'));
     }
-    const name = indexName(t.table, `${t.properties}_${key}`);
-    return { sql: this.index(name, t.table, `((${expression}))`), name, table: t.table };
+    return d.name === 'mysql' && type === 'string'
+      ? undefined
+      : d.typedMember(properties, key, type);
   }
 
   public versionTable(version: number): string[] {

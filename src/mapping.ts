@@ -2,6 +2,20 @@ import { MappingError } from './errors.js';
 import { isPropertyType, PROPERTY_TYPES, type PropertyTypes } from './property-types.js';
 
 /**
+ * An index over one or more declared properties, which `migrate` and
+ * `schemaSql` create in addition to the index of each declared property: a
+ * composite index for a key of several properties (`(n {doc: $d, id: $i})`),
+ * and with `unique`, one the database enforces. Uniqueness holds across the
+ * whole table, every label (or relationship type).
+ */
+export interface DeclaredIndex {
+  /** Declared property keys, in index order. */
+  keys: readonly string[];
+  /** A unique index: a write that would duplicate a key is a `CypherConstraintError`. */
+  unique?: boolean | undefined;
+}
+
+/**
  * Table and column names for the generic storage layout:
  * one node table and one edge table, with labels and properties stored as JSON.
  */
@@ -23,6 +37,8 @@ export interface GraphMapping {
     properties: string;
     /** Declared types of node properties, by key, for every label. */
     propertyTypes?: PropertyTypes | undefined;
+    /** Composite or unique indexes over declared node properties. */
+    indexes?: readonly DeclaredIndex[] | undefined;
   };
   edges: {
     table: string;
@@ -34,6 +50,8 @@ export interface GraphMapping {
     properties: string;
     /** Declared types of relationship properties, by key, for every relationship type. */
     propertyTypes?: PropertyTypes | undefined;
+    /** Composite or unique indexes over declared relationship properties. */
+    indexes?: readonly DeclaredIndex[] | undefined;
   };
 }
 
@@ -77,12 +95,15 @@ export function validateMapping(mapping: GraphMapping): ResolvedMapping {
     check('prefix', mapping.prefix);
   }
   for (const kind of ['nodes', 'edges'] as const) {
-    const { propertyTypes, ...columns } = mapping[kind];
+    const { propertyTypes, indexes, ...columns } = mapping[kind];
     for (const [key, value] of Object.entries(columns)) {
       check(`${kind}.${key}`, value);
     }
     if (propertyTypes !== undefined) {
       checkPropertyTypes(`${kind}.propertyTypes`, propertyTypes);
+    }
+    if (indexes !== undefined) {
+      checkIndexes(`${kind}.indexes`, indexes, propertyTypes ?? {});
     }
   }
   const prefix = mapping.prefix ?? '';
@@ -103,6 +124,45 @@ const RESOLVED = new WeakSet<GraphMapping>();
 
 function isResolved(mapping: GraphMapping): mapping is ResolvedMapping {
   return RESOLVED.has(mapping);
+}
+
+/**
+ * Checks declared indexes: a list of `{ keys, unique }`, each with one or more
+ * distinct keys that are all declared properties (so that the index's
+ * expressions are the ones the planner reads them with), and no two with the
+ * same keys and uniqueness.
+ */
+function checkIndexes(path: string, indexes: unknown, types: PropertyTypes): void {
+  if (!Array.isArray(indexes)) {
+    throw new MappingError(`Mapping value ${path} must be a list of { keys, unique } objects`);
+  }
+  const seen = new Set<string>();
+  indexes.forEach((index: unknown, i) => {
+    const at = `${path}[${i}]`;
+    const { keys, unique } = (index ?? {}) as { keys?: unknown; unique?: unknown };
+    if (!Array.isArray(keys) || keys.length === 0) {
+      throw new MappingError(`Mapping value ${at}.keys must be a non-empty list of property keys`);
+    }
+    for (const key of keys) {
+      if (typeof key !== 'string' || !Object.hasOwn(types, key)) {
+        throw new MappingError(
+          `Mapping value ${at}.keys has ${JSON.stringify(key)}, which is not a declared property`,
+          { hint: 'Declare the type of every key of an index in propertyTypes.' },
+        );
+      }
+    }
+    if (new Set(keys).size !== keys.length) {
+      throw new MappingError(`Mapping value ${at}.keys repeats a key`);
+    }
+    if (unique !== undefined && typeof unique !== 'boolean') {
+      throw new MappingError(`Mapping value ${at}.unique must be true or false`);
+    }
+    const id = `${JSON.stringify(keys)}${unique === true ? ' unique' : ''}`;
+    if (seen.has(id)) {
+      throw new MappingError(`Mapping value ${at} declares the same index twice`);
+    }
+    seen.add(id);
+  });
 }
 
 function checkPropertyTypes(path: string, types: unknown): void {
