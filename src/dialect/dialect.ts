@@ -78,6 +78,14 @@ export interface Dialect {
    */
   typedMember(objectExpr: string, key: string, type: ScalarType): string;
 
+  /**
+   * The member `key` of the JSON object `objectExpr`, as JSON, with the key
+   * written into the SQL as a literal (as `typedMember` does), for a declared
+   * temporal property: its sort key `typedMember(<this>, '~k', 'string')` is
+   * then an expression an index can match.
+   */
+  jsonLiteralMember(objectExpr: string, key: string): string;
+
   /** Condition: the JSON array of strings `labelsExpr` contains the bound label. */
   hasLabel(labelsExpr: string, labelPlaceholder: string): string;
 

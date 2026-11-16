@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   createGraph,
+  CypherTemporal,
   defaultMapping,
   MappingError,
   SemanticError,
@@ -78,8 +79,9 @@ for (const backend of testBackends()) {
           age: 36n,
           score: 1.0,
           active: true,
-          born: '1815-12-10',
-          seen: '2024-02-29T13:45:00.5+01:00',
+          // Declared dates and date-times are temporal values (#65).
+          born: new CypherTemporal('date', '1815-12-10'),
+          seen: new CypherTemporal('datetime', '2024-02-29T13:45:00.500+01:00'),
           other: [1n, 'x'],
         },
       ]);
@@ -162,6 +164,76 @@ for (const backend of testBackends()) {
       await expect(graph.query('CREATE ({score: $s})', { s: 1n })).rejects.toThrow(
         /declared as float/,
       );
+    });
+
+    it('reads a declared date or datetime as a temporal value that compares as one (#65)', async () => {
+      const graph = await setup();
+      const date = (text: string): CypherTemporal => new CypherTemporal('date', text);
+      // From ISO text or from a temporal value, in CREATE, SET, and SET +=.
+      await graph.query(
+        "CREATE ({k: 1, born: '2024-03-01', seen: '2024-02-29T13:45:00.5+01:00'}), " +
+          "({k: 2, born: date('2023-01-01'), seen: datetime('2024-02-29T12:00Z')}), ({k: 3})",
+      );
+      await graph.query('MATCH (n {k: 3}) SET n.born = $b SET n += $p', {
+        b: '2022-06-30',
+        p: { seen: new CypherTemporal('datetime', '2024-02-29T12:40Z') },
+      });
+      const keys = async (where: string, params = {}): Promise<CypherValue[]> =>
+        (await graph.query(`MATCH (n) WHERE ${where} RETURN n.k AS k ORDER BY k`, params)).map(
+          (r) => r['k']!,
+        );
+      // Comparisons with a literal date, a date parameter, or one from the query.
+      expect(await keys("n.born > date('2023-06-01')")).toEqual([1n]);
+      expect(await keys("date('2023-06-01') > n.born")).toEqual([2n, 3n]);
+      expect(await keys('n.born >= $d', { d: date('2023-01-01') })).toEqual([1n, 2n]);
+      expect(await keys('n.born = $d', { d: date('2023-01-01') })).toEqual([2n]);
+      expect(await keys('n.born < date({year: 2023, month: 1, day: 2})')).toEqual([2n, 3n]);
+      expect(await keys("n.born IN [date('2022-06-30')]")).toEqual([3n]);
+      // Datetimes by instant: 13:45+01:00 is 12:45Z.
+      expect(await keys("n.seen < datetime('2024-02-29T12:41Z')")).toEqual([2n, 3n]);
+      expect(await keys("n.seen = datetime('2024-02-29T12:00Z')")).toEqual([2n]);
+      // As in Cypher, a string is not a date: = is false and an ordering is null.
+      expect(await keys("n.born = '2024-03-01'")).toEqual([]);
+      expect(await keys('n.born > $s', { s: '2000-01-01' })).toEqual([]);
+      // Returned as temporal values, with components, sorted by date.
+      expect(
+        await graph.query(
+          'MATCH (n) WHERE n.born IS NOT NULL RETURN n.born AS b, n.born.year AS y, n.seen AS s ORDER BY n.born',
+        ),
+      ).toEqual([
+        { b: date('2022-06-30'), y: 2022n, s: new CypherTemporal('datetime', '2024-02-29T12:40Z') },
+        { b: date('2023-01-01'), y: 2023n, s: new CypherTemporal('datetime', '2024-02-29T12:00Z') },
+        {
+          b: date('2024-03-01'),
+          y: 2024n,
+          s: new CypherTemporal('datetime', '2024-02-29T13:45:00.500+01:00'),
+        },
+      ]);
+      expect((await props(graph))[0]).toMatchObject({ born: date('2024-03-01') });
+      // A temporal value of the other kind, or a duration, is still rejected.
+      await expect(graph.query("CREATE ({born: datetime('2024-03-01T00:00Z')})")).rejects.toThrow(
+        /declared as date in the mapping, but the value is the datetime/,
+      );
+      // MERGE matches a date only with a date: with a string it would create a
+      // node on every run, so it is an error.
+      await expect(graph.query("MERGE ({k: 4, born: '2024-03-01'})")).rejects.toThrow(
+        /MERGE matches the date property "born" only with a date/,
+      );
+      await graph.query("MERGE ({k: 4, born: date('2024-03-01')})");
+      await graph.query("MERGE ({k: 4, born: date('2024-03-01')})");
+      expect(await keys('n.k = 4')).toEqual([4n]);
+    });
+
+    it('serves a declared date compared with a known date by its sort key, which an index can match', () => {
+      const sql = createGraph({
+        dialect: sqlite(),
+        executor: sqliteExecutor(createSqliteDatabase()),
+        mapping,
+      })
+        .compile("MATCH (n) WHERE n.born > date('2024-01-01') RETURN n")
+        .explain();
+      // The expression of the index in docs/schema.md.
+      expect(sql).toContain(`((n0."properties" -> '$."born"') ->> '$."~k"') > ?`);
     });
 
     it('checks relationship properties with the edge types', async () => {

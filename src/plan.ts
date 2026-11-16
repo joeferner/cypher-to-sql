@@ -16,7 +16,7 @@ import { parseCypherJson, stringifyCypherJson, stringifySqlJson } from './json.j
 import { declaredValue, type PropertyTypes } from './property-types.js';
 import { idsJson, pathsJson, shortestPaths } from './search.js';
 import type { Expression } from './ast.js';
-import { TemporalError } from './temporal.js';
+import { parseTemporal, sortKey, TemporalError } from './temporal.js';
 import { evaluateKnown, TypeMismatch } from './temporal-functions.js';
 import { runProcedure, type Procedure } from './procedures.js';
 import { parameterValue } from './parameters.js';
@@ -167,8 +167,14 @@ export interface ParameterComparison {
   kind: 'parameterAs';
   name: string;
   position: SourcePosition;
-  type: 'string' | 'integer' | 'float';
+  /**
+   * The property's declared type. For `date` and `datetime` the value is the
+   * sort key (`~k`) of a temporal value of that kind.
+   */
+  type: 'string' | 'integer' | 'float' | 'date' | 'datetime';
   op: '=' | '<' | '<=' | '>' | '>=';
+  /** Instead of the parameter `name`: a temporal function of known arguments. */
+  expression?: Expression;
 }
 
 /** Where the value of a variable in a written row comes from. */
@@ -877,7 +883,7 @@ function resolveBind(
       for (const { key, value } of bind.entries) {
         const resolved = resolveValue(value, options.params, row, state);
         if (resolved !== null) {
-          map[key] = checkPropertyValue(key, resolved, bind.types);
+          map[key] = checkPropertyValue(key, resolved, bind.types, bind.noNulls);
         } else if (bind.noNulls) {
           throw new SemanticError(
             `MERGE cannot use a null property value (for ${JSON.stringify(key)})`,
@@ -964,26 +970,7 @@ function resolveBind(
       return stringifyCypherJson(runProcedure(bind.name, bind.procedure, values, bind.position));
     }
     case 'temporal':
-      try {
-        return stringifyCypherJson(
-          evaluateKnown(bind.expression, (name, position) =>
-            resolveValue({ kind: 'parameter', name, position }, options.params, row),
-          ),
-        );
-      } catch (error) {
-        if (error instanceof TypeMismatch) {
-          throw new CypherTypeError(error.message, {
-            code: 'InvalidArgumentType',
-            position: bind.expression.position,
-          });
-        }
-        throw error instanceof TemporalError
-          ? new CypherArgumentError(error.message, {
-              code: 'InvalidArgumentValue',
-              position: bind.expression.position,
-            })
-          : error;
-      }
+      return stringifyCypherJson(knownTemporal(bind.expression, options, row));
     case 'computedId': {
       const computed = computedValue(state, bind.index, bind.column);
       if (computed.raw !== undefined) {
@@ -1013,14 +1000,42 @@ function resolveBind(
       return state.forgotten;
     case 'parameterAs':
     case 'parameterFits': {
-      const value = resolveValue(
-        { kind: 'parameter', name: bind.name, position: bind.position },
-        options.params,
-        row,
-      );
+      const value = bind.expression
+        ? knownTemporal(bind.expression, options, row)
+        : resolveValue(
+            { kind: 'parameter', name: bind.name, position: bind.position },
+            options.params,
+            row,
+          );
       const compared = compareParameter(value, bind);
       return bind.kind === 'parameterAs' ? compared.value : compared.fits;
     }
+  }
+}
+
+/** A temporal function whose arguments are known before the query runs, evaluated. */
+function knownTemporal(
+  expression: Expression,
+  options: ExecuteOptions,
+  row: Row | undefined,
+): CypherValue {
+  try {
+    return evaluateKnown(expression, (name, position) =>
+      resolveValue({ kind: 'parameter', name, position }, options.params, row),
+    );
+  } catch (error) {
+    if (error instanceof TypeMismatch) {
+      throw new CypherTypeError(error.message, {
+        code: 'InvalidArgumentType',
+        position: expression.position,
+      });
+    }
+    throw error instanceof TemporalError
+      ? new CypherArgumentError(error.message, {
+          code: 'InvalidArgumentValue',
+          position: expression.position,
+        })
+      : error;
   }
 }
 
@@ -1037,6 +1052,11 @@ function compareParameter(
   }
   /** A value of another type: `=` is false, an ordering is null. */
   const mismatch = { value: null, fits: op === '=' ? 0 : null };
+  if (type === 'date' || type === 'datetime') {
+    return value instanceof CypherTemporal && value.kind === type
+      ? { value: sortKey(parseTemporal(type, value.text)), fits: 1 }
+      : mismatch;
+  }
   if (type === 'string') {
     return typeof value === 'string' ? { value, fits: 1 } : mismatch;
   }
@@ -1240,18 +1260,22 @@ function propertyPatch(
   return stringifyCypherJson(patch);
 }
 
-/** The value to store for the property `key`, checked (see `declaredValue`). */
+/**
+ * The value to store for the property `key`, checked (see `declaredValue`);
+ * `merging` for the properties of a MERGE pattern.
+ */
 function checkPropertyValue(
   key: string,
   value: CypherValue,
   types: PropertyTypes | undefined,
+  merging = false,
 ): CypherValue {
   if (RESERVED_KEYS.has(key)) {
     throw new SemanticError(`The property key ${JSON.stringify(key)} is reserved`);
   }
   const declared = types && Object.hasOwn(types, key) ? types[key] : undefined;
   if (declared) {
-    return declaredValue(key, value, declared);
+    return declaredValue(key, value, declared, merging);
   }
   const items = Array.isArray(value) ? value : [value];
   for (const item of items) {

@@ -160,6 +160,7 @@ export function sqlite(options: SqliteOptions = {}): Dialect {
     // `->>` returns the SQL value: INTEGER, REAL, TEXT, or 1/0 for booleans. An
     // index on `(properties ->> '$."key"')` matches this expression.
     typedMember: (objectExpr, key) => `(${objectExpr} ->> ${sqlStringLiteral(`$."${key}"`)})`,
+    jsonLiteralMember: (objectExpr, key) => `(${objectExpr} -> ${sqlStringLiteral(`$."${key}"`)})`,
     hasLabel: (labelsExpr, labelPlaceholder) =>
       `EXISTS (SELECT 1 FROM json_each(${labelsExpr}) WHERE json_each.value = ${labelPlaceholder})`,
     mergeProperties: (properties, patch) => `json_patch(${properties}, ${patch})`,
