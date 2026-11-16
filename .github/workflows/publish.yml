@@ -1,14 +1,24 @@
 name: Publish
 
-# Publishes to npm when a GitHub release is published. The release tag must be
-# v<version> of package.json. npm trusts this workflow (trusted publishing,
-# configured in the package's settings on npmjs.com for publish.yml), so no
-# token is needed; id-token: write lets npm verify the run. npm adds
-# provenance by itself when the repository is public.
+# Stages a release on npm when a GitHub release is published (or when run by
+# hand for an existing tag): the version is uploaded but not public until a
+# maintainer approves it on npmjs.com with 2FA (npm stage approve). The tag
+# must be v<version> of package.json. npm trusts this workflow (trusted
+# publishing, configured in the package's settings on npmjs.com for
+# publish.yml), so no token is needed; id-token: write lets npm verify the run.
+# npm adds provenance by itself when the repository is public.
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to stage, for example v1.1.0
+        required: true
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 jobs:
   publish:
@@ -20,6 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ env.TAG }}
           submodules: true
 
       - uses: actions/setup-node@v7
@@ -29,7 +40,7 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Check that the tag matches package.json
-        run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
+        run: test "v$(node -p 'require("./package.json").version')" = "${TAG}"
 
       - run: npm ci
 
@@ -37,9 +48,9 @@ jobs:
       - run: npm run db:up
       - run: npm test
 
-      # Trusted publishing needs npm 11.5.1 or later.
+      # Trusted publishing needs npm 11.5.1 or later, staged publishing a recent npm.
       - run: npm install -g npm@latest
-      - run: npm publish --access public
+      - run: npm stage publish --access public
 
       - if: always()
         run: npm run db:down
