@@ -34,6 +34,15 @@ export interface Expr {
    * unwrapped, so that the database sees it as one.
    */
   indexable?: boolean | undefined;
+  /**
+   * For a property declared as `date` or `datetime` (a temporal value in JSON):
+   * its sort key `~k` as a string, read with the key written into the SQL, so
+   * that a comparison with a value known before the query runs can be plain
+   * SQL an index on that expression serves.
+   */
+  temporalKey?: { kind: 'date' | 'datetime'; sql: string } | undefined;
+  /** For a temporal function whose arguments are known before the query runs: the call. */
+  knownTemporal?: ast.Expression | undefined;
 }
 
 /**
@@ -368,10 +377,16 @@ export class ExprCompiler {
     const table = b.mapping[entity.kind === 'node' ? 'nodes' : 'edges'];
     const column = b.entityColumn(entity.alias, entity.kind, 'properties');
     const declared = table.propertyTypes?.[key];
+    if (declared === 'date' || declared === 'datetime') {
+      // A temporal value, stored as the tagged JSON of temporalJson.
+      const member = b.dialect.jsonLiteralMember(column, key);
+      return {
+        ...json(member, true),
+        temporalKey: { kind: declared, sql: b.dialect.typedMember(member, '~k', 'string') },
+      };
+    }
     if (declared) {
-      // Dates and date-times are ISO 8601 strings.
-      const type: ScalarType = declared === 'date' || declared === 'datetime' ? 'string' : declared;
-      return { sql: b.dialect.typedMember(column, key, type), type, atomic: true };
+      return { sql: b.dialect.typedMember(column, key, declared), type: declared, atomic: true };
     }
     return json(b.dialect.jsonMember(column, b.bind({ kind: 'sql', value: key }), key), true);
   }
@@ -785,6 +800,18 @@ export class ExprCompiler {
       );
     }
 
+    // A declared date or datetime against a temporal value known before the
+    // query runs: their sort keys, plain. Datetimes only for an ordering, since
+    // equal instants in different offsets are not equal values.
+    const declared = left.temporalKey ? left : right.temporalKey ? right : undefined;
+    if (declared && op !== '<>') {
+      const other = declared === left ? right : left;
+      const { kind } = declared.temporalKey!;
+      if ((other.parameter || other.knownTemporal) && (kind === 'date' || op !== '=')) {
+        return this.compareKnownTemporal(op, declared, other, declared === right);
+      }
+    }
+
     const parameter = left.parameter ? left : right.parameter ? right : undefined;
     const known = parameter === left ? right : left;
     if (
@@ -888,6 +915,41 @@ export class ExprCompiler {
       return `(${comparison} AND (${fits} = 1 OR (${k!.sql} IS NULL AND ${unknown})))`;
     });
     return { ...boolean(sql), indexable: known.atomic };
+  }
+
+  /**
+   * A declared temporal property compared with a temporal value known before
+   * the query runs (a parameter, or a temporal function of literals and
+   * parameters), as `compareParameter` does for scalars: the property's sort
+   * key against the value's, which the runner binds when the value is a
+   * temporal value of the declared kind (see `parameterAs` in plan.ts).
+   */
+  private compareKnownTemporal(
+    op: Exclude<Comparison, '<>'>,
+    declared: Expr,
+    other: Expr,
+    declaredOnRight: boolean,
+  ): Expr {
+    const b = this.b;
+    const d = b.dialect;
+    const { kind, sql: key } = declared.temporalKey!;
+    const flipped = { '=': '=', '<': '>', '<=': '>=', '>': '<', '>=': '<=' } as const;
+    const columnOp = declaredOnRight ? flipped[op] : op;
+    const call = other.knownTemporal;
+    const source = other.parameter
+      ? { name: other.parameter.name, position: other.parameter.position }
+      : { name: '', position: call!.position, expression: call! };
+    const bind = { ...source, type: kind, op: columnOp };
+    const value = d.typedPlaceholder(b.bind({ kind: 'parameterAs', ...bind }), 'string');
+    const fits = d.typedPlaceholder(b.bind({ kind: 'parameterFits', ...bind }), 'integer');
+    const unknown = d.booleanLiteral(null);
+    // The same binary order for every operator, so that one index on
+    // `orderString(key)` serves them all (sort keys are ASCII digits).
+    const comparison = `(${d.orderString(key)} ${columnOp} ${d.orderString(value)})`;
+    return {
+      ...boolean(`(${comparison} AND (${fits} = 1 OR (${key} IS NULL AND ${unknown})))`),
+      indexable: true,
+    };
   }
 
   /** Comparison of two non-null native values of the same class. */

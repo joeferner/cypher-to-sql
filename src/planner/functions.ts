@@ -703,7 +703,10 @@ function temporalFunction(name: string): FunctionImpl {
     const { c, node } = call;
     const d = c.b.dialect;
     if (node.args.every(isKnownBeforeRun)) {
-      return result(d.jsonInput(c.b.bind({ kind: 'temporal', expression: node })), 'json');
+      return {
+        ...result(d.jsonInput(c.b.bind({ kind: 'temporal', expression: node })), 'json'),
+        knownTemporal: node,
+      };
     }
     if (!d.temporalCall) {
       throw new UnsupportedFeatureError(

@@ -145,6 +145,7 @@ export function mysql(): Dialect {
     jsonMember: (objectExpr, keyPlaceholder) =>
       `JSON_EXTRACT(${objectExpr}, ${memberPath(keyPlaceholder)})`,
     // A functional index on the same expression serves these (see examples/schema/mysql.sql).
+    jsonLiteralMember: (objectExpr, key) => `JSON_EXTRACT(${objectExpr}, ${literalPath(key)})`,
     typedMember: (objectExpr, key, type): string => {
       const member = `JSON_EXTRACT(${objectExpr}, ${literalPath(key)})`;
       switch (type) {

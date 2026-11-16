@@ -142,6 +142,7 @@ export function postgres(): Dialect {
       const text = `(${objectExpr} ->> ${sqlStringLiteral(key)})`;
       return type === 'string' ? text : `(${text}::${SQL_TYPES[type]})`;
     },
+    jsonLiteralMember: (objectExpr, key) => `(${objectExpr} -> ${sqlStringLiteral(key)})`,
     // `@>` can use a GIN index on the labels column.
     hasLabel: (labelsExpr, labelPlaceholder) =>
       `(${labelsExpr} @> jsonb_build_array(${labelPlaceholder}::text))`,

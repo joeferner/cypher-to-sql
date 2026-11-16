@@ -1,7 +1,11 @@
 import { SemanticError } from './errors.js';
-import type { CypherValue } from './values.js';
+import { CypherDuration, CypherTemporal, type CypherValue } from './values.js';
 
-/** Types a property can be declared with. Temporal values are ISO 8601 strings in JSON. */
+/**
+ * Types a property can be declared with. A `date` or `datetime` is stored as a
+ * temporal value (the tagged JSON of `date(...)`), and writes also take its
+ * ISO 8601 text.
+ */
 export const PROPERTY_TYPES = [
   'string',
   'integer',
@@ -36,10 +40,36 @@ const DATETIME =
  * as JSON parsers and most JavaScript give integers, or `30.0`) is stored as
  * that integer, since the declaration settles which it is. `30.5`, or an
  * integral float beyond 2^53, is still an error, and `1` is not a float.
+ *
+ * A `date` or `datetime` takes a temporal value of that kind, or its ISO 8601
+ * text (`'2024-02-29'`, `'2024-02-29T13:45:00Z'`), which becomes that value.
+ * Except in MERGE (`merging`): its pattern matches stored dates only with a
+ * date, so a string would never match and a node would be created on every run.
  */
-export function declaredValue(key: string, value: CypherValue, type: PropertyType): CypherValue {
+export function declaredValue(
+  key: string,
+  value: CypherValue,
+  type: PropertyType,
+  merging = false,
+): CypherValue {
   if (type === 'integer' && typeof value === 'number' && Number.isSafeInteger(value)) {
     return BigInt(value);
+  }
+  if (type === 'date' || type === 'datetime') {
+    if (value instanceof CypherTemporal && value.kind === type) {
+      return value;
+    }
+    if (typeof value === 'string' && matches(value, type)) {
+      if (merging) {
+        throw new SemanticError(
+          `MERGE matches the ${type} property ${JSON.stringify(key)} only with a ${type}, not the string ${JSON.stringify(value)}`,
+          {
+            hint: `Use ${type}(${JSON.stringify(value).replaceAll('"', "'")}), or ${type}($value).`,
+          },
+        );
+      }
+      return new CypherTemporal(type, value);
+    }
   }
   if (!matches(value, type)) {
     throw new SemanticError(
@@ -56,8 +86,9 @@ const hints: Record<PropertyType, string> = {
     'Use an integer value (a float such as 30.5, or one beyond 2^53, is not converted), or remove the property.',
   float: 'Use a float value (for example 1.0, not 1), or remove the property.',
   boolean: 'Use true or false, or remove the property.',
-  date: "Use an ISO 8601 date string such as '2024-02-29'.",
-  datetime: "Use an ISO 8601 date-time string with a time zone, such as '2024-02-29T13:45:00Z'.",
+  date: "Use a date, such as date('2024-02-29'), or its ISO 8601 text '2024-02-29'.",
+  datetime:
+    "Use a datetime, such as datetime('2024-02-29T13:45:00Z'), or its ISO 8601 text with a time zone.",
 };
 
 function matches(value: CypherValue, type: PropertyType): boolean {
@@ -102,6 +133,12 @@ function isCalendarDate(year: string, month: string, day: string): boolean {
 function describe(value: CypherValue): string {
   if (Array.isArray(value)) {
     return 'a list';
+  }
+  if (value instanceof CypherTemporal) {
+    return `the ${value.kind} ${value.text}`;
+  }
+  if (value instanceof CypherDuration) {
+    return `the duration ${value.text}`;
   }
   switch (typeof value) {
     case 'bigint':

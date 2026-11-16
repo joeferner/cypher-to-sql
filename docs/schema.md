@@ -81,8 +81,38 @@ CREATE INDEX nodes_age ON nodes (properties ->> '$."age"');
 ```
 
 - A declared type applies to the key on every label (or relationship type). The key is written into the SQL as a literal, so the index expression must match it exactly.
-- Writes through the library check declared types: `CREATE`, `MERGE`, and `SET` reject a value of another type with a `SemanticError`. The one conversion is for `integer`: a JavaScript `number` (or a Cypher float) with an integral value up to 2^53, such as `30` from `JSON.parse`, is stored as that integer. `30.5`, or an integral float beyond 2^53, is still rejected, and an undeclared key keeps a `number` as a float.
+- Writes through the library check declared types: `CREATE`, `MERGE`, and `SET` reject a value of another type with a `SemanticError`. Two conversions: for `integer`, a JavaScript `number` (or a Cypher float) with an integral value up to 2^53, such as `30` from `JSON.parse`, is stored as that integer; for `date` and `datetime`, ISO 8601 text is stored as that temporal value (see below). `30.5`, or an integral float beyond 2^53, is still rejected, and an undeclared key keeps a `number` as a float.
 - Reads trust the declaration: a stored value of another type makes the PostgreSQL cast fail. Add `CHECK` constraints when other tools write to the tables.
-- Supported types: `string`, `integer`, `float`, `boolean`, `date` (`YYYY-MM-DD`), and `datetime` (ISO 8601 with a time zone). Dates are stored as strings.
+- Supported types: `string`, `integer`, `float`, `boolean`, `date`, and `datetime`.
+
+#### Dates and date-times
+
+A property declared as `date` or `datetime` holds a temporal value, as `date(...)` and `datetime(...)` give: `n.since` is a `date`, `n.since.year` works, and `n.since > date('2024-01-01')` compares dates. Writes take a temporal value of that kind or its ISO 8601 text (`'2024-03-01'`, or `'2024-02-29T13:45:00Z'` with a time zone), which they convert. In the table it is a JSON object with the value's text (`~s`), a sort key by instant (`~k`), and its components:
+
+```json
+{
+  "since": {
+    "~cypher": "date",
+    "~s": "2024-03-01",
+    "~k": "1000000001709251200000000000",
+    "year": 2024,
+    "...": "..."
+  }
+}
+```
+
+A comparison with a date known before the query runs (a parameter, or `date('2024-01-01')`) compares the sort keys, which an index on that expression serves; for a `datetime`, only an ordering (equal instants in different offsets are different values):
+
+```sql
+-- PostgreSQL
+CREATE INDEX nodes_since ON nodes ((((properties -> 'since') ->> '~k') COLLATE "C"));
+
+-- SQLite
+CREATE INDEX nodes_since ON nodes ((properties -> '$."since"') ->> '$."~k"');
+```
+
+- As in Cypher, a string is not a date: `n.since = '2024-03-01'` is false. Compare with `date('2024-03-01')`.
+- `MERGE (n {since: '2024-03-01'})` is an error: its pattern would never match the stored date, so it would create a node on every run. Use `date('2024-03-01')` or a `CypherTemporal` parameter.
+- Version 1.0 stored these properties as strings. Rewrite old values once with the declaration in place: `MATCH (n) WHERE n.since IS NOT NULL SET n.since = n.since`.
 
 `graph.compile(cypher).explain()` shows the SQL, so you can check a plan with `EXPLAIN` in the database.
