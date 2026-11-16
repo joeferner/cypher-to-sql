@@ -81,29 +81,32 @@ What it shows:
 
 `npm run bench:writes` loads batches the way an application ingests files: one `UNWIND $rows AS row ...` query per batch, on a fresh graph whose node `key` is indexed: for this library declared as an integer (`migrate`), on Neo4j and ArcadeDB an index on `Item(key)` (`--dialects neo4j,arcadedb`, after `npm run db:up:reference`; it empties Neo4j's database, which `npm run bench` loads again). It counts the SQL statements each batch becomes, runs an untimed round of 100 rows first so that every engine is timed warm, and checks afterwards that the nodes, properties, and relationships are all there exactly once. Options: `--dialects`, `--sizes` (rows per batch, default `1000,2000`), `--ids` (`database,generator`), and `--save`.
 
-| Workload                       | Query                                                                                                                                                              |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| CREATE, properties inline      | `CREATE (:Item {key: row.key, name: row.props.name, ...})`                                                                                                         |
-| CREATE, then SET +=            | `CREATE (n:Item {key: row.key}) SET n += row.props`                                                                                                                |
-| MERGE, nodes new / exist       | `MERGE (n:Item {key: row.key}) SET n += row.props`, on an empty graph / the same rows                                                                              |
-| CREATE relationships           | `MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) CREATE (a)-[:LINK]->(b)`                                                                              |
-| MERGE, relationships exist     | the same with `MERGE (a)-[:LINK]->(b)`, after the CREATE                                                                                                           |
-| CREATE relationships, two keys | `MATCH (a:Item {doc: row.doc, key: row.from}) MATCH (b:Item {doc: row.doc, key: row.to}) CREATE (a)-[:LINK2]->(b)`, with a composite index on (`doc`, `key`) (#84) |
+| Workload                          | Query                                                                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CREATE, properties inline         | `CREATE (:Item {key: row.key, name: row.props.name, ...})`                                                                                                         |
+| CREATE, then SET +=               | `CREATE (n:Item {key: row.key}) SET n += row.props`                                                                                                                |
+| MERGE, nodes new / exist          | `MERGE (n:Item {key: row.key}) SET n += row.props`, on an empty graph / the same rows                                                                              |
+| CREATE relationships              | `MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) CREATE (a)-[:LINK]->(b)`                                                                              |
+| MERGE, relationships exist        | the same with `MERGE (a)-[:LINK]->(b)`, after the CREATE                                                                                                           |
+| CREATE relationships, two keys    | `MATCH (a:Item {doc: row.doc, key: row.from}) MATCH (b:Item {doc: row.doc, key: row.to}) CREATE (a)-[:LINK2]->(b)`, with a composite index on (`doc`, `key`) (#84) |
+| CREATE relationships, then SET += | `MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) CREATE (a)-[r:LINK3]->(b) SET r += row.props` (#85)                                                   |
 
 Rows per second, batches of 1,000, on the laptop of the comparison above (this library with ids from the database; the statements per row are the same with generated ids):
 
 | Workload                   | Statements per row | SQLite | PostgreSQL | MySQL |  Neo4j | ArcadeDB |
 | -------------------------- | -----------------: | -----: | ---------: | ----: | -----: | -------: |
 | CREATE, properties inline  |                  1 | 24,786 |      3,975 | 5,552 | 10,820 |   35,567 |
-| CREATE, then SET +=        |                  3 |  1,696 |        610 | 1,331 |  9,566 |   17,360 |
-| MERGE, nodes new           |                  4 |    621 |        168 |   597 | 23,282 |   13,144 |
-| MERGE, nodes exist         |                  3 |    633 |        178 |   510 |  7,719 |   22,769 |
+| CREATE, then SET +=        |                  1 | 17,704 |      3,274 | 3,879 |  9,566 |   17,360 |
+| MERGE, nodes new           |                  3 |    831 |        180 |   510 | 23,282 |   13,144 |
+| MERGE, nodes exist         |                  2 |    684 |        189 |   535 |  7,719 |   22,769 |
 | CREATE relationships       |                  1 | 41,656 |      3,903 | 8,564 | 10,652 |   18,292 |
 | MERGE, relationships exist |                  1 |  2,968 |        793 | 1,484 |  8,948 |   22,182 |
 
 With the generator id strategy, CREATE with inline properties runs at 38,697 (SQLite), 6,568 (PostgreSQL), and 5,438 (MySQL) rows per second; the other workloads cost the same.
 
 CREATE relationships by two keys, with the composite index (#84), runs at 41,000 (SQLite), 4,713 (PostgreSQL), and 10,195 (MySQL) rows per second, against 53,205, 5,121, and 10,170 by one key in the same runs: the composite index finds each end in one lookup, and the rest is the second comparison. On a graph of 100,000 nodes in 50 documents, where each document's 2,000 nodes share `doc`, PostgreSQL without the composite index combined both single-key indexes (`BitmapAnd`) and took 173 ms for the batch's lookups, against 24 ms with it.
+
+CREATE relationships, then SET += (#85) is one statement per row too: 24,483 (SQLite), 2,317 (PostgreSQL), and 5,095 (MySQL) rows per second. Before #85, `SET n += row.props` after a CREATE was a SELECT and an UPDATE per row on top of the INSERT (1,696 / 610 / 1,331 rows per second for nodes), and MERGE ran one statement more per row.
 
 Before #77 (the same benchmark, 1,000 rows): MERGE of existing nodes ran at 261 / 139 / 207 rows per second (SQLite / PostgreSQL / MySQL), CREATE relationships at 505 / 142 / 189, and MERGE of existing relationships at 336 / 87 / 158, each getting slower per row as the graph grew.
 
@@ -120,10 +123,10 @@ Neo4j and ArcadeDB stay flat from 1,000 to 2,000 rows as well (Neo4j's MERGE of 
 
 What it shows:
 
-1. **CREATE with the properties inline is the fast path:** one INSERT per row, linear in the batch, 4,000–25,000 rows per second; on SQLite faster than Neo4j. `SET n += row.props` adds a SELECT and an UPDATE per row and is 4–15 times slower; Neo4j and ArcadeDB pay little for it.
+1. **CREATE is the fast path:** one INSERT per row, linear in the batch, 3,000–25,000 rows per second; on SQLite faster than Neo4j. Since #85 that holds with the properties from a map too: a `SET n += row.props` right after the CREATE, whose value comes from the row, becomes part of the INSERT.
 2. **The generator id strategy speeds up plain CREATE** about 1.6 times on SQLite and PostgreSQL (no `RETURNING` and no id to read back per row); everything else costs the same. The statement count does not depend on it.
 3. **Finding nodes by a value from the row uses the declared index (#77),** so MERGE and MATCH by `row.key` are linear in the batch. Relationships between existing nodes are as fast as in the native engines on SQLite. A declared property compared with `=` to a JSON value is written as `property = <the value in the property's type> AND <Cypher's comparison>`, so the index serves the first term; the current row of a per-row step is read with a `LIMIT 1` that tells PostgreSQL's planner it is one row, and the entities it holds are found again by their id's own type (the primary key), not as text.
-4. **MERGE of nodes is still 12–140 times slower than in the native engines:** it runs 3–4 statements per row (the lookup, the INSERT when there is none, and the SET as a SELECT and an UPDATE), each a few milliseconds on PostgreSQL, where planning the long per-row statement costs more than running it. On SQLite, the example executors reuse their prepared statements, which halves it. MySQL still slows down by about a quarter from 1,000 to 2,000 rows.
+4. **MERGE of nodes is still 12–140 times slower than in the native engines:** it runs 2–3 statements per row (the lookup, the INSERT when there is none, and the SET as one UPDATE since #85), each a few milliseconds on PostgreSQL, where planning the long per-row statement costs more than running it. On SQLite, the example executors reuse their prepared statements, which halves it. MySQL still slows down by about a quarter from 1,000 to 2,000 rows.
 
 ## Findings (baseline, medium graph)
 

@@ -52,12 +52,16 @@ export type BindValue =
       types: PropertyTypes | undefined;
       /** MERGE: a null value is an error (it could never be matched). */
       noNulls?: boolean;
+      /** SET items folded into the INSERT (#85), applied to the map in order. */
+      patches?: PropertyPatch[];
     }
   | {
       kind: 'propertiesParameter';
       name: string;
       position: SourcePosition;
       types: PropertyTypes | undefined;
+      /** SET items folded into the INSERT (#85), applied to the map in order. */
+      patches?: PropertyPatch[];
     }
   /** The id of an entity created earlier in the same plan (in the same source row). */
   | { kind: 'entityId'; entity: number }
@@ -149,6 +153,12 @@ export type BindValue =
       position: SourcePosition;
     }
   /**
+   * The same JSON object, from a value known without reading the graph (a
+   * parameter, a literal, a column of the source row): a SET on an entity this
+   * query created or merged needs no SELECT first (#85).
+   */
+  | (PropertyPatch & { kind: 'valuePatch' })
+  /**
    * A query parameter compared with a declared property (`n.age > $min`), as a
    * value of the property's type, so that the comparison is plain SQL that an
    * index can serve: the value, null when it has another type, and an integer
@@ -162,6 +172,19 @@ export type BindValue =
    * comparison is null (ordering values of different types).
    */
   | (Omit<ParameterComparison, 'kind'> & { kind: 'parameterFits' });
+
+/**
+ * One SET item whose value is known without reading the graph: `n.key = value`
+ * (`property`), `n += value` (`merge`), or `n = value` (`replace`). A null
+ * value (or a null in the map of `+=`) removes the key.
+ */
+export interface PropertyPatch {
+  mode: 'property' | 'merge' | 'replace';
+  key: string | undefined;
+  value: ValueSource;
+  types: PropertyTypes | undefined;
+  position: SourcePosition;
+}
 
 export interface ParameterComparison {
   kind: 'parameterAs';
@@ -920,7 +943,7 @@ function resolveBind(
           );
         }
       }
-      return stringifyCypherJson(map);
+      return stringifyCypherJson(applyPatches(map, bind.patches, options, row, state));
     }
     case 'propertiesParameter': {
       const value = resolveValue(
@@ -939,7 +962,7 @@ function resolveBind(
           map[key] = checkPropertyValue(key, v, bind.types);
         }
       }
-      return stringifyCypherJson(map);
+      return stringifyCypherJson(applyPatches(map, bind.patches, options, row, state));
     }
     case 'entityId': {
       if (!entityIds.has(bind.entity)) {
@@ -1020,7 +1043,13 @@ function resolveBind(
       });
     }
     case 'propertyPatch':
-      return propertyPatch(bind, computedValue(state, bind.index, bind.column).value);
+      return stringifyCypherJson(
+        patchEntries(bind, computedValue(state, bind.index, bind.column).value),
+      );
+    case 'valuePatch':
+      return stringifyCypherJson(
+        patchEntries(bind, resolveValue(bind.value, options.params, row, state)),
+      );
     case 'deleteIds':
       return idsJson(deleteTargets(state, bind.index, bind.column, bind.position)[bind.part]);
     case 'deletedNodes':
@@ -1257,14 +1286,48 @@ function deleteTargets(
 }
 
 /** The JSON object of a `propertyPatch` bind, from the value SET computed. */
-function propertyPatch(
-  bind: Extract<BindValue, { kind: 'propertyPatch' }>,
+/**
+ * The properties of a new entity after the SET items folded into its INSERT
+ * (`patches`), applied in order as the UPDATEs would apply them: a null value
+ * removes the key, `replace` starts over from the new map.
+ */
+function applyPatches(
+  map: CypherMap,
+  patches: PropertyPatch[] | undefined,
+  options: ExecuteOptions,
+  row: Row | undefined,
+  state: RunState,
+): CypherMap {
+  let out = map;
+  for (const patch of patches ?? []) {
+    const entries = patchEntries(patch, resolveValue(patch.value, options.params, row, state));
+    if (patch.mode === 'replace') {
+      out = {};
+    }
+    for (const [key, value] of Object.entries(entries)) {
+      if (value === null) {
+        delete out[key];
+      } else {
+        out[key] = value;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The JSON object a SET item merges into an entity's properties (`property`,
+ * `merge`; a null value removes its key) or puts in their place (`replace`),
+ * from the item's value, checked as CREATE checks property values.
+ */
+function patchEntries(
+  bind: Pick<PropertyPatch, 'mode' | 'key' | 'types' | 'position'>,
   value: CypherValue,
-): string {
+): CypherMap {
   const patch: CypherMap = {};
   if (bind.mode === 'property') {
     patch[bind.key!] = value === null ? null : checkPropertyValue(bind.key!, value, bind.types);
-    return stringifyCypherJson(patch);
+    return patch;
   }
   let entries: CypherMap;
   if (value === null) {
@@ -1286,7 +1349,7 @@ function propertyPatch(
       patch[key] = null;
     }
   }
-  return stringifyCypherJson(patch);
+  return patch;
 }
 
 /**
@@ -1440,6 +1503,16 @@ function describeStep(step: PlanStep): string {
   return `${step.sql}\n-- values: ${step.values.map(describeBind).join(', ')}`;
 }
 
+/** A SET item applied without reading the graph: `merge(row.props)`, `property p(...)`. */
+function describePatch(patch: PropertyPatch): string {
+  return `${patch.mode}${patch.key === undefined ? '' : ` ${patch.key}`}(${describeSource(patch.value)})`;
+}
+
+/** SET items folded into an INSERT's properties (#85). */
+function describePatches(patches: PropertyPatch[] | undefined): string {
+  return patches?.length ? ` then ${patches.map(describePatch).join(' then ')}` : '';
+}
+
 function describeBind(bind: BindValue): string {
   switch (bind.kind) {
     case 'sql':
@@ -1447,9 +1520,12 @@ function describeBind(bind: BindValue): string {
     case 'json':
       return describeSource(bind.value);
     case 'properties':
-      return `{${bind.entries.map((e) => `${e.key}: ${describeSource(e.value)}`).join(', ')}}`;
+      return (
+        `{${bind.entries.map((e) => `${e.key}: ${describeSource(e.value)}`).join(', ')}}` +
+        describePatches(bind.patches)
+      );
     case 'propertiesParameter':
-      return `$${bind.name}`;
+      return `$${bind.name}${describePatches(bind.patches)}`;
     case 'entityId':
       return `id(entity ${bind.entity})`;
     case 'rowId':
@@ -1490,6 +1566,8 @@ function describeBind(bind: BindValue): string {
       return 'forgottenNodes';
     case 'propertyPatch':
       return `${bind.mode}${bind.key === undefined ? '' : ` ${bind.key}`}(computed ${bind.index + 1}.${bind.column.name})`;
+    case 'valuePatch':
+      return describePatch(bind);
     case 'parameterAs':
       return `$${bind.name} as ${bind.type}`;
     case 'parameterFits':
