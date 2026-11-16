@@ -30,3 +30,13 @@ export {
   type CypherMap,
 } from './values.js';
 export { toJson, type JsonValue, type ToJsonOptions } from './to-json.js';
+export {
+  migrate,
+  propertyIndexSql,
+  schemaSql,
+  SCHEMA_VERSION,
+  VERSION_TABLE,
+  type MigrateOptions,
+  type MigrateResult,
+  type SchemaSqlOptions,
+} from './schema.js';

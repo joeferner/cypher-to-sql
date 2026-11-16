@@ -95,6 +95,12 @@ export class EntityNotFoundError extends CypherError {
 /** The graph mapping is invalid. */
 export class MappingError extends CypherError {}
 
+/**
+ * The database's tables do not fit this version of the library: `migrate`
+ * found a schema version newer than it knows.
+ */
+export class SchemaError extends CypherError {}
+
 /** A configured limit was exceeded while planning or running a query. */
 export class LimitExceededError extends CypherError {}
 

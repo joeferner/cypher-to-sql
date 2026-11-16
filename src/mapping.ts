@@ -8,6 +8,12 @@ import { isPropertyType, PROPERTY_TYPES, type PropertyTypes } from './property-t
 export interface GraphMapping {
   /** Optional schema (PostgreSQL) or attached-database (SQLite) name that prefixes both tables. */
   schema?: string | undefined;
+  /**
+   * Optional prefix of every table name of the graph (the node and edge tables,
+   * and the version table of `migrate`), so that several graphs can share one
+   * database: `prefix: 'g1_'` reads `g1_nodes` and `g1_edges`.
+   */
+  prefix?: string | undefined;
   nodes: {
     table: string;
     id: string;
@@ -49,9 +55,14 @@ const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * Checks that every name in the mapping is a plain SQL identifier. Identifiers are
  * the only text in emitted SQL that does not come from the library itself, so this
  * keeps the output free of injected SQL even for an untrusted mapping. Also checks
- * the declared property types.
+ * the declared property types. Returns the mapping with the prefix applied: its
+ * table names are the full names, and `prefix` is the one it had (for the
+ * version table of `migrate`), never applied again.
  */
-export function validateMapping(mapping: GraphMapping): GraphMapping {
+export function validateMapping(mapping: GraphMapping): ResolvedMapping {
+  if (isResolved(mapping)) {
+    return mapping;
+  }
   const check = (path: string, value: unknown): void => {
     if (typeof value !== 'string' || !IDENTIFIER.test(value)) {
       throw new MappingError(
@@ -62,6 +73,9 @@ export function validateMapping(mapping: GraphMapping): GraphMapping {
   if (mapping.schema !== undefined) {
     check('schema', mapping.schema);
   }
+  if (mapping.prefix !== undefined && mapping.prefix !== '') {
+    check('prefix', mapping.prefix);
+  }
   for (const kind of ['nodes', 'edges'] as const) {
     const { propertyTypes, ...columns } = mapping[kind];
     for (const [key, value] of Object.entries(columns)) {
@@ -71,7 +85,24 @@ export function validateMapping(mapping: GraphMapping): GraphMapping {
       checkPropertyTypes(`${kind}.propertyTypes`, propertyTypes);
     }
   }
-  return mapping;
+  const prefix = mapping.prefix ?? '';
+  const resolved: ResolvedMapping = {
+    ...mapping,
+    nodes: { ...mapping.nodes, table: `${prefix}${mapping.nodes.table}` },
+    edges: { ...mapping.edges, table: `${prefix}${mapping.edges.table}` },
+    prefix,
+  };
+  RESOLVED.add(resolved);
+  return resolved;
+}
+
+/** A mapping whose table names include its prefix (see `validateMapping`). */
+export type ResolvedMapping = GraphMapping & { prefix: string };
+
+const RESOLVED = new WeakSet<GraphMapping>();
+
+function isResolved(mapping: GraphMapping): mapping is ResolvedMapping {
+  return RESOLVED.has(mapping);
 }
 
 function checkPropertyTypes(path: string, types: unknown): void {

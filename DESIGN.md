@@ -66,9 +66,10 @@ Rules:
 | Edges | id, start node id, end node id, type (text), properties (JSON object) |
 
 - JSON is `jsonb` on PostgreSQL and JSON text on SQLite (JSON1 functions).
-- The mapping configures table and column names and an optional schema, so one mapping can serve many isolated graphs.
+- The mapping configures table and column names, an optional schema, and an optional `prefix` of every table name (so several graphs share a database). `validateMapping` applies the prefix once, so the planner only sees full table names.
 - Integers are stored without a decimal point (`1`) and floats always with one (`1.0`), so they read back as `bigint` and `number`.
-- Recommended indexes: edge start id, edge end id, edge type, plus expression or GIN indexes for frequently filtered properties.
+- Recommended indexes: edge start id, edge end id, edge type, plus an expression index per declared property.
+- **Creating and upgrading** (`src/schema.ts`): `schemaSql` returns the DDL as text; `propertyIndexSql` the index of one declared property, built from the same `Dialect.typedMember` (or, for dates, the sort-key expression) the planner reads it with, so the index always matches. `migrate` runs them through the caller's executor in one write transaction: it reads the catalog (MySQL has no `CREATE INDEX IF NOT EXISTS`), records the layout version in `<prefix>cypher_to_sql_schema` (one row), and runs the data migrations from the stored version to `SCHEMA_VERSION`. Tables without a version table are version 1 (1.0); version 2 stores declared dates as temporal values, and its migration rewrites the old strings in batches by id. The library still runs no DDL on its own: only `migrate`, when called.
 - Integers read back from JSON outside the 64-bit range are floats (`jsonb` prints `1e308` as plain digits).
 - Later: a typed layout with one table per label (#26).
 

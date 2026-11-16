@@ -1,11 +1,30 @@
 # Schema
 
-The graph lives in two tables: one row per node and one per relationship. Labels and properties are JSON. The library reads and writes these tables; it never creates or changes them.
+The graph lives in two tables: one row per node and one per relationship. Labels and properties are JSON. A third table, `cypher_to_sql_schema`, records the version of the stored layout. Queries only read and write the rows; the tables come from `migrate` or from your own DDL (below).
 
-DDL for the default mapping, tested in [test/examples.test.ts](../test/examples.test.ts):
+## Creating and upgrading the tables
 
-- PostgreSQL: [examples/schema/postgres.sql](../examples/schema/postgres.sql)
-- SQLite: [examples/schema/sqlite.sql](../examples/schema/sqlite.sql)
+`migrate` creates the tables and indexes a mapping needs, and upgrades data stored by an older version of the library, through an executor you give it:
+
+```ts
+import { migrate, postgres } from 'cypher-to-sql';
+
+// At deploy, with an executor whose role may create tables.
+const result = await migrate({ dialect: postgres(), executor: adminExecutor, mapping });
+// { from: 0, to: 2, created: [...statements], converted: 0, skipped: [] }
+```
+
+- **No tables:** it creates the node and edge tables, their indexes, an index for each [declared property](#properties), and the version table.
+- **Tables without a version table** (created by 1.0, or from the example DDL files): it treats them as version 1, adds the version table, and runs the upgrades.
+- **Upgrades** run from the stored version to the library's (`SCHEMA_VERSION`). From version 1, declared `date` and `datetime` strings become temporal values ([below](#dates-and-date-times)); values that are not valid dates stay as they were and are listed in `result.skipped`.
+- **Every run** creates the index of each declared property that has none, so declaring a property and running `migrate` adds its index.
+- A version newer than the library's is a `SchemaError`.
+
+It runs in one write transaction (MySQL commits each DDL statement by itself), and running it again changes nothing. Run it from one process, at deploy, not from every application instance.
+
+To run the DDL with your own migration tool instead, `schemaSql(dialect, mapping, { ifNotExists })` returns the statements, and `propertyIndexSql(dialect, mapping, 'nodes', key)` the one index of a property declared later. Both only return text. The files in [examples/schema](../examples/schema) hold the same tables for the default mapping, without the version table; `migrate` takes them as version 1.
+
+## Tables
 
 | Table   | Column       | PostgreSQL        | SQLite        | Content                     |
 | ------- | ------------ | ----------------- | ------------- | --------------------------- |
@@ -41,6 +60,16 @@ const graph = createGraph({
 
 One mapping per schema serves many isolated graphs with the same code.
 
+To keep several graphs in one database or schema, give each mapping a `prefix`. It prefixes every table of the graph, including the version table, and the names of the indexes `migrate` creates:
+
+```ts
+const sales = { ...defaultMapping, prefix: 'sales_' }; // sales_nodes, sales_edges, sales_cypher_to_sql_schema
+await migrate({ dialect, executor: adminExecutor, mapping: sales });
+const graph = createGraph({ dialect, executor, mapping: sales });
+```
+
+Renaming the tables without a prefix works for queries too, but such graphs share one version table; use a prefix (or a schema) for each graph you migrate.
+
 ## Data rules
 
 Data written by the library follows these rules. Data written by other tools must follow them too:
@@ -53,7 +82,7 @@ Data written by the library follows these rules. Data written by other tools mus
 
 ## Indexes
 
-The DDL files create the indexes every graph needs:
+`migrate`, `schemaSql`, and the DDL files create the indexes every graph needs:
 
 - **Relationship ends:** `(start_id, type)` and `(end_id, type)`, used for every relationship pattern in either direction, with or without a type.
 - **Relationship type:** `(type)`, for patterns with a type and no bound end.
@@ -61,7 +90,7 @@ The DDL files create the indexes every graph needs:
 
 ### Properties
 
-A property filter on an undeclared key (`n.name = $name`, or `(n {name: $name})`) compares JSON values with Cypher's rules at run time, which no index can serve. To filter on a key with an index, declare its type in the mapping. The library then reads it as a typed SQL value, in the same form as an expression index:
+A property filter on an undeclared key (`n.name = $name`, or `(n {name: $name})`) compares JSON values with Cypher's rules at run time, which no index can serve. To filter on a key with an index, declare its type in the mapping. The library then reads it as a typed SQL value, in the same form as an expression index. `migrate` creates that index (named `<table>_<column>_<key>`), and `propertyIndexSql` returns its DDL; the expression must match the library's exactly, so prefer them to writing it by hand:
 
 ```ts
 const mapping = {
@@ -72,12 +101,15 @@ const mapping = {
 
 ```sql
 -- PostgreSQL
-CREATE INDEX nodes_name ON nodes ((properties ->> 'name'));
-CREATE INDEX nodes_age ON nodes (((properties ->> 'age')::bigint));
+CREATE INDEX nodes_properties_name ON nodes (((properties ->> 'name')));
+CREATE INDEX nodes_properties_age ON nodes ((((properties ->> 'age')::bigint)));
 
 -- SQLite
-CREATE INDEX nodes_name ON nodes (properties ->> '$."name"');
-CREATE INDEX nodes_age ON nodes (properties ->> '$."age"');
+CREATE INDEX nodes_properties_name ON nodes (((properties ->> '$."name"')));
+CREATE INDEX nodes_properties_age ON nodes (((properties ->> '$."age"')));
+
+-- MySQL (no index for string, date, and datetime properties: MySQL does not use one)
+CREATE INDEX nodes_properties_age ON nodes ((CAST(JSON_EXTRACT(properties, '$."age"') AS SIGNED)));
 ```
 
 - A declared type applies to the key on every label (or relationship type). The key is written into the SQL as a literal, so the index expression must match it exactly.
@@ -105,14 +137,14 @@ A comparison with a date known before the query runs (a parameter, or `date('202
 
 ```sql
 -- PostgreSQL
-CREATE INDEX nodes_since ON nodes ((((properties -> 'since') ->> '~k') COLLATE "C"));
+CREATE INDEX nodes_properties_since ON nodes ((((properties -> 'since') ->> '~k') COLLATE "C"));
 
 -- SQLite
-CREATE INDEX nodes_since ON nodes ((properties -> '$."since"') ->> '$."~k"');
+CREATE INDEX nodes_properties_since ON nodes ((((properties -> '$."since"') ->> '$."~k"')));
 ```
 
 - As in Cypher, a string is not a date: `n.since = '2024-03-01'` is false. Compare with `date('2024-03-01')`.
 - `MERGE (n {since: '2024-03-01'})` is an error: its pattern would never match the stored date, so it would create a node on every run. Use `date('2024-03-01')` or a `CypherTemporal` parameter.
-- Version 1.0 stored these properties as strings. Rewrite old values once with the declaration in place: `MATCH (n) WHERE n.since IS NOT NULL SET n.since = n.since`.
+- Version 1.0 stored these properties as strings. `migrate` rewrites them as temporal values (schema version 1 to 2). Without it, rewrite them once with the declaration in place: `MATCH (n) WHERE n.since IS NOT NULL SET n.since = n.since`.
 
 `graph.compile(cypher).explain()` shows the SQL, so you can check a plan with `EXPLAIN` in the database.

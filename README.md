@@ -10,14 +10,16 @@ Reads and writes openCypher 9 on PostgreSQL, SQLite, and MySQL 8, and passes 93â
 
 ## Usage
 
-Create the two tables ([PostgreSQL](examples/schema/postgres.sql), [SQLite](examples/schema/sqlite.sql), [MySQL](examples/schema/mysql.sql)), copy an executor for your driver from [examples/executors](examples/executors), and create a graph:
+Copy an executor for your driver from [examples/executors](examples/executors), create the tables with `migrate` (or the DDL that `schemaSql` returns; see [Schema](docs/schema.md#creating-and-upgrading-the-tables)), and create a graph:
 
 ```ts
 import pg from 'pg';
-import { createGraph, postgres, toJson } from 'cypher-to-sql';
+import { createGraph, migrate, postgres, toJson } from 'cypher-to-sql';
 import { pgExecutor } from './executors/pg.js'; // from examples/executors/pg.ts
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+// Creates the tables, or upgrades them; safe to run again (at deploy, with a role that may create tables)
+await migrate({ dialect: postgres(), executor: pgExecutor(pool) });
 const graph = createGraph({ dialect: postgres(), executor: pgExecutor(pool) }); // read-only by default
 
 const records = await graph.query('MATCH (p:Person) RETURN p, p.name AS name LIMIT $n', { n: 10 });
@@ -62,7 +64,7 @@ await writer.query("CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Al
 
 - [Executors](docs/executors.md): what an executor does, and tested ones for `pg`, `better-sqlite3`, `node:sqlite`, and `mysql2`.
 - [Values](docs/values.md): the JavaScript types of results and parameters, and `toJson` for plain JSON.
-- [Schema](docs/schema.md): the tables, the mapping, indexes, and declared property types.
+- [Schema](docs/schema.md): the tables, `migrate`, the mapping and table prefixes, indexes, and declared property types.
 - [Safe execution](docs/safe-execution.md): running untrusted or generated queries, database roles, timeouts, and limits.
 - [Errors](docs/errors.md): the error classes, their hints, and a retry loop for generated queries.
 - [Design](DESIGN.md): how queries become SQL.
