@@ -178,7 +178,12 @@ for (const backend of testBackends()) {
 
     it('applies maxFrontierSize and maxPathDepth', async () => {
       const query = `MATCH (x:N {n: 'a'}), (y:N {n: 'g'}) MATCH p = shortestPath((x)-[:R*]->(y)) RETURN p`;
-      await expect(graph.query(query, {}, { limits: { maxFrontierSize: 1 } })).rejects.toThrow(
+      // Searching from both ends expands the smaller side, which here never
+      // carries more than one node; a limit of 0 still stops it.
+      await expect(
+        graph.query(query, {}, { limits: { maxFrontierSize: 1 } }),
+      ).resolves.toHaveLength(1);
+      await expect(graph.query(query, {}, { limits: { maxFrontierSize: 0 } })).rejects.toThrow(
         /maxFrontierSize/,
       );
       await expect(graph.query(query, {}, { limits: { maxPathDepth: 3 } })).resolves.toEqual([]);
