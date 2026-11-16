@@ -90,6 +90,9 @@ What it shows:
 | MERGE, relationships exist        | the same with `MERGE (a)-[:LINK]->(b)`, after the CREATE                                                                                                           |
 | CREATE relationships, two keys    | `MATCH (a:Item {doc: row.doc, key: row.from}) MATCH (b:Item {doc: row.doc, key: row.to}) CREATE (a)-[:LINK2]->(b)`, with a composite index on (`doc`, `key`) (#84) |
 | CREATE relationships, then SET += | `MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) CREATE (a)-[r:LINK3]->(b) SET r += row.props` (#85)                                                   |
+| bulkWrite, nodes, no key          | `graph.bulkWrite({ nodes })`: inserts, as CREATE (#89; this library only)                                                                                          |
+| bulkWrite, nodes new / exist      | `graph.bulkWrite({ nodes }, { nodeKey: { Item: ['doc', 'key'] } })` on an empty graph / the same nodes again (#89; this library only)                              |
+| bulkWrite, relationships          | `graph.bulkWrite({ relationships })`, each from `{doc, key: from}` to `{doc, key: to}`                                                                             |
 
 Rows per second, batches of 1,000, on the laptop of the comparison above (this library with ids from the database; the statements per row are the same with generated ids):
 
@@ -107,6 +110,19 @@ With the generator id strategy, CREATE with inline properties runs at 38,697 (SQ
 CREATE relationships by two keys, with the composite index (#84), runs at 41,000 (SQLite), 4,713 (PostgreSQL), and 10,195 (MySQL) rows per second, against 53,205, 5,121, and 10,170 by one key in the same runs: the composite index finds each end in one lookup, and the rest is the second comparison. On a graph of 100,000 nodes in 50 documents, where each document's 2,000 nodes share `doc`, PostgreSQL without the composite index combined both single-key indexes (`BitmapAnd`) and took 173 ms for the batch's lookups, against 24 ms with it.
 
 CREATE relationships, then SET += (#85) is one statement per row too: 24,483 (SQLite), 2,317 (PostgreSQL), and 5,095 (MySQL) rows per second. Before #85, `SET n += row.props` after a CREATE was a SELECT and an UPDATE per row on top of the INSERT (1,696 / 610 / 1,331 rows per second for nodes), and MERGE ran one statement more per row.
+
+The bulk API (#89) writes a chunk of up to 5,000 rows in 2–3 statements (a SELECT of the existing keys, then an UPDATE of those that exist and an INSERT ... SELECT of the rest; for relationships, a SELECT of the ends and an INSERT), so its rate does not depend on the round trip. Rows per second, batches of 1,000, ids from the database / from the generator:
+
+| Workload                 | SQLite          | PostgreSQL      | MySQL           |
+| ------------------------ | --------------- | --------------- | --------------- |
+| bulkWrite, nodes, no key | 57,282 / 97,178 | 31,293 / 27,305 | 21,464 / 32,235 |
+| bulkWrite, nodes new     | 41,625 / 51,309 | 22,055 / 18,462 | 18,925 / 22,093 |
+| bulkWrite, nodes exist   | 28,062 / 34,081 | 20,249 / 13,269 | 19,097 / 25,469 |
+| bulkWrite, relationships | 27,952 / 48,152 | 11,003 / 8,494  | 18,042 / 19,695 |
+
+The rate holds at 10,000 rows (an earlier run, database ids: PostgreSQL 21,196 new, 20,800 existing, and 10,878 relationships per second; MySQL 22,653, 24,682, and 14,008). Runs vary by up to 45% on this laptop.
+
+On PostgreSQL, the foreign-key checks of the two ends take about 80% of the relationship INSERT (215 of 270 ms for 5,000 rows).
 
 Before #77 (the same benchmark, 1,000 rows): MERGE of existing nodes ran at 261 / 139 / 207 rows per second (SQLite / PostgreSQL / MySQL), CREATE relationships at 505 / 142 / 189, and MERGE of existing relationships at 336 / 87 / 158, each getting slower per row as the graph grew.
 

@@ -165,6 +165,13 @@ export function sqlite(options: SqliteOptions = {}): Dialect {
       `EXISTS (SELECT 1 FROM json_each(${labelsExpr}) WHERE json_each.value = ${labelPlaceholder})`,
     mergeProperties: (properties, patch) => `json_patch(${properties}, ${patch})`,
     appendLabel: (labels, label) => `json_insert(${labels}, '$[#]', ${label})`,
+    // json_each's `value` is the element's JSON text for an object.
+    updateFromJson: (table, id, rows, set) =>
+      `UPDATE ${table} AS t SET ` +
+      set
+        .map(({ column, value }) => `"${column}" = ${value('x.value', `t."${column}"`)}`)
+        .join(', ') +
+      ` FROM json_each(${rows}) AS x WHERE t."${id}" = (x.value ->> '$.id')`,
     removeLabel: (labels, label) =>
       `(SELECT json_group_array(json_each.value) FROM json_each(${labels}) ` +
       `WHERE json_each.value <> ${label})`,

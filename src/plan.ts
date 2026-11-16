@@ -787,6 +787,27 @@ async function runPlan(
  * error the SQL raised on purpose (its marker names one of the step's
  * `errors`), or the database's own integer overflow or division by zero.
  */
+/**
+ * A violation of a unique index of the mapping (`indexes`): PostgreSQL's
+ * unique_violation, SQLite's UNIQUE constraint, MySQL's duplicate entry.
+ */
+export function uniqueViolation(error: unknown, hint: string): CypherConstraintError | undefined {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: unknown } | null)?.code;
+  if (
+    code === '23505' ||
+    code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+    code === 'ER_DUP_ENTRY' ||
+    /^UNIQUE constraint failed/.test(message)
+  ) {
+    return new CypherConstraintError(
+      `The write would store a key that a unique index already has: ${message.split('\n')[0]!}`,
+      { code: 'ConstraintValidationFailed', hint },
+    );
+  }
+  return undefined;
+}
+
 function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
   const message = error instanceof Error ? error.message : String(error);
   const code = (error as { code?: unknown } | null)?.code;
@@ -826,21 +847,12 @@ function runtimeError(error: unknown, step: PlanStep): CypherError | undefined {
   if (code === '22012') {
     return new CypherArgumentError('Division by zero', { code: 'DivisionByZero' });
   }
-  // A unique index of the mapping (`indexes`): PostgreSQL unique_violation,
-  // SQLite's UNIQUE constraint, MySQL's duplicate entry.
-  if (
-    code === '23505' ||
-    code === 'SQLITE_CONSTRAINT_UNIQUE' ||
-    code === 'ER_DUP_ENTRY' ||
-    /^UNIQUE constraint failed/.test(message)
-  ) {
-    return new CypherConstraintError(
-      `The write would store a key that a unique index already has: ${message.split('\n')[0]!}`,
-      {
-        code: 'ConstraintValidationFailed',
-        hint: 'MERGE on the key instead of CREATE, or give the new entity a different key.',
-      },
-    );
+  const unique = uniqueViolation(
+    error,
+    'MERGE on the key instead of CREATE, or give the new entity a different key.',
+  );
+  if (unique) {
+    return unique;
   }
   const temporalType = /cypher temporal type error: ([^"]*)/.exec(message);
   if (temporalType) {
@@ -1320,7 +1332,7 @@ function applyPatches(
  * `merge`; a null value removes its key) or puts in their place (`replace`),
  * from the item's value, checked as CREATE checks property values.
  */
-function patchEntries(
+export function patchEntries(
   bind: Pick<PropertyPatch, 'mode' | 'key' | 'types' | 'position'>,
   value: CypherValue,
 ): CypherMap {
@@ -1356,7 +1368,7 @@ function patchEntries(
  * The value to store for the property `key`, checked (see `declaredValue`);
  * `merging` for the properties of a MERGE pattern.
  */
-function checkPropertyValue(
+export function checkPropertyValue(
   key: string,
   value: CypherValue,
   types: PropertyTypes | undefined,

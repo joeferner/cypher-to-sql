@@ -165,6 +165,13 @@ export function mysql(): Dialect {
       `JSON_CONTAINS(${labelsExpr}, JSON_QUOTE(${labelPlaceholder}))`,
     mergeProperties: (properties, patch) => `JSON_MERGE_PATCH(${properties}, ${patch})`,
     appendLabel: (labels, label) => `JSON_ARRAY_APPEND(${labels}, '$', ${label})`,
+    // A multi-table UPDATE joins the elements to the rows by id.
+    updateFromJson: (table, id, rows, set) =>
+      `UPDATE ${table} AS t JOIN JSON_TABLE(${rows}, '$[*]' COLUMNS (id BIGINT PATH '$.id', v JSON PATH '$')) AS x ` +
+      `ON t.\`${id}\` = x.id SET ` +
+      set
+        .map(({ column, value }) => `t.\`${column}\` = ${value('x.v', `t.\`${column}\``)}`)
+        .join(', '),
     removeLabel: (labels, label) =>
       `(SELECT ${aggregate(element('rl'), ['rl.i'])} FROM ${elements(labels, 'rl')} ` +
       `WHERE ${exact(`JSON_UNQUOTE(${element('rl')})`)} <> ${exact(label)})`,

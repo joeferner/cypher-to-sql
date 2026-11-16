@@ -30,18 +30,19 @@ Errors from the database driver that the library does not recognize (a lost conn
 
 The run-time errors (`CypherTypeError`, `CypherArgumentError`, `CypherConstraintError`, `EntityNotFoundError`) come from the data, so the same query can succeed on other data. Their `position` points at the expression that failed, where the database's error allows it. Codes:
 
-| Code                          | Class                   | Example                                                                                     |
-| ----------------------------- | ----------------------- | ------------------------------------------------------------------------------------------- |
-| `InvalidArgumentType`         | `CypherTypeError`       | `n.name * 2` with a string `name`; a `Date` as a parameter                                  |
-| `InvalidArgumentValue`        | `CypherTypeError`       | `toInteger(n.tags)` with a list `tags`                                                      |
-| `MapElementAccessByNonString` | `CypherTypeError`       | `$map[0]`                                                                                   |
-| `NumberOutOfRange`            | `CypherArgumentError`   | `9223372036854775807 + 1`, `range(1, 5, 0)`                                                 |
-| `DivisionByZero`              | `CypherArgumentError`   | `n.count / 0` with an integer `count`                                                       |
-| `InvalidRegex`                | `CypherArgumentError`   | `n.name =~ '('`                                                                             |
-| `InvalidArgumentValue`        | `CypherArgumentError`   | `date('2020-13-01')`; NaN or infinity as a parameter                                        |
-| `DeleteConnectedNode`         | `CypherConstraintError` | `MATCH (n) DELETE n` when `n` has relationships (use `DETACH`)                              |
-| `ConstraintValidationFailed`  | `CypherConstraintError` | `CREATE` of a key that a [unique index](schema.md#composite-and-unique-indexes) already has |
-| `DeletedEntityAccess`         | `EntityNotFoundError`   | `MATCH (n) DETACH DELETE n RETURN n.name`                                                   |
+| Code                          | Class                   | Example                                                                                                           |
+| ----------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `InvalidArgumentType`         | `CypherTypeError`       | `n.name * 2` with a string `name`; a `Date` as a parameter                                                        |
+| `InvalidArgumentValue`        | `CypherTypeError`       | `toInteger(n.tags)` with a list `tags`                                                                            |
+| `MapElementAccessByNonString` | `CypherTypeError`       | `$map[0]`                                                                                                         |
+| `NumberOutOfRange`            | `CypherArgumentError`   | `9223372036854775807 + 1`, `range(1, 5, 0)`                                                                       |
+| `DivisionByZero`              | `CypherArgumentError`   | `n.count / 0` with an integer `count`                                                                             |
+| `InvalidRegex`                | `CypherArgumentError`   | `n.name =~ '('`                                                                                                   |
+| `InvalidArgumentValue`        | `CypherArgumentError`   | `date('2020-13-01')`; NaN or infinity as a parameter                                                              |
+| `DeleteConnectedNode`         | `CypherConstraintError` | `MATCH (n) DELETE n` when `n` has relationships (use `DETACH`)                                                    |
+| `ConstraintValidationFailed`  | `CypherConstraintError` | `CREATE` of a key that a [unique index](schema.md#composite-and-unique-indexes) already has                       |
+| `MissingEndpoint`             | `CypherConstraintError` | [`bulkWrite`](bulk.md#relationships) of a relationship whose end matches no node, with `missingEndpoint: 'error'` |
+| `DeletedEntityAccess`         | `EntityNotFoundError`   | `MATCH (n) DETACH DELETE n RETURN n.name`                                                                         |
 
 Parameters, and the rows that [procedures](../README.md#usage) return, must be Cypher values: `null`, booleans, `bigint` integers, finite numbers (floats), strings, arrays, plain objects, `CypherTemporal`, and `CypherDuration`. `undefined` is null. Anything else is an error that names the parameter or output, such as `Parameter $p.a[0] is NaN, which cannot be passed`.
 

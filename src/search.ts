@@ -423,7 +423,7 @@ export function idsJson(ids: unknown[]): string {
   return `[${ids.map(idJson).join(',')}]`;
 }
 
-function idJson(id: unknown): string {
+export function idJson(id: unknown): string {
   if (typeof id === 'bigint' || (typeof id === 'number' && Number.isFinite(id))) {
     return String(id);
   }

@@ -306,6 +306,10 @@ Pattern predicates (`WHERE (a)-[:T]->()`), `EXISTS { pattern WHERE c }`, `EXISTS
 - `{ kind: 'generator', generate }`: the library calls the caller's function before inserting, so it knows every id up front.
 - Ids supplied as properties in a query are ordinary properties. They never replace the internal id.
 
+## Bulk writes
+
+`graph.bulkWrite` and `graph.bulkDelete` (`src/bulk.ts`, [docs/bulk.md](docs/bulk.md)) bypass the planner: their input is data, not a query, so they build set-based SQL directly, one statement per chunk of input passed as one JSON parameter and expanded with the dialect's `unwind`. Duplicate keys within the input are combined in TypeScript, in input order, before anything runs, so that each chunk holds each key once. Per label and chunk: a `SELECT` joins the chunk to the node table on the label and the key (the same typed comparison as a `MATCH` on a declared property, so the declared index serves it); one `UPDATE` of the found nodes (the dialect's `updateFromJson`: `UPDATE ... FROM` on PostgreSQL and SQLite, `UPDATE ... JOIN JSON_TABLE` on MySQL); one `INSERT ... SELECT` of the new ones, in input order. Relationships: a `SELECT` of the start and end ids, then an `INSERT ... SELECT`. A SELECT-then-INSERT, not `INSERT ... ON CONFLICT`: a key is scoped to a label, while a unique index covers the table; MySQL has no index on a string key; and the counts of created and updated nodes, and generated ids, need to know which rows exist. A unique index on the key turns a concurrent insert of the same key into a `CypherConstraintError`.
+
 ## Limits
 
 Set for each graph; a query can lower them but never raise them. Exceeding a limit raises `LimitExceededError`. Results are never silently truncated.

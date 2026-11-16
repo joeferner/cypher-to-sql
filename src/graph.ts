@@ -1,4 +1,14 @@
 import type * as ast from './ast.js';
+import {
+  bulkDelete,
+  bulkWrite,
+  type BulkContext,
+  type BulkDeleteInput,
+  type BulkDeleteResult,
+  type BulkWriteInput,
+  type BulkWriteOptions,
+  type BulkWriteResult,
+} from './bulk.js';
 import type { Dialect } from './dialect/dialect.js';
 import {
   LimitExceededError,
@@ -66,6 +76,14 @@ export interface Graph {
     options?: QueryOptions,
   ): Promise<Record<string, CypherValue>[]>;
   compile(cypher: string, options?: QueryOptions): CompiledPlan;
+  /**
+   * Writes nodes, then relationships, without Cypher, in a few statements per
+   * chunk of input, in one write transaction (see docs/bulk.md). Only on a
+   * graph created with `readOnly: false`.
+   */
+  bulkWrite(input: BulkWriteInput, options?: BulkWriteOptions): Promise<BulkWriteResult>;
+  /** Deletes the relationships, then the nodes, that match (see docs/bulk.md). */
+  bulkDelete(input: BulkDeleteInput): Promise<BulkDeleteResult>;
 }
 
 export function createGraph(options: GraphOptions): Graph {
@@ -132,7 +150,22 @@ export function createGraph(options: GraphOptions): Graph {
         idGenerator: idStrategy.kind === 'generator' ? idStrategy.generate : undefined,
       });
     },
+    async bulkWrite(input, bulkOptions): Promise<BulkWriteResult> {
+      return bulkWrite(bulkContext('bulkWrite'), input, bulkOptions);
+    },
+    async bulkDelete(input): Promise<BulkDeleteResult> {
+      return bulkDelete(bulkContext('bulkDelete'), input);
+    },
   };
+
+  function bulkContext(name: string): BulkContext {
+    if (readOnly) {
+      throw new ReadOnlyViolationError(`${name} is not allowed on a read-only graph`, {
+        hint: 'Create the graph with readOnly: false.',
+      });
+    }
+    return { dialect: options.dialect, mapping, executor: options.executor, idStrategy, limits };
+  }
 }
 
 /** Parses a query and rejects it if it contains any write clause. */

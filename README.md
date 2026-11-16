@@ -65,6 +65,7 @@ await writer.query("CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Al
 - [Executors](docs/executors.md): what an executor does, and tested ones for `pg`, `better-sqlite3`, `node:sqlite`, and `mysql2`.
 - [Values](docs/values.md): the JavaScript types of results and parameters, and `toJson` for plain JSON.
 - [Schema](docs/schema.md): the tables, `migrate`, the mapping and table prefixes, indexes, and declared property types.
+- [Bulk writes](docs/bulk.md): `graph.bulkWrite` and `graph.bulkDelete`, for loading many nodes and relationships without Cypher, with keys, in a few statements per 5,000 rows.
 - [Safe execution](docs/safe-execution.md): running untrusted or generated queries, database roles, timeouts, and limits.
 - [Errors](docs/errors.md): the error classes, their hints, and a retry loop for generated queries.
 - [Design](DESIGN.md): how queries become SQL.
@@ -142,18 +143,23 @@ The [benchmarks](bench/README.md) run one query corpus on SQLite, PostgreSQL, an
 
 `npm run bench:writes` ingests batches of 1,000 rows with one `UNWIND $rows AS row ...` query each, into a graph whose `key` is indexed (declared, for this library), after an untimed warm-up round. The same Cypher runs on Neo4j and ArcadeDB. Rows per second:
 
-| Batch of 1,000                                                              | SQLite | PostgreSQL | MySQL |  Neo4j | ArcadeDB |
-| --------------------------------------------------------------------------- | -----: | ---------: | ----: | -----: | -------: |
-| `CREATE (:Item {key: row.key, name: row.name, ...})`                        | 24,786 |      3,975 | 5,552 | 10,820 |   35,567 |
-| same, with `idStrategy` generator                                           | 38,697 |      6,568 | 5,438 |        |          |
-| `CREATE (n:Item {key: row.key}) SET n += row.props`                         | 17,704 |      3,274 | 3,879 |  9,566 |   17,360 |
-| `MERGE (n:Item {key: row.key}) SET n += row.props`, new                     |    831 |        180 |   510 | 23,282 |   13,144 |
-| `MERGE` again, nodes exist                                                  |    684 |        189 |   535 |  7,719 |   22,769 |
-| `MATCH (a {key: row.from}) MATCH (b {key: row.to}) CREATE (a)-[:LINK]->(b)` | 41,656 |      3,903 | 8,564 | 10,652 |   18,292 |
+| Batch of 1,000                                                              | SQLite | PostgreSQL |  MySQL |  Neo4j | ArcadeDB |
+| --------------------------------------------------------------------------- | -----: | ---------: | -----: | -----: | -------: |
+| `CREATE (:Item {key: row.key, name: row.name, ...})`                        | 24,786 |      3,975 |  5,552 | 10,820 |   35,567 |
+| same, with `idStrategy` generator                                           | 38,697 |      6,568 |  5,438 |        |          |
+| same nodes with [`graph.bulkWrite({ nodes })`](docs/bulk.md), no Cypher     | 57,282 |     31,293 | 21,464 |        |          |
+| `CREATE (n:Item {key: row.key}) SET n += row.props`                         | 17,704 |      3,274 |  3,879 |  9,566 |   17,360 |
+| `MERGE (n:Item {key: row.key}) SET n += row.props`, new                     |    831 |        180 |    510 | 23,282 |   13,144 |
+| same with `graph.bulkWrite({ nodes }, { nodeKey })`, new                    | 41,625 |     22,055 | 18,925 |        |          |
+| `MERGE` again, nodes exist                                                  |    684 |        189 |    535 |  7,719 |   22,769 |
+| same with `graph.bulkWrite`, nodes exist                                    | 28,062 |     20,249 | 19,097 |        |          |
+| `MATCH (a {key: row.from}) MATCH (b {key: row.to}) CREATE (a)-[:LINK]->(b)` | 41,656 |      3,903 |  8,564 | 10,652 |   18,292 |
+| same with `graph.bulkWrite({ relationships })`                              | 27,952 |     11,003 | 18,042 |        |          |
 
+- **[`graph.bulkWrite`](docs/bulk.md) is 1–3 statements per 5,000 rows,** not per row, so it does not pay a round trip per row: nodes at 4–8 times the rate of `CREATE` on PostgreSQL and MySQL (2.3 times on SQLite), and keyed nodes at 36–120 times that of `MERGE`. Relationships run 2–3 times faster on PostgreSQL and MySQL; on SQLite, where a statement costs no round trip, Cypher `CREATE` is faster. (The `bulkWrite` rows come from a later run than the rest; the Cypher workloads of that run were up to 45% slower than the table's, so these ratios are on the low side.)
 - **`CREATE` is one statement per row,** faster than Neo4j on SQLite, with the properties inline or from a map: a `SET n += row.props` (or `SET n.key = ...`) right after the `CREATE` becomes part of its `INSERT`, as long as its value comes from the row, a parameter, or a literal, not from the graph.
 - **Relationships between existing nodes** (`MATCH` both ends by a key from the row, then `CREATE` or `MERGE`) use the key's index: as fast as the native engines on SQLite, and linear in the batch on every database. For a key of several properties (`{doc: row.doc, id: row.id}`), declare a [composite index](docs/schema.md#composite-and-unique-indexes).
-- **`MERGE` of nodes** is linear in the batch too, but runs 2 statements per row for a node that exists (the lookup, and the `SET` as one `UPDATE`) and 3 for a new one: 12–140 times slower than Neo4j and ArcadeDB. Load nodes that are known to be new with `CREATE`.
+- **`MERGE` of nodes** is linear in the batch too, but runs 2 statements per row for a node that exists (the lookup, and the `SET` as one `UPDATE`) and 3 for a new one: 12–140 times slower than Neo4j and ArcadeDB. Load nodes that are known to be new with `CREATE`, and to insert-or-update many nodes by a key, use [`graph.bulkWrite`](docs/bulk.md).
 - **`idStrategy: { kind: 'generator', ... }`** makes plain `CREATE` about 1.6 times faster on SQLite and PostgreSQL.
 - A single query is limited to 30 seconds (`timeoutMs`) and 100,000 created entities (`maxCreatedEntities`); raise them on the writing graph for larger batches.
 
