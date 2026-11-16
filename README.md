@@ -14,13 +14,15 @@ Create the two tables ([PostgreSQL](examples/schema/postgres.sql), [SQLite](exam
 
 ```ts
 import pg from 'pg';
-import { createGraph, postgres } from 'cypher-to-sql';
+import { createGraph, postgres, toJson } from 'cypher-to-sql';
 import { pgExecutor } from './executors/pg.js'; // from examples/executors/pg.ts
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const graph = createGraph({ dialect: postgres(), executor: pgExecutor(pool) }); // read-only by default
 
 const records = await graph.query('MATCH (p:Person) RETURN p, p.name AS name LIMIT $n', { n: 10 });
+// Integers come back as bigint: toJson(records) gives plain JSON (docs/values.md)
+console.log(JSON.stringify(toJson(records)));
 
 // Inspect the SQL without running it
 console.log(graph.compile('MATCH (p:Person) RETURN p LIMIT 5').explain());
@@ -59,6 +61,7 @@ await writer.query("CREATE (:Person {name: 'Ada'})-[:KNOWS]->(:Person {name: 'Al
 ## Documentation
 
 - [Executors](docs/executors.md): what an executor does, and tested ones for `pg`, `better-sqlite3`, `node:sqlite`, and `mysql2`.
+- [Values](docs/values.md): the JavaScript types of results and parameters, and `toJson` for plain JSON.
 - [Schema](docs/schema.md): the tables, the mapping, indexes, and declared property types.
 - [Safe execution](docs/safe-execution.md): running untrusted or generated queries, database roles, timeouts, and limits.
 - [Errors](docs/errors.md): the error classes, their hints, and a retry loop for generated queries.
