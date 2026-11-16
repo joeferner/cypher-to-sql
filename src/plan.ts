@@ -13,7 +13,7 @@ import {
   type CypherError,
 } from './errors.js';
 import { parseCypherJson, stringifyCypherJson, stringifySqlJson } from './json.js';
-import { declaredValue, type PropertyTypes } from './property-types.js';
+import { declaredValue, type DeclaredTypes as PropertyTypes } from './property-types.js';
 import { BIDIRECTIONAL_MAX_PAIRS, idsJson, pathsJson, shortestPaths } from './search.js';
 import type { Expression } from './ast.js';
 import { parseTemporal, sortKey, TemporalError } from './temporal.js';

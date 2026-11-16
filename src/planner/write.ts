@@ -15,7 +15,7 @@ import type {
   WrittenValue,
 } from '../plan.js';
 import type { Dialect } from '../dialect/dialect.js';
-import type { GraphMapping } from '../mapping.js';
+import type { ResolvedMapping } from '../mapping.js';
 import { planWrittenReturn, typeKey, type RowSource, type WrittenVariable } from './read.js';
 import { constantValue, SqlBuilder } from './sql-builder.js';
 import { children, mapChildren } from './walk.js';
@@ -50,7 +50,7 @@ export type CreatedEntity =
 export function rowVariables(
   source: RowSource,
   created: Map<string, CreatedEntity>,
-  mapping: GraphMapping,
+  mapping: ResolvedMapping,
   position: SourcePosition,
 ): { written: { name: string; value: WrittenValue }[]; variables: WrittenVariable[] } {
   const scope = source.scope;
@@ -109,7 +109,7 @@ export type IdStrategy =
 export class WritePlanner {
   public constructor(
     private readonly dialect: Dialect,
-    private readonly mapping: GraphMapping,
+    private readonly mapping: ResolvedMapping,
     private readonly idStrategy: IdStrategy,
   ) {}
 

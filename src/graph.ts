@@ -19,7 +19,12 @@ import {
 import { findProcedure, type Procedures } from './procedures.js';
 import type { SqlExecutor } from './executor.js';
 import { defaultLimits, lowerLimits, type Limits } from './limits.js';
-import { defaultMapping, validateMapping, type GraphMapping } from './mapping.js';
+import {
+  defaultMapping,
+  validateMapping,
+  type GraphMapping,
+  type ResolvedMapping,
+} from './mapping.js';
 import { parse } from './parser/parse.js';
 import {
   createPlan,
@@ -176,7 +181,7 @@ export function assertReadOnly(cypher: string): void {
 function planQuery(
   query: ast.Query,
   dialect: Dialect,
-  mapping: GraphMapping,
+  mapping: ResolvedMapping,
   writer: WritePlanner | undefined,
   limits: Limits,
 ): CompiledPlan {
@@ -325,7 +330,7 @@ function planReturnAfterCreate(
   source: RowSource,
   created: Map<string, CreatedEntity>,
   dialect: Dialect,
-  mapping: GraphMapping,
+  mapping: ResolvedMapping,
   deletes: boolean,
 ): { step: PlanStep; columns: ColumnSpec[] } {
   const { written, variables } = rowVariables(source, created, mapping, ret.position);

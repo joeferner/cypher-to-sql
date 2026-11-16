@@ -11,13 +11,13 @@ import { migrate, postgres } from 'cypher-to-sql';
 
 // At deploy, with an executor whose role may create tables.
 const result = await migrate({ dialect: postgres(), executor: adminExecutor, mapping });
-// { from: 0, to: 2, created: [...statements], converted: 0, skipped: [] }
+// { from: 0, to: 2, created: [...statements], converted: 0, skipped: [], unused: [] }
 ```
 
-- **No tables:** it creates the node and edge tables, their indexes, an index for each [declared property](#properties), and the version table.
+- **No tables:** it creates the node and edge tables, their indexes, an index for each [declared property](#properties) (but those [declared `indexed: false`](#typed-properties-without-an-index)), and the version table.
 - **Tables without a version table** (created by 1.0, or from the example DDL files): it treats them as version 1, adds the version table, and runs the upgrades.
 - **Upgrades** run from the stored version to the library's (`SCHEMA_VERSION`). From version 1, declared `date` and `datetime` strings become temporal values ([below](#dates-and-date-times)); values that are not valid dates stay as they were and are listed in `result.skipped`.
-- **Every run** creates the index of each declared property that has none, so declaring a property and running `migrate` adds its index.
+- **Every run** creates the index of each declared property that has none, so declaring a property and running `migrate` adds its index. It drops no index; `result.unused` lists those of properties now declared `indexed: false`.
 - A version newer than the library's is a `SchemaError`.
 
 It runs in one write transaction (MySQL commits each DDL statement by itself), and running it again changes nothing. Run it from one process, at deploy, not from every application instance.
@@ -127,9 +127,27 @@ CREATE INDEX nodes_properties_age ON nodes ((CAST(JSON_EXTRACT(properties, '$."a
 - Reads trust the declaration: a stored value of another type makes the PostgreSQL cast fail. Add `CHECK` constraints when other tools write to the tables.
 - Supported types: `string`, `integer`, `float`, `boolean`, `date`, and `datetime`.
 
+#### Typed properties without an index
+
+Every declared property gets an index of its own, which every write then updates. For a key that queries rarely filter on, or that is only looked up together with others (a composite index, below), declare it with `indexed: false`:
+
+```ts
+propertyTypes: {
+  id: 'string',                            // indexed
+  doc: { type: 'string', indexed: false }, // typed, no index of its own
+  name: { type: 'string', indexed: false },
+},
+indexes: [{ keys: ['doc', 'id'], unique: true }], // doc is still in this one
+```
+
+- The type applies exactly as for `'string'`: reads, comparisons, writes, `bulkWrite`, and type checks. A filter on the key reads every candidate row instead of using an index.
+- `migrate` and `schemaSql` create no index for the key alone, and `propertyIndexSql` returns undefined for it. Composite and unique indexes that include it are created as usual.
+- `migrate` never drops an index: when a key that had its index changes to `indexed: false`, the result lists that index in `unused` (`{ table, name }`), to drop yourself if no query needs it.
+- `{ type: 'string' }` and `{ type: 'string', indexed: true }` are the same as `'string'`.
+
 #### Composite and unique indexes
 
-A node that is identified by more than one property, such as its document and its id within it, needs one index over both. With an index on each alone, a lookup by both can use the less selective one (every node of the document), which PostgreSQL then filters node by node. Declare the index in the mapping; every key must be a declared property:
+A node that is identified by more than one property, such as its document and its id within it, needs one index over both. With an index on each alone, a lookup by both can use the less selective one (every node of the document), which PostgreSQL then filters node by node. Declare the index in the mapping; every key must be a declared property (with `indexed: false` for a key that needs no index of its own, [above](#typed-properties-without-an-index)):
 
 ```ts
 const mapping = {

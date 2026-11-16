@@ -1,9 +1,17 @@
 import { MappingError } from './errors.js';
-import { isPropertyType, PROPERTY_TYPES, type PropertyTypes } from './property-types.js';
+import {
+  isPropertyType,
+  PROPERTY_TYPES,
+  type DeclaredTypes,
+  type PropertyDeclaration,
+  type PropertyType,
+  type PropertyTypes,
+} from './property-types.js';
 
 /**
  * An index over one or more declared properties, which `migrate` and
- * `schemaSql` create in addition to the index of each declared property: a
+ * `schemaSql` create in addition to the index of each declared property
+ * (but those declared `indexed: false`): a
  * composite index for a key of several properties (`(n {doc: $d, id: $i})`),
  * and with `unique`, one the database enforces. Uniqueness holds across the
  * whole table, every label (or relationship type).
@@ -94,13 +102,14 @@ export function validateMapping(mapping: GraphMapping): ResolvedMapping {
   if (mapping.prefix !== undefined && mapping.prefix !== '') {
     check('prefix', mapping.prefix);
   }
+  const declared = { nodes: resolveTypes(), edges: resolveTypes() };
   for (const kind of ['nodes', 'edges'] as const) {
     const { propertyTypes, indexes, ...columns } = mapping[kind];
     for (const [key, value] of Object.entries(columns)) {
       check(`${kind}.${key}`, value);
     }
     if (propertyTypes !== undefined) {
-      checkPropertyTypes(`${kind}.propertyTypes`, propertyTypes);
+      declared[kind] = resolveTypes(checkPropertyTypes(`${kind}.propertyTypes`, propertyTypes));
     }
     if (indexes !== undefined) {
       checkIndexes(`${kind}.indexes`, indexes, propertyTypes ?? {});
@@ -109,16 +118,51 @@ export function validateMapping(mapping: GraphMapping): ResolvedMapping {
   const prefix = mapping.prefix ?? '';
   const resolved: ResolvedMapping = {
     ...mapping,
-    nodes: { ...mapping.nodes, table: `${prefix}${mapping.nodes.table}` },
-    edges: { ...mapping.edges, table: `${prefix}${mapping.edges.table}` },
+    nodes: { ...mapping.nodes, ...declared.nodes, table: `${prefix}${mapping.nodes.table}` },
+    edges: { ...mapping.edges, ...declared.edges, table: `${prefix}${mapping.edges.table}` },
     prefix,
   };
   RESOLVED.add(resolved);
   return resolved;
 }
 
-/** A mapping whose table names include its prefix (see `validateMapping`). */
-export type ResolvedMapping = GraphMapping & { prefix: string };
+/** Declared property types as the library reads them, and the keys without an index of their own. */
+interface ResolvedTypes {
+  propertyTypes: DeclaredTypes | undefined;
+  /** Declared keys with `indexed: false`: no single-key index. */
+  unindexed: ReadonlySet<string>;
+}
+
+function resolveTypes(
+  declarations?: Record<string, PropertyType | PropertyDeclaration>,
+): ResolvedTypes {
+  if (declarations === undefined) {
+    return { propertyTypes: undefined, unindexed: new Set() };
+  }
+  const types: Record<string, PropertyType> = {};
+  const unindexed = new Set<string>();
+  for (const [key, declaration] of Object.entries(declarations)) {
+    if (typeof declaration === 'string') {
+      types[key] = declaration;
+    } else {
+      types[key] = declaration.type;
+      if (declaration.indexed === false) {
+        unindexed.add(key);
+      }
+    }
+  }
+  return { propertyTypes: types, unindexed };
+}
+
+/**
+ * A mapping whose table names include its prefix, and whose declared property
+ * types are plain types (see `validateMapping`).
+ */
+export type ResolvedMapping = GraphMapping & {
+  prefix: string;
+  nodes: ResolvedTypes;
+  edges: ResolvedTypes;
+};
 
 const RESOLVED = new WeakSet<GraphMapping>();
 
@@ -165,7 +209,11 @@ function checkIndexes(path: string, indexes: unknown, types: PropertyTypes): voi
   });
 }
 
-function checkPropertyTypes(path: string, types: unknown): void {
+/** Checks declared property types, and returns them. */
+function checkPropertyTypes(
+  path: string,
+  types: unknown,
+): Record<string, PropertyType | PropertyDeclaration> {
   if (typeof types !== 'object' || types === null || Array.isArray(types)) {
     throw new MappingError(`Mapping value ${path} must be an object of property key to type`);
   }
@@ -180,10 +228,30 @@ function checkPropertyTypes(path: string, types: unknown): void {
         `Mapping value ${path} has a key with a double quote or control character: ${JSON.stringify(key)}`,
       );
     }
-    if (!isPropertyType(type)) {
-      throw new MappingError(
-        `Mapping value ${path}.${key} must be one of ${PROPERTY_TYPES.join(', ')}, got ${JSON.stringify(type)}`,
-      );
+    if (isPropertyType(type)) {
+      continue;
     }
+    if (typeof type === 'object' && type !== null && !Array.isArray(type)) {
+      const declaration = type as Record<string, unknown>;
+      const extra = Object.keys(declaration).find((k) => k !== 'type' && k !== 'indexed');
+      if (extra !== undefined) {
+        throw new MappingError(
+          `Mapping value ${path}.${key} has ${JSON.stringify(extra)}; a declaration has only type and indexed`,
+        );
+      }
+      if (!isPropertyType(declaration['type'])) {
+        throw new MappingError(
+          `Mapping value ${path}.${key}.type must be one of ${PROPERTY_TYPES.join(', ')}, got ${JSON.stringify(declaration['type'])}`,
+        );
+      }
+      if (declaration['indexed'] !== undefined && typeof declaration['indexed'] !== 'boolean') {
+        throw new MappingError(`Mapping value ${path}.${key}.indexed must be true or false`);
+      }
+      continue;
+    }
+    throw new MappingError(
+      `Mapping value ${path}.${key} must be one of ${PROPERTY_TYPES.join(', ')}, or { type, indexed }, got ${JSON.stringify(type)}`,
+    );
   }
+  return types as Record<string, PropertyType | PropertyDeclaration>;
 }

@@ -17,11 +17,26 @@ export const PROPERTY_TYPES = [
 export type PropertyType = (typeof PROPERTY_TYPES)[number];
 
 /**
- * Declared types by property key. A declared property holds only values of its
- * type (or is absent); CREATE rejects anything else. Undeclared keys accept any
- * property value.
+ * A declared property's type, and whether `migrate` and `schemaSql` give it an
+ * index of its own (`indexed`, true by default). With `indexed: false` the type
+ * still applies everywhere; the property can still be a key of a composite
+ * index (`indexes`).
  */
-export type PropertyTypes = Readonly<Record<string, PropertyType>>;
+export interface PropertyDeclaration {
+  type: PropertyType;
+  indexed?: boolean | undefined;
+}
+
+/**
+ * Declared types by property key: a type (`'integer'`, indexed), or a
+ * `PropertyDeclaration` (`{ type: 'string', indexed: false }`). A declared
+ * property holds only values of its type (or is absent); CREATE rejects
+ * anything else. Undeclared keys accept any property value.
+ */
+export type PropertyTypes = Readonly<Record<string, PropertyType | PropertyDeclaration>>;
+
+/** Declared types by property key, as the library reads them (`validateMapping`). */
+export type DeclaredTypes = Readonly<Record<string, PropertyType>>;
 
 export function isPropertyType(value: unknown): value is PropertyType {
   return (PROPERTY_TYPES as readonly unknown[]).includes(value);
