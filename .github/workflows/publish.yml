@@ -1,0 +1,43 @@
+name: Publish
+
+# Publishes to npm when a GitHub release is published. The release tag must be
+# v<version> of package.json. Needs the NPM_TOKEN secret; --provenance needs a
+# public repository.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Check that the tag matches package.json
+        run: test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}"
+
+      - run: npm ci
+
+      # Unit tests and the allow-listed TCK scenarios on SQLite, PostgreSQL, and MySQL.
+      - run: npm run db:up
+      - run: npm test
+
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - if: always()
+        run: npm run db:down
