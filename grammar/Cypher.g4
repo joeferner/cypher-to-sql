@@ -604,8 +604,11 @@ oC_MapLiteral
 oC_PropertyKeyName
                :  oC_SchemaName ;
 
+// Implementation extension to Cypher, not part of openCypher 9 (cypher-to-sql):
+// a parameter name may be a reserved word (`$limit`), as in Neo4j; openCypher 9
+// takes only a symbolic name here.
 oC_Parameter
-         :  '$' ( oC_SymbolicName | DecimalInteger ) ;
+         :  '$' ( oC_SchemaName | DecimalInteger ) ;
 
 oC_SchemaName
           :  oC_SymbolicName
@@ -666,6 +669,13 @@ oC_ReservedWord
                 | OF
                 | ADD
                 | DROP
+                // Implementation extension to Cypher, not part of openCypher 9
+                // (cypher-to-sql): CALL, YIELD, and FOREACH are names where a
+                // reserved word may be one (property keys, labels, parameters),
+                // as in Neo4j.
+                | CALL
+                | YIELD
+                | FOREACH
                 ;
 
 CONSTRAINT : ( 'C' | 'c' ) ( 'O' | 'o' ) ( 'N' | 'n' ) ( 'S' | 's' ) ( 'T' | 't' ) ( 'R' | 'r' ) ( 'A' | 'a' ) ( 'I' | 'i' ) ( 'N' | 'n' ) ( 'T' | 't' ) ;

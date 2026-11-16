@@ -212,6 +212,36 @@ describe('parse: clauses', () => {
     }
   });
 
+  it('takes reserved words as parameter names, property keys, and labels, as Neo4j does (#66)', () => {
+    /** The names of the parameters in the AST, in order. */
+    const names = (cypher: string): string[] => {
+      const found: string[] = [];
+      JSON.stringify(parse(cypher), (_key, value: unknown) => {
+        const node = value as { type?: unknown; name?: unknown } | null;
+        if (node?.type === 'Parameter' && typeof node.name === 'string') {
+          found.push(node.name);
+        }
+        return value;
+      });
+      return found;
+    };
+    for (const word of ['limit', 'match', 'return', 'order', 'count', 'call', 'yield', 'foreach']) {
+      expect(names(`MATCH (n) WHERE n.x = $${word} RETURN n LIMIT $${word}`), word).toEqual([
+        word,
+        word,
+      ]);
+    }
+    expect(names('RETURN $LIMIT, $Skip, $`odd name`, $0')).toEqual([
+      'LIMIT',
+      'Skip',
+      'odd name',
+      '0',
+    ]);
+    expect(() =>
+      parse('MATCH (n:Call)-[:Yield]->(m) RETURN n.foreach, {call: 1} AS c'),
+    ).not.toThrow();
+  });
+
   it('words syntax errors for people and LLMs, with a hint for common mistakes', () => {
     const failure = (cypher: string): CypherSyntaxError => {
       try {

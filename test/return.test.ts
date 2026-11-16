@@ -101,6 +101,13 @@ for (const backend of testBackends()) {
       const q = 'MATCH (n) RETURN n.name AS x ORDER BY x SKIP $s LIMIT $l';
       expect(await column(q, { s: 1n, l: 2n })).toEqual(['a', 'b']);
       expect(await column('MATCH (n) RETURN n.name AS x ORDER BY x SKIP 3')).toEqual(['c']);
+      // Reserved words as parameter names, as in Neo4j (#66).
+      expect(
+        await column('MATCH (n) RETURN n.name AS x ORDER BY x SKIP $skip LIMIT $limit', {
+          skip: 1n,
+          limit: 2n,
+        }),
+      ).toEqual(['a', 'b']);
       await expect(column(q, { s: -1n, l: 1n })).rejects.toThrow(SemanticError);
       expect(() => graph.compile('RETURN 1 SKIP 1.5')).toThrow(SemanticError);
     });

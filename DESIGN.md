@@ -22,7 +22,7 @@ Cypher text
   → Executor (one transaction) → Result assembler → Cypher values
 ```
 
-- Never parse Cypher with regular expressions. The grammar is pinned in `grammar/Cypher.g4` and regenerated on purpose. It has five implementation extensions from Neo4j, each marked in the file: `shortestPath(...)` and `allShortestPaths(...)` around a pattern part (their names are symbolic names checked by the parser, so neither word becomes reserved), `=~`, map projections, `EXISTS { }` without `RETURN`, and `FOREACH`. The grammar is Apache 2.0; [NOTICE](NOTICE) carries its notice into the package, with the generated parser.
+- Never parse Cypher with regular expressions. The grammar is pinned in `grammar/Cypher.g4` and regenerated on purpose. It has implementation extensions from Neo4j, each marked in the file: `shortestPath(...)` and `allShortestPaths(...)` around a pattern part (their names are symbolic names checked by the parser, so neither word becomes reserved), `=~`, map projections, `EXISTS { }` without `RETURN`, `FOREACH`, reserved words as parameter names (`$limit`), and `CALL`, `YIELD`, and `FOREACH` as names where a reserved word may be one (property keys, labels, map keys). The grammar is Apache 2.0; [NOTICE](NOTICE) carries its notice into the package, with the generated parser.
 - The planner never writes database-specific SQL. All dialect-specific syntax goes through the `Dialect` interface. Supporting two dialects from the start keeps that boundary honest.
 - One package. The TCK harness and the test executors live under `test/` and are not published.
 
