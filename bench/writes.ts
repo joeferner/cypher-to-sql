@@ -32,7 +32,10 @@ import {
   registerSqliteFunctions,
   sqlite,
   type CypherValue,
+  type BulkNode,
+  type BulkRelationship,
   type Dialect,
+  type Graph,
   type GraphMapping,
   type IdStrategy,
   type SqlExecutor,
@@ -156,6 +159,29 @@ const linkRows = (n: number): CypherValue[] =>
     props: { weight: i / 3, since: BigInt(2000 + (i % 25)) },
   }));
 
+/** The same nodes and relationships as `graph.bulkWrite` input (#89). */
+const bulkNodes = (n: number): BulkNode[] =>
+  nodeRows(n).map((row) => {
+    const { key, props } = row as { key: bigint; props: Record<string, unknown> };
+    return { labels: ['Item'], properties: { key, ...props } };
+  });
+const bulkLinks = (n: number): BulkRelationship[] =>
+  linkRows(n).map((row) => {
+    const { doc, from, to, props } = row as {
+      doc: bigint;
+      from: bigint;
+      to: bigint;
+      props: Record<string, unknown>;
+    };
+    return {
+      type: 'LINK4',
+      start: { label: 'Item', match: { doc, key: from } },
+      end: { label: 'Item', match: { doc, key: to } },
+      properties: props,
+    };
+  });
+const BULK_KEY = { nodeKey: { Item: ['doc', 'key'] } };
+
 const QUERIES = {
   createInline:
     'UNWIND $rows AS row CREATE (:Item {key: row.key, name: row.props.name, v: row.props.v, score: row.props.score})',
@@ -188,8 +214,14 @@ const write = (text: string): void => void process.stdout.write(`${text}\n`);
 /** Rows of the untimed first round. */
 const WARMUP = 100;
 
-/** Runs one query on a graph; returns the column `c` of its first row, if any (for checks). */
-type Runner = (cypher: string, params: Record<string, CypherValue>) => Promise<number | undefined>;
+/**
+ * Runs one query on a graph; returns the column `c` of its first row, if any
+ * (for checks). `graph` is the graph itself, for the bulk API (this library only).
+ */
+type Runner = ((
+  cypher: string,
+  params: Record<string, CypherValue>,
+) => Promise<number | undefined>) & { graph?: Graph };
 
 const firstC = (row: Record<string, unknown> | undefined): number | undefined =>
   row?.['c'] === undefined ? undefined : Number(row['c']);
@@ -242,7 +274,10 @@ async function engine(name: string): Promise<Engine> {
         // Batches above these defaults (30 s, 100,000 entities) need them raised.
         limits: { timeoutMs: 600_000, maxCreatedEntities: 1_000_000 },
       });
-      return async (cypher, params) => firstC((await graph.query(cypher, params))[0]);
+      const runner: Runner = async (cypher, params) =>
+        firstC((await graph.query(cypher, params))[0]);
+      runner.graph = graph;
+      return runner;
     },
   };
 }
@@ -344,14 +379,10 @@ async function main(): Promise<void> {
         // warm (query plans cached, JIT compiled, connections open).
         for (const size of [WARMUP, ...sizes]) {
           const timed = size !== WARMUP;
-          const run = async (
-            graph: Runner,
-            workload: string,
-            cypher: string,
-            rows: CypherValue[],
-          ): Promise<void> => {
+          /** Times `work`, which writes `size` rows. */
+          const time = async (workload: string, work: () => Promise<unknown>): Promise<void> => {
             if (!timed) {
-              await graph(cypher, { rows });
+              await work();
               return;
             }
             const before = target.statements?.();
@@ -360,12 +391,12 @@ async function main(): Promise<void> {
               dialect: name,
               ids,
               workload,
-              rows: rows.length,
+              rows: size,
               ms: null,
               statements: null,
             };
             try {
-              await graph(cypher, { rows });
+              await work();
               result.ms = performance.now() - start;
               result.statements = before === undefined ? null : target.statements!() - before;
             } catch (error) {
@@ -383,6 +414,12 @@ async function main(): Promise<void> {
                     `${Math.round((size / result.ms) * 1000)} |`,
             );
           };
+          const run = (
+            graph: Runner,
+            workload: string,
+            cypher: string,
+            rows: CypherValue[],
+          ): Promise<void> => time(workload, () => graph(cypher, { rows }));
 
           await run(
             await target.fresh(ids),
@@ -423,6 +460,40 @@ async function main(): Promise<void> {
             }
           }
           await run(await target.fresh(ids), 'MERGE, nodes new', QUERIES.merge, nodeRows(size));
+
+          // The bulk API (#89), this library only: nodes without a key (an
+          // insert, as CREATE); nodes by (doc, key), new and then again
+          // (merged); and relationships between them.
+          const plain = (await target.fresh(ids)).graph;
+          if (plain) {
+            await time('bulkWrite, nodes, no key', () =>
+              plain.bulkWrite({ nodes: bulkNodes(size) }),
+            );
+          }
+          const bulk = await target.fresh(ids);
+          if (bulk.graph) {
+            const g = bulk.graph;
+            await time('bulkWrite, nodes new', () =>
+              g.bulkWrite({ nodes: bulkNodes(size) }, BULK_KEY),
+            );
+            await time('bulkWrite, nodes exist', () =>
+              g.bulkWrite({ nodes: bulkNodes(size) }, BULK_KEY),
+            );
+            await time('bulkWrite, relationships', () =>
+              g.bulkWrite({ relationships: bulkLinks(size) }),
+            );
+            for (const check of [
+              'MATCH (n:Item) WHERE n.name IS NOT NULL RETURN count(n) AS c',
+              'MATCH (:Item)-[r:LINK4]->(:Item) WHERE r.since IS NOT NULL RETURN count(r) AS c',
+            ]) {
+              const count = await bulk(check, {});
+              if (count !== size) {
+                write(
+                  `| ${ids} | check failed: ${check} gave ${String(count)}, not ${size} | | | | | |`,
+                );
+              }
+            }
+          }
         }
       }
     } finally {

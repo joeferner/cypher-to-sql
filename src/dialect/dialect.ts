@@ -97,6 +97,20 @@ export interface Dialect {
    */
   mergeProperties(propertiesExpr: string, patch: string): string;
 
+  /**
+   * One UPDATE of `table` (a quoted, qualified name) from the elements of the
+   * JSON array `rows` (bound through `jsonInput`), for `bulkWrite`: each element
+   * is an object whose member `id` is the id (column `id`, unquoted) of the row
+   * to change; `set` gives each column's new value from the element (`row`, a
+   * JSON object) and the column's current value (`current`).
+   */
+  updateFromJson(
+    table: string,
+    id: string,
+    rows: string,
+    set: { column: string; value: (row: string, current: string) => string }[],
+  ): string;
+
   /** A labels array with the label appended (the caller checks that it is not there yet). */
   appendLabel(labelsExpr: string, labelPlaceholder: string): string;
 

@@ -149,6 +149,14 @@ export function postgres(): Dialect {
     // The properties have no nulls, so the nulls after `||` are the patch's.
     mergeProperties: (properties, patch) => `jsonb_strip_nulls(${properties} || ${patch})`,
     appendLabel: (labels, label) => `(${labels} || jsonb_build_array(${label}::text))`,
+    // The id in the column's own type, so that the primary key finds the rows.
+    updateFromJson: (table, id, rows, set) =>
+      `UPDATE ${table} AS t SET ` +
+      set
+        .map(({ column, value }) => `"${column}" = ${value('x.value', `t."${column}"`)}`)
+        .join(', ') +
+      ` FROM jsonb_array_elements(${rows}) AS x(value) ` +
+      `WHERE t."${id}" = ${typedId(`x.value -> 'id'`, table, id)}`,
     removeLabel: (labels, label) => `(${labels} - ${label}::text)`,
     typedPlaceholder: (placeholder, type) => `(${placeholder}::${SQL_TYPES[type]})`,
     booleanLiteral: (value) =>

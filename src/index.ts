@@ -30,6 +30,16 @@ export {
   type CypherMap,
 } from './values.js';
 export { toJson, type JsonValue, type ToJsonOptions } from './to-json.js';
+export type {
+  BulkDeleteInput,
+  BulkDeleteResult,
+  BulkEndpoint,
+  BulkNode,
+  BulkRelationship,
+  BulkWriteInput,
+  BulkWriteOptions,
+  BulkWriteResult,
+} from './bulk.js';
 export {
   indexSql,
   migrate,
