@@ -388,11 +388,15 @@ export interface Dialect {
    * `UNWIND listExpr AS ...` as a FROM item named `alias`, cross-joined after the
    * earlier FROM items (it may refer to them). `listExpr` is a JSON value. A list
    * gives one row per element, in list order; a JSON `null` (or SQL NULL) gives no
-   * rows; any other value gives one row holding that value.
+   * rows; any other value gives one row holding that value. `atMostOne`: the list
+   * is known to hold at most one element (the current row of a per-row write
+   * step), which a dialect can tell its planner, so that it finds the matching
+   * rows of a table by an index instead of hashing the whole table.
    */
   unwind(
     listExpr: string,
     alias: string,
+    atMostOne?: boolean,
   ): {
     from: string;
     /** Condition the row must meet, if the dialect needs one. */

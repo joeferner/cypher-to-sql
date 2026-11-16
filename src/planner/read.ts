@@ -208,7 +208,7 @@ export class ReadScope {
     // Its own alias prefix: `b.deletable` is keyed by alias, and the stages after
     // a WITH number their aliases from 0 again.
     const scope = new ReadScope(b, undefined, 'w');
-    const u = d.unwind(d.jsonInput(b.bind(rows)), scope.alias('r'));
+    const u = d.unwind(d.jsonInput(b.bind(rows)), scope.alias('r'), rows.kind === 'currentRow');
     scope.addFrom(u.from);
     if (u.where) {
       scope.where.push(u.where);
@@ -230,7 +230,9 @@ export class ReadScope {
           scope.from.push({
             join:
               `LEFT JOIN ${b.table(table)} AS ${alias} ON ${tag} = '${entity}' AND ` +
-              d.jsonIdEquals(`${alias}.${b.ident(b.mapping[table].id)}`, key('~id')),
+              // The id as the column's type, so that the primary key serves the join.
+              `${alias}.${b.ident(b.mapping[table].id)} = ` +
+              d.jsonId(key('~id'), b.table(table), b.mapping[table].id),
           });
           return { alias, idColumn: `${alias}.${b.ident(b.mapping[table].id)}`, entity };
         });

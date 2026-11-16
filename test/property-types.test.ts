@@ -236,6 +236,89 @@ for (const backend of testBackends()) {
       expect(sql).toContain(`((n0."properties" -> '$."born"') ->> '$."~k"') > ?`);
     });
 
+    it('compares a declared property with a value from the row as Cypher does, by its index (#77)', async () => {
+      const graph = await setup();
+      await graph.query("CREATE ({k: 1, age: 30, name: 'a', active: true}), ({k: 2})");
+      // = on each row value: true, false, or null, as in Cypher, in RETURN and in WHERE.
+      const rows = [
+        { x: 30n },
+        { x: 30.0 },
+        { x: 30.5 },
+        { x: 31n },
+        { x: '30' },
+        { x: null },
+        {},
+        { x: [30n] },
+        { x: 1e300 },
+      ];
+      const ageEquals = async (): Promise<CypherValue[]> =>
+        (
+          await graph.query(
+            'UNWIND $rows AS row MATCH (n {k: 1}) RETURN n.age = row.x AS eq, (n.age = row.x) IS NULL AS unknown',
+            { rows },
+          )
+        ).map((r) => (r['unknown'] ? null : r['eq']!));
+      expect(await ageEquals()).toEqual([
+        true,
+        true,
+        false,
+        false,
+        false,
+        null,
+        null,
+        false,
+        false,
+      ]);
+      // A missing property is null whatever it is compared with.
+      expect(
+        (
+          await graph.query('UNWIND $rows AS row MATCH (n {k: 2}) RETURN n.age = row.x AS eq', {
+            rows: [{ x: 30n }, { x: 'a' }],
+          })
+        ).map((r) => r['eq']),
+      ).toEqual([null, null]);
+      // Strings and booleans.
+      expect(
+        (
+          await graph.query(
+            'UNWIND $rows AS row MATCH (n {k: 1}) RETURN n.name = row.s AS s, n.active = row.b AS b',
+            {
+              rows: [
+                { s: 'a', b: true },
+                { s: 'A', b: false },
+                { s: 1n, b: 'true' },
+              ],
+            },
+          )
+        ).map((r) => [r['s'], r['b']]),
+      ).toEqual([
+        [true, true],
+        [false, false],
+        [false, false],
+      ]);
+      // In a pattern: MATCH and MERGE by a row value find the node.
+      expect(
+        await graph.query(
+          'UNWIND $rows AS row MATCH (n {age: row.age}) RETURN n.k AS k, row.age AS age',
+          { rows: [{ age: 30n }, { age: 30.0 }, { age: 99n }] },
+        ),
+      ).toEqual([
+        { k: 1n, age: 30n },
+        { k: 1n, age: 30.0 },
+      ]);
+      await graph.query("UNWIND $rows AS row MERGE (n {age: row.age}) SET n.name = 'merged'", {
+        rows: [{ age: 30n }, { age: 40n }],
+      });
+      expect(
+        await graph.query(
+          'MATCH (n) WHERE n.age IS NOT NULL RETURN n.age AS age, n.name AS name ORDER BY age',
+        ),
+      ).toEqual([
+        { age: 30n, name: 'merged' },
+        { age: 40n, name: 'merged' },
+      ]);
+    });
+
     it('checks relationship properties with the edge types', async () => {
       const graph = await setup();
       await expect(graph.query('CREATE ()-[:R {weight: 1}]->()')).rejects.toThrow(
