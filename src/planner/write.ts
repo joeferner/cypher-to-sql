@@ -6,7 +6,14 @@ import {
   type SourcePosition,
 } from '../errors.js';
 import type { Limits } from '../limits.js';
-import type { BindValue, ColumnSpec, PlanStep, ValueSource, WrittenValue } from '../plan.js';
+import type {
+  BindValue,
+  ColumnSpec,
+  PlanStep,
+  PropertyPatch,
+  ValueSource,
+  WrittenValue,
+} from '../plan.js';
 import type { Dialect } from '../dialect/dialect.js';
 import type { GraphMapping } from '../mapping.js';
 import { planWrittenReturn, typeKey, type RowSource, type WrittenVariable } from './read.js';
@@ -26,6 +33,9 @@ export interface CreateSource {
 }
 
 /** An entity a CREATE clause binds to a variable, by its entity number in the row. */
+/** The properties bind of an INSERT, which SET items can be folded into. */
+type PropertiesBind = Extract<BindValue, { kind: 'properties' | 'propertiesParameter' }>;
+
 export type CreatedEntity =
   | { kind: 'node' | 'relationship'; entity: number }
   /** FOREACH's variable: its element's JSON, in the runner's entity slot `entity`. */
@@ -130,6 +140,20 @@ export class WritePlanner {
     const created = new Map<string, CreatedEntity>();
     /** The property map each created entity was given, for `a.key` in later property values. */
     const createdProperties = new Map<string, ast.Expression | undefined>();
+    /** The properties bind of each entity a CREATE (not MERGE) inserted, which SET items can fold into. */
+    const insertProperties = new Map<string, PropertiesBind>();
+    /** The variables the clause just planned created, when it was a CREATE (SET may fold into them). */
+    let createdByPrevious = new Set<string>();
+    /** Whether every item of the SET or REMOVE clause just planned folded into an INSERT. */
+    let foldedAll = false;
+    /**
+     * Whether an earlier clause wrote to an entity that existed before the query
+     * (SET on a matched node, DELETE, FOREACH, MERGE's ON items): then a SET
+     * value must be read as stored now, not from the source row (see `directPatch`).
+     */
+    let writesExisting = false;
+    /** Inside FOREACH, every SET item is planned as before. */
+    let inForeach = false;
     let entities = 0;
 
     /** A variable from the reading clauses, used in a CREATE pattern. */
@@ -235,6 +259,56 @@ export class WritePlanner {
       return { kind: 'computed', index, column };
     };
 
+    /** True when `expr` uses a variable that CREATE or MERGE bound in this query. */
+    const usesCreated = (expr: ast.Expression, local: readonly string[] = []): boolean =>
+      (expr.type === 'Variable' && !local.includes(expr.name) && created.has(expr.name)) ||
+      children(expr).some(({ child, local: inner }) => usesCreated(child, [...local, ...inner]));
+
+    /**
+     * A SET (or REMOVE) item that needs no SELECT first (#85): its target is a
+     * node or relationship this query created or merged, and its value can be
+     * read from the source row (a parameter, a literal, or `row.props`), not
+     * from the graph as stored now. That holds while no earlier clause wrote to
+     * an entity that existed before the query, which the value could read: the
+     * source row was read before any write, and the entities this query created
+     * are excluded from the value. Undefined when the item does not qualify.
+     */
+    const directPatch = (
+      item: ast.SetItem,
+    ):
+      | {
+          name: string;
+          entity: Extract<CreatedEntity, { kind: 'node' | 'relationship' }>;
+          patch: PropertyPatch;
+        }
+      | undefined => {
+      if (writesExisting || inForeach || item.kind === 'labels') {
+        return undefined;
+      }
+      const name =
+        item.kind === 'property'
+          ? item.target.type === 'Variable'
+            ? item.target.name
+            : undefined
+          : item.variable;
+      const entity = name === undefined ? undefined : created.get(name);
+      if (!entity || entity.kind === 'slot' || usesCreated(item.value) || foreign(item.value)) {
+        return undefined;
+      }
+      const table = entity.kind === 'node' ? this.mapping.nodes : this.mapping.edges;
+      return {
+        name: name!,
+        entity,
+        patch: {
+          mode: item.kind,
+          key: item.kind === 'property' ? item.key : undefined,
+          value: valueOf(item.value),
+          types: table.propertyTypes,
+          position: item.position,
+        },
+      };
+    };
+
     const newEntity = (): number => {
       entities++;
       if (entities > limits.maxCreatedEntities) {
@@ -272,6 +346,7 @@ export class WritePlanner {
       const entity = newEntity();
       const id: BindValue = { kind: 'entityId', entity };
       const labels = [...new Set(node.labels)];
+      const properties = this.properties('nodes', node.properties, valueOf, merging);
       into.push(
         this.insert('node', entity, [
           [
@@ -279,11 +354,7 @@ export class WritePlanner {
             { kind: 'json', value: { kind: 'constant', value: labels } },
             true,
           ],
-          [
-            this.mapping.nodes.properties,
-            this.properties('nodes', node.properties, valueOf, merging),
-            true,
-          ],
+          [this.mapping.nodes.properties, properties, true],
         ]),
       );
       // Bound after its properties, which cannot refer to the node itself.
@@ -291,6 +362,9 @@ export class WritePlanner {
         variables.set(node.variable, { kind: 'node', id });
         created.set(node.variable, { kind: 'node', entity });
         createdProperties.set(node.variable, node.properties);
+        if (!merging) {
+          insertProperties.set(node.variable, properties);
+        }
       }
       return id;
     };
@@ -314,18 +388,22 @@ export class WritePlanner {
         // MERGE creates an undirected relationship from left to right.
         const [start, end] = rel.direction === 'left' ? [next, previous] : [previous, next];
         const edges = this.mapping.edges;
+        const properties = this.properties('edges', rel.properties, valueOf, merging);
         into.push(
           this.insert('relationship', entity, [
             [edges.startId, start, false],
             [edges.endId, end, false],
             [edges.type, { kind: 'sql', value: rel.types[0]! }, false],
-            [edges.properties, this.properties('edges', rel.properties, valueOf, merging), true],
+            [edges.properties, properties, true],
           ]),
         );
         if (rel.variable !== undefined) {
           variables.set(rel.variable, { kind: 'relationship', id: { kind: 'entityId', entity } });
           created.set(rel.variable, { kind: 'relationship', entity });
           createdProperties.set(rel.variable, rel.properties);
+          if (!merging) {
+            insertProperties.set(rel.variable, properties);
+          }
         }
         previous = next;
       }
@@ -369,10 +447,16 @@ export class WritePlanner {
         created.set(clause.variable, { kind: 'slot', entity: slot });
         const inner: PlanStep[] = [];
         const starts: number[] = [];
-        for (const c of clause.clauses) {
-          starts.push(inner.length);
-          // The parser allows only updating clauses in FOREACH.
-          planClause(c as UpdateClause, inner);
+        writesExisting = true;
+        inForeach = true;
+        try {
+          for (const c of clause.clauses) {
+            starts.push(inner.length);
+            // The parser allows only updating clauses in FOREACH.
+            planClause(c as UpdateClause, inner);
+          }
+        } finally {
+          inForeach = false;
         }
         created.clear();
         createdBefore.forEach((v, k) => created.set(k, v));
@@ -390,6 +474,9 @@ export class WritePlanner {
         return;
       }
       if (clause.type === 'Merge') {
+        if (clause.onCreate.length > 0 || clause.onMatch.length > 0) {
+          writesExisting = true;
+        }
         steps.push(
           this.planMerge(
             clause,
@@ -415,6 +502,7 @@ export class WritePlanner {
         return;
       }
       if (clause.type === 'Delete') {
+        writesExisting = true;
         for (const expression of clause.expressions) {
           steps.push(
             ...this.planDeleteItem(expression, clause.detach, source.need(), created, computed++),
@@ -435,8 +523,39 @@ export class WritePlanner {
                   ? item
                   : { ...item, value: { type: 'Literal', position: item.position, value: null } },
               );
+        // Items right after the CREATE that made their target, while each can be
+        // read from the source row, become part of its INSERT; the others that
+        // can be are one UPDATE each, without a SELECT first (#85). Folding
+        // stops at the first item that cannot fold, to keep the items' order.
+        let folding = true;
+        foldedAll = true;
         for (const item of items) {
+          const direct = directPatch(item);
+          const insert =
+            direct && createdByPrevious.has(direct.name)
+              ? insertProperties.get(direct.name)
+              : undefined;
+          if (direct && folding && insert) {
+            (insert.patches ??= []).push(direct.patch);
+            continue;
+          }
+          folding = false;
+          foldedAll = false;
+          if (direct) {
+            steps.push(this.directUpdate(direct.entity, direct.patch));
+            continue;
+          }
           steps.push(...this.planSetItem(item, clause.type, source.need(), created, computed++));
+          const name =
+            item.kind === 'property'
+              ? item.target.type === 'Variable'
+                ? item.target.name
+                : undefined
+              : item.variable;
+          const target = name === undefined ? undefined : created.get(name);
+          if (!target || target.kind === 'slot') {
+            writesExisting = true;
+          }
         }
         return;
       }
@@ -464,7 +583,15 @@ export class WritePlanner {
     const starts: number[] = [];
     for (const clause of clauses) {
       starts.push(steps.length);
+      const before = new Set(created.keys());
       planClause(clause, steps);
+      // A SET or REMOVE clause whose items all folded leaves the INSERTs open
+      // for the next one; any other clause closes them.
+      if (clause.type === 'Create') {
+        createdByPrevious = new Set([...created.keys()].filter((name) => !before.has(name)));
+      } else if (!((clause.type === 'Set' || clause.type === 'Remove') && foldedAll)) {
+        createdByPrevious = new Set();
+      }
     }
     const clauseSteps = tagged(steps, starts);
     // A source made for a computed value (after some INSERTs were planned) makes every step per-row.
@@ -472,6 +599,28 @@ export class WritePlanner {
       ? clauseSteps.map((step) => ({ ...step, perRow: true }))
       : clauseSteps;
     return { steps: deletesNodes ? [...all, ...this.deleteNodes()] : all, created };
+  }
+
+  /**
+   * One SET item as a single UPDATE of an entity this query created or merged,
+   * by its id, with the value from the source row (see `directPatch`): the
+   * patch merged into the properties, or put in their place for `n = map`.
+   */
+  private directUpdate(
+    entity: Extract<CreatedEntity, { kind: 'node' | 'relationship' }>,
+    patch: PropertyPatch,
+  ): PlanStep {
+    const tables = entity.kind === 'node' ? 'nodes' : 'edges';
+    const table = this.mapping[tables];
+    const u = new SqlBuilder(this.dialect, this.mapping);
+    const properties = u.ident(table.properties);
+    const value = this.dialect.jsonInput(u.bind({ kind: 'valuePatch', ...patch }));
+    const next = patch.mode === 'replace' ? value : this.dialect.mergeProperties(properties, value);
+    return u.finish(
+      `UPDATE ${u.table(tables)} SET ${properties} = ${next} ` +
+        `WHERE ${u.ident(table.id)} = ${u.bind({ kind: 'entityId', entity: entity.entity })}`,
+      { updates: true },
+    );
   }
 
   /**
@@ -888,7 +1037,7 @@ export class WritePlanner {
     expr: ast.Expression | undefined,
     valueOf: (expr: ast.Expression) => ValueSource,
     merging = false,
-  ): BindValue {
+  ): PropertiesBind {
     // Declared types are checked when the values are known, at run time.
     const types = this.mapping[kind].propertyTypes;
     if (!expr) {

@@ -149,7 +149,12 @@ const nodeRows = (n: number): CypherValue[] =>
 
 /** Relationship rows: each node to the next, by key (and by document and key). */
 const linkRows = (n: number): CypherValue[] =>
-  Array.from({ length: n }, (_, i) => ({ doc: 1n, from: BigInt(i), to: BigInt((i + 1) % n) }));
+  Array.from({ length: n }, (_, i) => ({
+    doc: 1n,
+    from: BigInt(i),
+    to: BigInt((i + 1) % n),
+    props: { weight: i / 3, since: BigInt(2000 + (i % 25)) },
+  }));
 
 const QUERIES = {
   createInline:
@@ -163,6 +168,9 @@ const QUERIES = {
   // A node identified by its document and its key within it (#84).
   createLinksTwoKeys:
     'UNWIND $rows AS row MATCH (a:Item {doc: row.doc, key: row.from}) MATCH (b:Item {doc: row.doc, key: row.to}) CREATE (a)-[:LINK2]->(b)',
+  // The relationship's properties from a map, as a loader whose keys vary gets them (#85).
+  createLinksSet:
+    'UNWIND $rows AS row MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) CREATE (a)-[r:LINK3]->(b) SET r += row.props',
 };
 
 interface Result {
@@ -305,6 +313,7 @@ function arcadeEngine(url: string): Engine {
       await sql('CREATE INDEX ON Item (doc, key) NOTUNIQUE');
       await sql('CREATE EDGE TYPE LINK');
       await sql('CREATE EDGE TYPE LINK2');
+      await sql('CREATE EDGE TYPE LINK3');
       return async (cypher, params) => {
         const json = await post(
           `command/${DATABASE}`,
@@ -388,6 +397,12 @@ async function main(): Promise<void> {
           await run(graph, 'MERGE, relationships exist', QUERIES.mergeLinks, linkRows(size));
           await run(
             graph,
+            'CREATE relationships, then SET +=',
+            QUERIES.createLinksSet,
+            linkRows(size),
+          );
+          await run(
+            graph,
             'CREATE relationships, two keys',
             QUERIES.createLinksTwoKeys,
             linkRows(size),
@@ -398,6 +413,7 @@ async function main(): Promise<void> {
             'MATCH (n:Item) WHERE n.name IS NOT NULL RETURN count(n) AS c',
             'MATCH (:Item)-[r:LINK]->(:Item) RETURN count(r) AS c',
             'MATCH (:Item)-[r:LINK2]->(:Item) RETURN count(r) AS c',
+            'MATCH (:Item)-[r:LINK3]->(:Item) WHERE r.since IS NOT NULL RETURN count(r) AS c',
           ]) {
             const count = await graph(check, {});
             if (count !== size) {

@@ -43,10 +43,10 @@ Ids are 64-bit integers; other id types are not supported yet (`id(n)` returns a
 
 Load a graph through a graph created with `readOnly: false`, in batches of rows passed as a parameter. Measured with `npm run bench:writes` ([numbers](../README.md#writes)):
 
-- **New nodes:** `UNWIND $rows AS row CREATE (:Item {key: row.key, name: row.name})`, with the properties inline. It is one INSERT per row and linear in the batch; batches of 1,000 to 10,000 rows work well. `SET n += row.props` after the CREATE costs two more statements per row.
+- **New nodes:** `UNWIND $rows AS row CREATE (:Item {key: row.key, name: row.name})`, or with the properties from a map, `CREATE (n:Item {key: row.key}) SET n += row.props`. Either is one INSERT per row and linear in the batch; batches of 1,000 to 10,000 rows work well. SET and REMOVE items right after the CREATE that made their target become part of its INSERT when their values come from the row, parameters, or literals; an item whose value reads the graph (`SET n.b = n.a`, or a node an earlier SET changed) runs as before, a SELECT and an UPDATE.
 - **Ids:** for bulk loads, `idStrategy: { kind: 'generator', generate }` makes plain CREATE about 1.6 times faster than ids from the database on SQLite and PostgreSQL. It needs ids that are unique across every writer.
 - **Relationships between existing nodes:** `UNWIND $rows AS row MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) CREATE (a)-[:LINK]->(b)`. With `key` [declared](#properties) and indexed, each end is found by the index, in one statement for the whole batch. Without a declaration, each row scans the nodes.
-- **MERGE:** `MERGE (n:Item {key: row.key})` finds the node by the declared key's index too, and is linear in the batch, but runs 3 to 4 statements per row: use CREATE for nodes known to be new.
+- **MERGE:** `MERGE (n:Item {key: row.key}) SET n += row.props` finds the node by the declared key's index too, and is linear in the batch: 2 statements per row for a node that exists, 3 for a new one. Use CREATE for nodes known to be new.
 - **Limits:** one query may run 30 seconds (`timeoutMs`) and create 100,000 entities (`maxCreatedEntities`). Raise them in `createGraph({ limits })` of the writing graph for larger batches.
 
 ## Mapping
