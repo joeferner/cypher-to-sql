@@ -10,6 +10,7 @@ npm run bench -- --filter shortest              # only queries whose name contai
 npm run bench -- --compare bench/baseline.json  # ratio to the baseline; ⚠ marks > 1.5x slower
 npm run bench -- --save bench/baseline.json     # record a new baseline
 npm run bench:limits                            # the measurements behind the default limits
+npm run bench:writes                            # batched writes (see "Writes" below)
 
 npm run db:up:reference                         # also Neo4j and ArcadeDB
 npm run bench -- --graphs medium,dense,large --dialects sqlite,postgres,neo4j,arcadedb
@@ -75,6 +76,36 @@ What it shows:
 4. **Path search is the other big gap, except for shortest paths.** From one node, PostgreSQL's recursive CTE is on par (about 2 ms), but SQLite's is 25–30 times slower on the large graph. On the dense graph, `*1..3` between two nodes takes 120–170 ms against 32–36 ms. Shortest paths search from both ends, as Neo4j and ArcadeDB do (#67): a pair 6 apart on the large graph reads about 1,100 edges instead of 127,000, so the far shortest path takes 6.5 ms on SQLite and 15 ms on PostgreSQL (it used to exceed `maxRowsPerStep`), and 9–11 ms on the dense graph (60–73 ms before). The rest of the gap is one SQL statement per depth, against pointer chasing in memory.
 5. **Typed storage (#26) would help 2 and 3, but not 4.** Properties in real columns and a table per label would serve undeclared filters and whole-graph scans. Path search is bound by the SQL search itself (a recursive CTE or one breadth-first step per depth), which typed tables don't change.
 6. **MySQL is the slowest of the SQL engines here.** Point 1 doesn't hold on MySQL, which scans for a declared string (`name`), so everything that starts at a named node takes 0.1–1 s on the large graph. Its JSON functions are slower on scans and aggregates (2–5 times PostgreSQL). Declared integers are indexed (31 ms for the range count). MySQL can't use an index for an `OR` join, so an undirected variable-length pattern follows each direction in its own recursive step (#62); with one `OR` step it scanned every edge per path, and `*1..3` between two nodes took 22 s.
+
+## Writes (#69)
+
+`npm run bench:writes` loads batches the way an application ingests files: one `UNWIND $rows AS row ...` query per batch, on a fresh graph whose node `key` is declared as an integer and indexed (`migrate`). It counts the SQL statements each batch becomes. Options: `--dialects`, `--sizes` (rows per batch, default `1000,2000`), `--ids` (`database,generator`), and `--save`.
+
+| Workload                   | Query                                                                                 |
+| -------------------------- | ------------------------------------------------------------------------------------- |
+| CREATE, properties inline  | `CREATE (:Item {key: row.key, name: row.props.name, ...})`                            |
+| CREATE, then SET +=        | `CREATE (n:Item {key: row.key}) SET n += row.props`                                   |
+| MERGE, nodes new / exist   | `MERGE (n:Item {key: row.key}) SET n += row.props`, on an empty graph / the same rows |
+| CREATE relationships       | `MATCH (a:Item {key: row.from}) MATCH (b:Item {key: row.to}) CREATE (a)-[:LINK]->(b)` |
+| MERGE, relationships exist | the same with `MERGE (a)-[:LINK]->(b)`, after the CREATE                              |
+
+Rows per second, batches of 1,000 (in brackets: 2,000), on the laptop of the comparison above:
+
+| Workload                   | Statements per row | SQLite, database ids | SQLite, generator | PostgreSQL, database | PostgreSQL, generator | MySQL, database | MySQL, generator |
+| -------------------------- | -----------------: | -------------------: | ----------------: | -------------------: | --------------------: | --------------: | ---------------: |
+| CREATE, properties inline  |                  1 |        5,809 (9,901) |   23,830 (21,332) |        1,588 (3,010) |                 4,863 |           1,989 |            3,746 |
+| CREATE, then SET +=        |                  3 |            779 (815) |       1,003 (844) |            417 (400) |                   557 |           1,265 |            1,579 |
+| MERGE, nodes new           |                  4 |            357 (262) |         327 (269) |            162 (127) |                   173 |             267 |              310 |
+| MERGE, nodes exist         |                  3 |            257 (194) |         260 (192) |             136 (85) |                   134 |             206 |              198 |
+| CREATE relationships       |                  1 |            415 (225) |         438 (235) |             135 (71) |                   139 |             191 |              197 |
+| MERGE, relationships exist |                  1 |            329 (199) |         366 (195) |              92 (56) |                    93 |             165 |              162 |
+
+What it shows:
+
+1. **CREATE with the properties inline is the fast path:** one INSERT per row, linear in the batch, 1,600–24,000 rows per second. `SET n += row.props` adds a SELECT and an UPDATE per row and is 1.6 (MySQL) to 24 (SQLite) times slower.
+2. **The generator id strategy speeds up plain CREATE** 2–4 times (no `RETURNING` and no id to read back per row); everything else costs the same. The statement count does not depend on it.
+3. **Finding nodes by a value from the row does not use the index (#77),** so MERGE and MATCH by `row.key` get slower per row as the graph grows: doubling the batch (and the graph) roughly triples the time. The declared index serves a comparison with a parameter, but not with a row value, which scans the index once per row. Until #77, a batch costs about batch size × graph size, so smaller batches do not help.
+4. **One query per row with parameters stays linear** (`MERGE (n:Item {key: $key}) SET n.name = $name`, one `graph.query` each): on SQLite, 830–1,150 MERGEs and 1,000–2,000 relationships per second at 1,000, 2,000, and 4,000 nodes, where the batched MERGE drops to 190 rows per second at 2,000.
 
 ## Findings (baseline, medium graph)
 

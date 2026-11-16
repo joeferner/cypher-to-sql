@@ -48,6 +48,7 @@
     "tck:allow-list": "node --experimental-strip-types --no-warnings test/tck/update-allow-list.ts",
     "test:watch": "vitest",
     "bench": "npm run generate:parser && tsx bench/run.ts",
+    "bench:writes": "npm run generate:parser && tsx bench/writes.ts",
     "bench:limits": "npm run generate:parser && node --expose-gc --import tsx bench/limits.ts",
     "test:diff": "npm run generate:parser && tsx diff/run.ts",
     "db:up": "docker compose up -d --wait",
