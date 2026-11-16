@@ -138,7 +138,25 @@ The [benchmarks](bench/README.md) run one query corpus on SQLite, PostgreSQL, an
 - **Shortest paths** search from both ends, as the native engines do, so a far shortest path takes milliseconds; each search depth is still one SQL statement.
 - **Variable-length patterns on large or dense graphs** are the biggest gap: a deep `*` pattern enumerates paths, and can hit the `maxRowsPerStep` safety limit.
 
-These numbers come from one laptop (Intel i7-10510U), with the servers in Docker at the [compose](compose.yaml) settings. SQLite runs in-process, while the other engines pay a network round trip of about 2 ms. The full tables, the setup, and what the results imply are in [bench/README.md](bench/README.md#compared-with-neo4j-and-arcadedb-47).
+### Writes
+
+`npm run bench:writes` ingests batches of 1,000 rows with one `UNWIND $rows AS row ...` query each, into a graph whose `key` is declared and indexed. Rows per second:
+
+| Batch of 1,000                                                              | SQLite | PostgreSQL | MySQL |
+| --------------------------------------------------------------------------- | -----: | ---------: | ----: |
+| `CREATE (:Item {key: row.key, name: row.name, ...})`                        |  5,809 |      1,588 | 1,989 |
+| same, with `idStrategy` generator                                           | 23,830 |      4,863 | 3,746 |
+| `CREATE (n:Item {key: row.key}) SET n += row.props`                         |    779 |        417 | 1,265 |
+| `MERGE (n:Item {key: row.key}) SET n += row.props`, new                     |    357 |        162 |   267 |
+| `MERGE` again, nodes exist                                                  |    257 |        136 |   206 |
+| `MATCH (a {key: row.from}) MATCH (b {key: row.to}) CREATE (a)-[:LINK]->(b)` |    415 |        135 |   191 |
+
+- **Write properties inline in `CREATE`.** It is one statement per row; `SET n += row.props` adds two more and is up to 24 times slower.
+- **Use `idStrategy: { kind: 'generator', ... }` for bulk loads:** plain `CREATE` gets 2–4 times faster.
+- **`MERGE` and `MATCH` by a value from the row don't use the property index yet ([#77](https://github.com/joeferner/cypher-to-sql/issues/77)),** so they slow down as the graph grows (doubling a batch roughly triples its time). Until then, load nodes that are known to be new with `CREATE`, and run `MERGE` or relationship matches as one query per row with parameters (`MERGE (n:Item {key: $key})`), which stays linear: about 1,000 rows per second on SQLite.
+- A single query is limited to 30 seconds (`timeoutMs`) and 100,000 created entities (`maxCreatedEntities`); raise them on the writing graph for larger batches.
+
+These numbers come from one laptop (Intel i7-10510U), with the servers in Docker at the [compose](compose.yaml) settings. SQLite runs in-process, while the other engines pay a network round trip of about 2 ms. The full tables, the setup, and what the results imply are in [bench/README.md](bench/README.md#compared-with-neo4j-and-arcadedb-47) (writes: [bench/README.md](bench/README.md#writes-69)).
 
 ## License
 

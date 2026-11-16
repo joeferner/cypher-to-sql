@@ -39,6 +39,15 @@ To run the DDL with your own migration tool instead, `schemaSql(dialect, mapping
 
 Ids are 64-bit integers; other id types are not supported yet (`id(n)` returns an integer). With ids the database does not generate, give the write graph an `idStrategy` of `{ kind: 'generator', generate }`.
 
+## Loading data
+
+Load a graph through a graph created with `readOnly: false`, in batches of rows passed as a parameter. Measured with `npm run bench:writes` ([numbers](../README.md#writes)):
+
+- **New nodes:** `UNWIND $rows AS row CREATE (:Item {key: row.key, name: row.name})`, with the properties inline. It is one INSERT per row and linear in the batch; batches of 1,000 to 10,000 rows work well. `SET n += row.props` after the CREATE costs two more statements per row.
+- **Ids:** for bulk loads, `idStrategy: { kind: 'generator', generate }` makes plain CREATE 2–4 times faster than ids from the database. It needs ids that are unique across every writer.
+- **MERGE, and relationships between existing nodes:** `MERGE (n {key: row.key})` and `MATCH (a {key: row.from})` do not use the declared property's index yet ([#77](https://github.com/joeferner/cypher-to-sql/issues/77)): each row scans it, so a batch costs its size times the graph's size, and smaller batches do not help. Until then, run them as one query per row with parameters (`MERGE (n:Item {key: $key})`, `MATCH (a:Item {key: $from}), (b:Item {key: $to}) CREATE (a)-[:LINK]->(b)`), which use the index and stay linear.
+- **Limits:** one query may run 30 seconds (`timeoutMs`) and create 100,000 entities (`maxCreatedEntities`). Raise them in `createGraph({ limits })` of the writing graph for larger batches.
+
 ## Mapping
 
 `createGraph({ mapping })` sets the table and column names, and an optional schema (PostgreSQL) or attached database (SQLite) that prefixes both tables. Every name must be a plain SQL identifier; `validateMapping` checks them, so a mapping never puts other text into the SQL.
