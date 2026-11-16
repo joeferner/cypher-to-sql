@@ -30,21 +30,30 @@ const DATETIME =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:Z|[+-](\d{2}):(\d{2}))$/;
 
 /**
- * Throws a `SemanticError` unless `value` (not null) fits the declared type.
- * There is no conversion: `1` is not a float and `1.0` is not an integer.
+ * The value to store for a property declared as `type`: `value` (not null)
+ * itself, or a `SemanticError` unless it fits. The one conversion is for
+ * `integer`: a float with an integral value in JavaScript's safe range (`30`,
+ * as JSON parsers and most JavaScript give integers, or `30.0`) is stored as
+ * that integer, since the declaration settles which it is. `30.5`, or an
+ * integral float beyond 2^53, is still an error, and `1` is not a float.
  */
-export function checkDeclaredType(key: string, value: CypherValue, type: PropertyType): void {
+export function declaredValue(key: string, value: CypherValue, type: PropertyType): CypherValue {
+  if (type === 'integer' && typeof value === 'number' && Number.isSafeInteger(value)) {
+    return BigInt(value);
+  }
   if (!matches(value, type)) {
     throw new SemanticError(
       `Property ${JSON.stringify(key)} is declared as ${type} in the mapping, but the value is ${describe(value)}`,
       { hint: hints[type] },
     );
   }
+  return value;
 }
 
 const hints: Record<PropertyType, string> = {
   string: 'Use a string value, or remove the property.',
-  integer: 'Use an integer value (for example 1, not 1.0), or remove the property.',
+  integer:
+    'Use an integer value (a float such as 30.5, or one beyond 2^53, is not converted), or remove the property.',
   float: 'Use a float value (for example 1.0, not 1), or remove the property.',
   boolean: 'Use true or false, or remove the property.',
   date: "Use an ISO 8601 date string such as '2024-02-29'.",

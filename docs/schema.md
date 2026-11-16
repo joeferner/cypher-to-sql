@@ -81,7 +81,7 @@ CREATE INDEX nodes_age ON nodes (properties ->> '$."age"');
 ```
 
 - A declared type applies to the key on every label (or relationship type). The key is written into the SQL as a literal, so the index expression must match it exactly.
-- Writes through the library check declared types: `CREATE` rejects a value of another type with a `SemanticError`.
+- Writes through the library check declared types: `CREATE`, `MERGE`, and `SET` reject a value of another type with a `SemanticError`. The one conversion is for `integer`: a JavaScript `number` (or a Cypher float) with an integral value up to 2^53, such as `30` from `JSON.parse`, is stored as that integer. `30.5`, or an integral float beyond 2^53, is still rejected, and an undeclared key keeps a `number` as a float.
 - Reads trust the declaration: a stored value of another type makes the PostgreSQL cast fail. Add `CHECK` constraints when other tools write to the tables.
 - Supported types: `string`, `integer`, `float`, `boolean`, `date` (`YYYY-MM-DD`), and `datetime` (ISO 8601 with a time zone). Dates are stored as strings.
 

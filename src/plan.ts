@@ -13,7 +13,7 @@ import {
   type CypherError,
 } from './errors.js';
 import { parseCypherJson, stringifyCypherJson, stringifySqlJson } from './json.js';
-import { checkDeclaredType, type PropertyTypes } from './property-types.js';
+import { declaredValue, type PropertyTypes } from './property-types.js';
 import { idsJson, pathsJson, shortestPaths } from './search.js';
 import type { Expression } from './ast.js';
 import { TemporalError } from './temporal.js';
@@ -877,8 +877,7 @@ function resolveBind(
       for (const { key, value } of bind.entries) {
         const resolved = resolveValue(value, options.params, row, state);
         if (resolved !== null) {
-          checkPropertyValue(key, resolved, bind.types);
-          map[key] = resolved;
+          map[key] = checkPropertyValue(key, resolved, bind.types);
         } else if (bind.noNulls) {
           throw new SemanticError(
             `MERGE cannot use a null property value (for ${JSON.stringify(key)})`,
@@ -902,8 +901,7 @@ function resolveBind(
       const map: CypherMap = {};
       for (const [key, v] of Object.entries(value)) {
         if (v !== null) {
-          checkPropertyValue(key, v, bind.types);
-          map[key] = v;
+          map[key] = checkPropertyValue(key, v, bind.types);
         }
       }
       return stringifyCypherJson(map);
@@ -1216,10 +1214,7 @@ function propertyPatch(
 ): string {
   const patch: CypherMap = {};
   if (bind.mode === 'property') {
-    if (value !== null) {
-      checkPropertyValue(bind.key!, value, bind.types);
-    }
-    patch[bind.key!] = value;
+    patch[bind.key!] = value === null ? null : checkPropertyValue(bind.key!, value, bind.types);
     return stringifyCypherJson(patch);
   }
   let entries: CypherMap;
@@ -1237,8 +1232,7 @@ function propertyPatch(
   }
   for (const [key, v] of Object.entries(entries)) {
     if (v !== null) {
-      checkPropertyValue(key, v, bind.types);
-      patch[key] = v;
+      patch[key] = checkPropertyValue(key, v, bind.types);
     } else if (bind.mode === 'merge') {
       patch[key] = null;
     }
@@ -1246,18 +1240,18 @@ function propertyPatch(
   return stringifyCypherJson(patch);
 }
 
+/** The value to store for the property `key`, checked (see `declaredValue`). */
 function checkPropertyValue(
   key: string,
   value: CypherValue,
   types: PropertyTypes | undefined,
-): void {
+): CypherValue {
   if (RESERVED_KEYS.has(key)) {
     throw new SemanticError(`The property key ${JSON.stringify(key)} is reserved`);
   }
   const declared = types && Object.hasOwn(types, key) ? types[key] : undefined;
   if (declared) {
-    checkDeclaredType(key, value, declared);
-    return;
+    return declaredValue(key, value, declared);
   }
   const items = Array.isArray(value) ? value : [value];
   for (const item of items) {
@@ -1275,6 +1269,7 @@ function checkPropertyValue(
       );
     }
   }
+  return value;
 }
 
 function assembleRecord(row: Row, columns: readonly ColumnSpec[]): Record<string, CypherValue> {

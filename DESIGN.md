@@ -76,7 +76,7 @@ Rules:
 
 `mapping.nodes.propertyTypes` and `mapping.edges.propertyTypes` declare a type for a property key: `string`, `integer`, `float`, `boolean`, `date` (ISO 8601 `YYYY-MM-DD`), or `datetime` (ISO 8601 with a time zone). Temporal values are stored as strings. A type applies to the key across every label (or relationship type), which matches the generic layout: one expression index on a key covers the whole table, and a node with several labels cannot get conflicting types.
 
-- **Writes:** `CREATE` rejects a non-null value that does not have the declared type, with a `SemanticError` and a hint. There is no conversion (`1` is not a float). Values are checked at run time, so literals, parameters, and values from `MATCH`/`UNWIND` rows are all covered. Undeclared keys accept any property value.
+- **Writes:** `CREATE`, `MERGE`, and `SET` reject a non-null value that does not have the declared type, with a `SemanticError` and a hint. The one conversion is to `integer`, from a float with an integral value in JavaScript's safe range: integers from JSON and most JavaScript data are `number`s, and the declaration settles that they are integers (`declaredValue`). Otherwise there is none (`1` is not a float, `30.5` is not an integer). Values are checked at run time, so literals, parameters, and values from `MATCH`/`UNWIND` rows are all covered. Undeclared keys accept any property value.
 - **Reads:** a declared property is read as a native SQL value without a type check (`Dialect.typedMember`), so comparisons against it are plain SQL and can use an expression index. The key comes from the mapping and is written into the SQL as a literal, so the index expression must match it exactly:
 
   ```sql
