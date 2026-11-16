@@ -1068,15 +1068,16 @@ class AstBuilder {
 
   private parameter(
     ctx: {
-      oC_SymbolicName(): OC_SymbolicNameContext | null;
+      oC_SchemaName(): OC_SchemaNameContext | null;
       getText(): string;
     } & ParserRuleContext,
   ): ast.Parameter {
-    const name = ctx.oC_SymbolicName();
+    // A name (a reserved word too, as in Neo4j: `$limit`), or a number (`$0`).
+    const name = ctx.oC_SchemaName();
     return {
       type: 'Parameter',
       position: pos(ctx),
-      name: name ? this.symbolicName(name) : ctx.getText().slice(1),
+      name: name ? this.schemaName(name) : ctx.getText().slice(1),
     };
   }
 
