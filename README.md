@@ -82,7 +82,7 @@ Each database has its own limits:
 
 - **SQLite** has no NaN (`0.0 / 0.0` is null). Unicode `toUpper()` and `toLower()`, `=~`, and temporal functions of values from the query need [the library's functions registered](docs/executors.md#sqlite-settings).
 - **MySQL** runs temporal functions and arithmetic only on literals and parameters, not on values from the query (`date(n.since)` is an `UnsupportedFeatureError`). It has no NaN, compares JSON integers beyond 2^53 imprecisely, takes only a literal or a parameter in `SKIP` and `LIMIT`, and doesn't use an index for a declared string property, so a lookup by one scans (see [Performance](#performance)). It also needs [session settings](docs/executors.md#mysql-settings).
-- **Deep path searches** on large graphs can hit the `maxRowsPerStep` [limit](docs/safe-execution.md#limits) on every database; see [Performance](#performance).
+- **Deep variable-length patterns** on large graphs can hit the `maxRowsPerStep` [limit](docs/safe-execution.md#limits) on every database (shortest paths between a few pairs of nodes search from both ends and rarely do); see [Performance](#performance).
 
 ## Development
 
@@ -128,14 +128,15 @@ The [benchmarks](bench/README.md) run one query corpus on SQLite, PostgreSQL, an
 | one hop from a named node          |    0.4 |        2.0 | 989\* |   2.3 |      1.7 |
 | `ORDER BY ... LIMIT` over all      |    504 |        739 |   576 |    54 |      196 |
 | `*1..3` from a named node          |     72 |        2.3 | 240\* |   2.2 |      3.1 |
-| `shortestPath` to a far node       |  limit |      limit | limit |   3.2 |      3.2 |
+| `shortestPath` to a far node       |    6.5 |         15 | 293\* |   3.2 |      3.2 |
 
 \* MySQL scans for a declared string property: it does not use a functional index for one.
 
 - **Lookups and short patterns from a known node** are as fast as the native engines, or faster, when the filtered properties are [declared](docs/schema.md#properties) and indexed. On MySQL that works for declared numbers, not strings.
 - **Filters on undeclared properties** scan every node's JSON: about 50 times slower. Declare the keys that queries filter on.
 - **Scans and aggregates over the whole graph** are 2–9 times slower than Neo4j, and often close to ArcadeDB. MySQL is slower than SQLite and PostgreSQL at them.
-- **Deep path searches on large or dense graphs** are the biggest gap. On the large graph, the far shortest path above hits the `maxRowsPerStep` safety limit, while the native engines follow adjacency in 3 ms.
+- **Shortest paths** search from both ends, as the native engines do, so a far shortest path takes milliseconds; each search depth is still one SQL statement.
+- **Variable-length patterns on large or dense graphs** are the biggest gap: a deep `*` pattern enumerates paths, and can hit the `maxRowsPerStep` safety limit.
 
 These numbers come from one laptop (Intel i7-10510U), with the servers in Docker at the [compose](compose.yaml) settings. SQLite runs in-process, while the other engines pay a network round trip of about 2 ms. The full tables, the setup, and what the results imply are in [bench/README.md](bench/README.md#compared-with-neo4j-and-arcadedb-47).
 

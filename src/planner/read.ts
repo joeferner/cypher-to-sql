@@ -857,16 +857,23 @@ export class ReadScope {
         d.boundIdIn(`${e}.${from}`, frontier, b.table('nodes'), b.mapping.nodes.id),
         ...filters,
       ].join(' AND ');
-    const halves =
-      rel.direction === 'right'
-        ? [half(edges.startId!, edges.endId!)]
-        : rel.direction === 'left'
-          ? [half(edges.endId!, edges.startId!)]
-          : [half(edges.startId!, edges.endId!), half(edges.endId!, edges.startId!)];
+    const outgoing = half(edges.startId!, edges.endId!);
+    const incoming = half(edges.endId!, edges.startId!);
     // Ordered, so that shortestPath picks the same path every time.
-    const expand = finishSelect(b, `SELECT f, r, t FROM (${halves.join(' UNION ALL ')}) AS x`, {
-      implicitOrder: ['r', 'f'],
-    });
+    const step = (halves: string[]): PlanStep =>
+      b.finish(
+        finishSelect(b, `SELECT f, r, t FROM (${halves.join(' UNION ALL ')}) AS x`, {
+          implicitOrder: ['r', 'f'],
+        }),
+      );
+    // From the start nodes along the pattern's direction, and from the end
+    // nodes against it (the same edges when there is no direction).
+    const [expand, expandBackward] =
+      rel.direction === 'right'
+        ? [step([outgoing]), step([incoming])]
+        : rel.direction === 'left'
+          ? [step([incoming]), step([outgoing])]
+          : [step([outgoing, incoming]), undefined];
 
     b.searchSteps.push(
       b.finish(pairs, {
@@ -880,7 +887,8 @@ export class ReadScope {
             max: rel.range!.max,
             position: rel.position,
           },
-          expand: b.finish(expand),
+          expand,
+          expandBackward,
         },
       }),
     );

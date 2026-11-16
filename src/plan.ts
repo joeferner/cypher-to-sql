@@ -14,7 +14,7 @@ import {
 } from './errors.js';
 import { parseCypherJson, stringifyCypherJson, stringifySqlJson } from './json.js';
 import { declaredValue, type PropertyTypes } from './property-types.js';
-import { idsJson, pathsJson, shortestPaths } from './search.js';
+import { BIDIRECTIONAL_MAX_PAIRS, idsJson, pathsJson, shortestPaths } from './search.js';
 import type { Expression } from './ast.js';
 import { parseTemporal, sortKey, TemporalError } from './temporal.js';
 import { evaluateKnown, TypeMismatch } from './temporal-functions.js';
@@ -217,6 +217,12 @@ export interface ShortestPathSearch {
   maxDepth: PathDepthBind;
   /** The edges next to the `frontier` nodes, as rows `(f, r, t)`: from node, edge, to node. */
   expand: PlanStep;
+  /**
+   * The same against the pattern's direction, for the search from the end
+   * nodes (`t` comes before `f` on a path). Undefined for an undirected
+   * pattern, where it is `expand`.
+   */
+  expandBackward?: PlanStep | undefined;
 }
 
 /**
@@ -374,11 +380,15 @@ export function createPlan(steps: PlanStep[], columns: ColumnSpec[]): CompiledPl
                 : '';
           let text = `-- step ${i + 1}${note}\n${describeStep(s)}`;
           if (s.search) {
-            const { all, min, maxDepth } = s.search;
+            const { all, min, maxDepth, expandBackward } = s.search;
             text +=
               `\n-- search ${s.search.index + 1}: breadth-first, one step per depth ` +
               `(${all ? 'all shortest paths' : 'one shortest path'} per pair, depth ${min}..` +
-              `${describeBind(maxDepth)})\n${describeStep(s.search.expand)}`;
+              `${describeBind(maxDepth)}), from both ends for up to ${BIDIRECTIONAL_MAX_PAIRS} pairs\n` +
+              describeStep(s.search.expand);
+            if (expandBackward) {
+              text += `\n-- search ${s.search.index + 1}, from the end nodes\n${describeStep(expandBackward)}`;
+            }
           }
           return text;
         })
@@ -697,6 +707,15 @@ async function runPlan(
         contexts = undefined;
       }
     };
+    /** One step of a shortest path search, over the frontier's node ids. */
+    const expand = async (step: PlanStep, frontier: unknown[]): Promise<Row[]> => {
+      state.frontier = idsJson(frontier);
+      try {
+        return await run(step, undefined);
+      } finally {
+        state.frontier = undefined;
+      }
+    };
     const runOnce = async (step: PlanStep): Promise<void> => {
       last = await run(step, undefined);
       const search = step.search;
@@ -707,14 +726,8 @@ async function runPlan(
           maxDepth: resolvePathDepth(search.maxDepth, limits),
           maxFrontierSize: limits.maxFrontierSize,
           maxPaths: limits.maxRowsPerStep,
-          expand: async (frontier) => {
-            state.frontier = idsJson(frontier);
-            try {
-              return await run(search.expand, undefined);
-            } finally {
-              state.frontier = undefined;
-            }
-          },
+          expand: (frontier) => expand(search.expand, frontier),
+          expandBackward: (frontier) => expand(search.expandBackward ?? search.expand, frontier),
         });
         state.searches.set(search.index, pathsJson(found));
       }
