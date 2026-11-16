@@ -29,3 +29,4 @@ export {
   type CypherValue,
   type CypherMap,
 } from './values.js';
+export { toJson, type JsonValue, type ToJsonOptions } from './to-json.js';
